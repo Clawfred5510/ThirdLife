@@ -21,6 +21,8 @@ interface NearbyBuilding {
   index: number;
   def: BuildingDef;
   distance: number;
+  /** Database property ID (1-based, only purchasable buildings). null for landmarks. */
+  dbPropertyId: number | null;
 }
 
 /**
@@ -41,21 +43,26 @@ export const PropertyPanel: React.FC = () => {
 
   // Track local player position
   useEffect(() => {
-    onPlayerChange((sessionId, player) => {
+    const unsubChange = onPlayerChange((sessionId, player) => {
       if (sessionId === getSessionId()) {
         setLocalPos({ x: player.x, z: player.z });
       }
     });
-    onCreditsUpdate((amount: number) => {
+    const unsubCredits = onCreditsUpdate((amount: number) => {
       setCredits(amount);
     });
-    onPropertyUpdate((update: { propertyId: number; ownerId: string; ownerName: string }) => {
+    const unsubProperty = onPropertyUpdate((update: { propertyId: number; ownerId: string; ownerName: string }) => {
       setPropertyOwners((prev) => {
         const next = new Map(prev);
         next.set(update.propertyId, update);
         return next;
       });
     });
+    return () => {
+      unsubChange();
+      unsubCredits();
+      unsubProperty();
+    };
   }, []);
 
   // Find the nearest building within range
@@ -63,16 +70,19 @@ export const PropertyPanel: React.FC = () => {
     if (!localPos) return null;
 
     let best: NearbyBuilding | null = null;
+    // DB property IDs are 1-based, assigned in order of purchasable buildings only
+    let purchasableIndex = 0;
 
     for (let i = 0; i < ALL_BUILDINGS.length; i++) {
       const def = ALL_BUILDINGS[i];
+      const dbId = def.purchasable ? ++purchasableIndex : null;
       const { wx, wz } = designToWorld(def.x, def.z);
       const dx = localPos.x - wx;
       const dz = localPos.z - wz;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
       if (dist <= INTERACT_RANGE && (!best || dist < best.distance)) {
-        best = { index: i, def, distance: dist };
+        best = { index: i, def, distance: dist, dbPropertyId: dbId };
       }
     }
 
@@ -105,8 +115,8 @@ export const PropertyPanel: React.FC = () => {
 
   if (!selectedBuilding) return null;
 
-  const { index, def } = selectedBuilding;
-  const ownership = propertyOwners.get(index);
+  const { def, dbPropertyId } = selectedBuilding;
+  const ownership = dbPropertyId !== null ? propertyOwners.get(dbPropertyId) : undefined;
   const sessionId = getSessionId();
   const isOwned = !!ownership;
   const isOwnedByLocal = isOwned && ownership.ownerId === sessionId;
@@ -118,7 +128,8 @@ export const PropertyPanel: React.FC = () => {
     : 0;
 
   const handleBuy = () => {
-    sendBuyProperty(index);
+    if (dbPropertyId === null) return;
+    sendBuyProperty(dbPropertyId);
     setSelectedBuilding(null);
   };
 

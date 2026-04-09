@@ -57,12 +57,13 @@ export const ChatPanel: React.FC = () => {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    onChat((msg: ChatMessage) => {
+    const unsub = onChat((msg: ChatMessage) => {
       setMessages((prev) => {
         const next = [...prev, msg];
         return next.length > MAX_MESSAGES ? next.slice(next.length - MAX_MESSAGES) : next;
       });
     });
+    return unsub;
   }, []);
 
   // Auto-scroll to bottom when new messages arrive

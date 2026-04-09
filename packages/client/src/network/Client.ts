@@ -33,28 +33,53 @@ const onChatListeners: ChatCallback[] = [];
 const onCreditsUpdateListeners: CreditsUpdateCallback[] = [];
 const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
 
-export function onPlayerAdd(cb: PlayerAddCallback): void {
+/** Subscribe and return an unsubscribe function to avoid listener leaks. */
+export function onPlayerAdd(cb: PlayerAddCallback): () => void {
   onPlayerAddListeners.push(cb);
+  return () => {
+    const idx = onPlayerAddListeners.indexOf(cb);
+    if (idx !== -1) onPlayerAddListeners.splice(idx, 1);
+  };
 }
 
-export function onPlayerRemove(cb: PlayerRemoveCallback): void {
+export function onPlayerRemove(cb: PlayerRemoveCallback): () => void {
   onPlayerRemoveListeners.push(cb);
+  return () => {
+    const idx = onPlayerRemoveListeners.indexOf(cb);
+    if (idx !== -1) onPlayerRemoveListeners.splice(idx, 1);
+  };
 }
 
-export function onPlayerChange(cb: PlayerChangeCallback): void {
+export function onPlayerChange(cb: PlayerChangeCallback): () => void {
   onPlayerChangeListeners.push(cb);
+  return () => {
+    const idx = onPlayerChangeListeners.indexOf(cb);
+    if (idx !== -1) onPlayerChangeListeners.splice(idx, 1);
+  };
 }
 
-export function onChat(cb: ChatCallback): void {
+export function onChat(cb: ChatCallback): () => void {
   onChatListeners.push(cb);
+  return () => {
+    const idx = onChatListeners.indexOf(cb);
+    if (idx !== -1) onChatListeners.splice(idx, 1);
+  };
 }
 
-export function onCreditsUpdate(cb: CreditsUpdateCallback): void {
+export function onCreditsUpdate(cb: CreditsUpdateCallback): () => void {
   onCreditsUpdateListeners.push(cb);
+  return () => {
+    const idx = onCreditsUpdateListeners.indexOf(cb);
+    if (idx !== -1) onCreditsUpdateListeners.splice(idx, 1);
+  };
 }
 
-export function onPropertyUpdate(cb: PropertyUpdateCallback): void {
+export function onPropertyUpdate(cb: PropertyUpdateCallback): () => void {
   onPropertyUpdateListeners.push(cb);
+  return () => {
+    const idx = onPropertyUpdateListeners.indexOf(cb);
+    if (idx !== -1) onPropertyUpdateListeners.splice(idx, 1);
+  };
 }
 
 // ---------- Helpers ----------
@@ -129,6 +154,18 @@ export function sendChat(text: string): void {
 
 export function sendBuyProperty(propertyId: number): void {
   room?.send(MessageType.BUY_PROPERTY, { propertyId });
+}
+
+export function sendPlayerColor(color: string): void {
+  room?.send(MessageType.PLAYER_COLOR, { color });
+}
+
+export function getPlayerName(): string | null {
+  // The player name is stored as a join option; retrieve from room state if available
+  const sid = room?.sessionId;
+  if (!sid || !room) return null;
+  const player = room.state.players?.get(sid) as Record<string, unknown> | undefined;
+  return (player?.['name'] as string) ?? null;
 }
 
 export function disconnect(): void {

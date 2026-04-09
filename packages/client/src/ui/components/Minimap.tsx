@@ -93,9 +93,9 @@ export const Minimap: React.FC = () => {
       playersRef.current.set(sessionId, player);
     };
 
-    onPlayerAdd(handleAdd);
-    onPlayerRemove(handleRemove);
-    onPlayerChange(handleChange);
+    const unsubAdd = onPlayerAdd(handleAdd);
+    const unsubRemove = onPlayerRemove(handleRemove);
+    const unsubChange = onPlayerChange(handleChange);
 
     // Draw loop at ~10 fps
     let lastTime = 0;
@@ -110,6 +110,9 @@ export const Minimap: React.FC = () => {
 
     return () => {
       cancelAnimationFrame(rafRef.current);
+      unsubAdd();
+      unsubRemove();
+      unsubChange();
     };
   }, [draw]);
 

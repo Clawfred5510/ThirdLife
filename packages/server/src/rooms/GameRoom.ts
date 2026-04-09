@@ -1,7 +1,7 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, getPlayerProperties } from '../db';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, getPlayerProperties, seedProperties } from '../db';
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
@@ -12,6 +12,23 @@ export class GameRoom extends Room<GameState> {
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
+
+    // Seed purchasable properties into DB if empty (12 per district, 60 total)
+    const districts = [
+      { name: 'Downtown', plots: 12, minPrice: 3000, maxPrice: 15000 },
+      { name: 'Residential', plots: 12, minPrice: 1000, maxPrice: 5000 },
+      { name: 'Industrial', plots: 12, minPrice: 1000, maxPrice: 8000 },
+      { name: 'Waterfront', plots: 12, minPrice: 3000, maxPrice: 15000 },
+      { name: 'Entertainment', plots: 12, minPrice: 500, maxPrice: 10000 },
+    ];
+    const seedBuildings: Array<{ name: string; district: string; price: number }> = [];
+    for (const d of districts) {
+      for (let i = 1; i <= d.plots; i++) {
+        const price = Math.round(d.minPrice + (d.maxPrice - d.minPrice) * (i / d.plots));
+        seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price });
+      }
+    }
+    seedProperties(seedBuildings);
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
       const player = this.state.players.get(client.sessionId);
@@ -91,6 +108,10 @@ export class GameRoom extends Room<GameState> {
     player.credits = row.credits;
 
     this.state.players.set(client.sessionId, player);
+
+    // Send initial credits so client UI can display them immediately
+    client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+
     console.log(`${player.name} joined (${client.sessionId}) — credits: ${player.credits}`);
   }
 

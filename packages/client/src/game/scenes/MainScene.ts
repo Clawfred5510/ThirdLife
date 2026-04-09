@@ -23,6 +23,14 @@ import { PlayerInput, TICK_RATE, PLAYER_SPEED } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings } from '../entities/buildings';
 
+/** Module-level reference to the active DayNightCycle for external access. */
+let activeDayNight: DayNightCycle | null = null;
+
+/** Get the active day/night cycle system (if the scene has been created). */
+export function getDayNightCycle(): DayNightCycle | null {
+  return activeDayNight;
+}
+
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
   mesh: AbstractMesh;
@@ -151,6 +159,7 @@ export class MainScene {
 
     // ---- Day/Night Cycle ----
     this.dayNight = new DayNightCycle(scene, { cycleDurationSeconds: 600 });
+    activeDayNight = this.dayNight;
 
     // Fullscreen GUI layer for floating player name labels
     this.labelUI = AdvancedDynamicTexture.CreateFullscreenUI('playerLabelsUI', true, scene);
@@ -179,7 +188,7 @@ export class MainScene {
       this.sendPlayerInput();
       this.applyLocalPrediction();
       this.interpolateRemotePlayers();
-      this.dayNight.update(this.engine.getDeltaTime());
+      this.dayNight.update(this.engine.getDeltaTime() / 1000);
     });
 
     return scene;
@@ -269,8 +278,8 @@ export class MainScene {
     let dx = 0;
     let dz = 0;
 
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) dz += speed;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) dz -= speed;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) dz -= speed;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) dz += speed;
     if (this.keys['KeyA'] || this.keys['ArrowLeft']) dx -= speed;
     if (this.keys['KeyD'] || this.keys['ArrowRight']) dx += speed;
 

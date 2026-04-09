@@ -12,15 +12,19 @@ export const HUD: React.FC = () => {
       setConnected(room !== null);
     }, 1000);
 
-    onPlayerAdd(() => {
+    const unsubAdd = onPlayerAdd(() => {
       setPlayerCount((prev) => prev + 1);
     });
 
-    onPlayerRemove(() => {
+    const unsubRemove = onPlayerRemove(() => {
       setPlayerCount((prev) => Math.max(0, prev - 1));
     });
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      unsubAdd();
+      unsubRemove();
+    };
   }, []);
 
   return (

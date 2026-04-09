@@ -5,9 +5,10 @@ export const Wallet: React.FC = () => {
   const [credits, setCredits] = useState(0);
 
   useEffect(() => {
-    onCreditsUpdate((amount: number) => {
+    const unsub = onCreditsUpdate((amount: number) => {
       setCredits(amount);
     });
+    return unsub;
   }, []);
 
   return (

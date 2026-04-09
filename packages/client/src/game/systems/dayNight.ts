@@ -47,6 +47,13 @@ export class DayNightCycle {
   }
 
   /**
+   * Set the full cycle duration in seconds.
+   */
+  setCycleDuration(seconds: number): void {
+    this.cycleDuration = seconds;
+  }
+
+  /**
    * Returns current time of day as a 0-1 float.
    * 0 = midnight, 0.25 = sunrise, 0.5 = noon, 0.75 = sunset
    */

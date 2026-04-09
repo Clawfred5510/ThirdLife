@@ -21,13 +21,18 @@ export const Toast: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    onPlayerAdd((_sessionId: string, player: PlayerSnapshot) => {
+    const unsubAdd = onPlayerAdd((_sessionId: string, player: PlayerSnapshot) => {
       addToast(`${player.name} joined`, 'join');
     });
 
-    onPlayerRemove((sessionId: string) => {
+    const unsubRemove = onPlayerRemove((sessionId: string) => {
       addToast(`Player ${sessionId.slice(0, 4)} left`, 'leave');
     });
+
+    return () => {
+      unsubAdd();
+      unsubRemove();
+    };
   }, [addToast]);
 
   if (toasts.length === 0) return null;

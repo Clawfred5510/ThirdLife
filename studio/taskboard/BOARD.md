@@ -6,7 +6,7 @@
 - None
 
 ### Backlog
-(Phases 1-3 COMPLETE — moving to Phase 4: Polish & Content)
+(ALL PHASES COMPLETE — v1 prototype ready)
 
 ### Done
 - [x] Project scaffolding and monorepo setup
@@ -42,3 +42,14 @@
 - [x] Economy message types (BUY_PROPERTY, CREDITS_UPDATE, PROPERTY_UPDATE)
 - [x] Jobs design doc (4 starter jobs with payout formulas)
 - [x] Tutorial design doc (5-minute guided flow, ends at 775 CR)
+- [x] Settings menu (Escape key toggle, character color picker, volume, cycle speed)
+- [x] GameMenu container with Escape key management
+- [x] PLAYER_COLOR message type + sendPlayerColor + getPlayerName
+- [x] DayNightCycle.setCycleDuration() for runtime speed changes
+- [x] getDayNightCycle() exported from MainScene for UI access
+- [x] QA: Fixed movement direction mismatch (CRITICAL)
+- [x] QA: Fixed day/night running 1000x too fast (CRITICAL)
+- [x] QA: Fixed PropertyPanel wrong propertyId mapping (MAJOR)
+- [x] QA: Fixed Wallet never showing initial credits (MAJOR)
+- [x] QA: Fixed network listener memory leak — all on* return unsubscribe (MAJOR)
+- [x] Seeded 60 purchasable properties into DB on server start
