@@ -59,9 +59,10 @@ export class GameRoom extends Room<GameState> {
     const player = new PlayerState();
     player.id = client.sessionId;
     player.name = options.name || `Player_${client.sessionId.slice(0, 4)}`;
-    player.x = Math.random() * 20 - 10;
+    // Spawn near City Hall (design: 1400,800 → babylon: 400, -200)
+    player.x = 400 + (Math.random() * 20 - 10);
     player.y = 0;
-    player.z = Math.random() * 20 - 10;
+    player.z = -200 + (Math.random() * 20 - 10);
 
     this.state.players.set(client.sessionId, player);
     console.log(`${player.name} joined (${client.sessionId})`);

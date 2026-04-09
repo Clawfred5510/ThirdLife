@@ -20,6 +20,8 @@ import {
   PlayerSnapshot,
 } from '../../network/Client';
 import { PlayerInput, TICK_RATE, PLAYER_SPEED } from '@gamestu/shared';
+import { DayNightCycle } from '../systems/dayNight';
+import { spawnBuildings } from '../entities/buildings';
 
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
@@ -48,6 +50,9 @@ export class MainScene {
   /** Whether we were sending movement input last frame — used to send a stop signal. */
   private wasMoving = false;
 
+  /** Day/night cycle system. */
+  private dayNight!: DayNightCycle;
+
   /** Timestamp of the last input sent to the server (for throttling). */
   private lastInputTime = 0;
 
@@ -70,11 +75,82 @@ export class MainScene {
     const light = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
     light.intensity = 0.9;
 
-    // Ground — sized to match the 2000x2000 world
-    const ground = MeshBuilder.CreateGround('ground', { width: 2000, height: 2000, subdivisions: 8 }, scene);
-    const groundMat = new StandardMaterial('groundMat', scene);
-    groundMat.diffuseColor = new Color3(0.4, 0.6, 0.3);
-    ground.material = groundMat;
+    // ---- Base ground (dark green/brown for parks & buffers) ----
+    const baseGround = MeshBuilder.CreateGround('baseGround', { width: 2000, height: 2000, subdivisions: 8 }, scene);
+    const baseGroundMat = new StandardMaterial('baseGroundMat', scene);
+    baseGroundMat.diffuseColor = new Color3(0.3, 0.42, 0.25);
+    baseGround.material = baseGroundMat;
+
+    // ---- District ground planes (Y=0.01) ----
+    // Coordinate mapping: design (x,y) → babylon (x-1000, y-1000)
+    const districts: { name: string; x1: number; y1: number; x2: number; y2: number; color: [number, number, number] }[] = [
+      { name: 'Downtown',      x1: 1100, y1: 400,  x2: 1800, y2: 1100, color: [0.6, 0.65, 0.7] },
+      { name: 'Residential',   x1: 100,  y1: 1100, x2: 900,  y2: 1900, color: [0.45, 0.65, 0.35] },
+      { name: 'Industrial',    x1: 1100, y1: 1200, x2: 1900, y2: 1900, color: [0.5, 0.5, 0.48] },
+      { name: 'Waterfront',    x1: 1200, y1: 0,    x2: 2000, y2: 500,  color: [0.76, 0.7, 0.55] },
+      { name: 'Entertainment', x1: 100,  y1: 400,  x2: 900,  y2: 1100, color: [0.55, 0.45, 0.6] },
+    ];
+
+    for (const d of districts) {
+      const w = d.x2 - d.x1;
+      const h = d.y2 - d.y1;
+      const cx = (d.x1 + d.x2) / 2 - 1000;
+      const cz = (d.y1 + d.y2) / 2 - 1000;
+
+      const mesh = MeshBuilder.CreateGround(`district_${d.name}`, { width: w, height: h }, scene);
+      mesh.position.set(cx, 0.01, cz);
+      const mat = new StandardMaterial(`districtMat_${d.name}`, scene);
+      mat.diffuseColor = new Color3(d.color[0], d.color[1], d.color[2]);
+      mesh.material = mat;
+    }
+
+    // ---- Roads (Y=0.05, dark gray) ----
+    const roadColor = new Color3(0.25, 0.25, 0.25);
+
+    const roads: { name: string; cx: number; cz: number; w: number; h: number }[] = [
+      // Haven Boulevard: east-west at z=0, full width, width 30
+      { name: 'HavenBlvd',   cx: 0,    cz: 0,    w: 2000, h: 30 },
+      // Central Avenue: north-south at x=0, full height, width 30
+      { name: 'CentralAve',  cx: 0,    cz: 0,    w: 30,   h: 2000 },
+      // Bayshore Drive: east-west at z=-800, from x=-1000 to x=800, width 20
+      { name: 'BayshoreDr',  cx: -100, cz: -800, w: 1800, h: 20 },
+      // Ring Road: east-west at z=500, from x=-500 to x=500, width 20
+      { name: 'RingRoad',    cx: 0,    cz: 500,  w: 1000, h: 20 },
+    ];
+
+    for (const r of roads) {
+      const mesh = MeshBuilder.CreateGround(`road_${r.name}`, { width: r.w, height: r.h }, scene);
+      mesh.position.set(r.cx, 0.05, r.cz);
+      const mat = new StandardMaterial(`roadMat_${r.name}`, scene);
+      mat.diffuseColor = roadColor;
+      mesh.material = mat;
+    }
+
+    // ---- River (Y=-0.1, blue, diagonal from southwest to center) ----
+    // Runs roughly from (-1000, 0) to (200, -1000) — use a rotated strip
+    const waterColor = new Color3(0.2, 0.4, 0.7);
+
+    const riverLength = Math.sqrt(1200 * 1200 + 1000 * 1000); // ~1562
+    const riverMesh = MeshBuilder.CreateGround('river', { width: 100, height: riverLength }, scene);
+    riverMesh.position.set(-400, -0.1, -500); // midpoint of the line
+    riverMesh.rotation.y = Math.atan2(1200, 1000); // angle from (−1000,0)→(200,−1000)
+    const riverMat = new StandardMaterial('riverMat', scene);
+    riverMat.diffuseColor = waterColor;
+    riverMesh.material = riverMat;
+
+    // ---- Bay (Y=-0.1, blue, southern area below z=-800 on the west side) ----
+    // Covers roughly x: -1000 to 200, z: -1000 to -800
+    const bayMesh = MeshBuilder.CreateGround('bay', { width: 1200, height: 200 }, scene);
+    bayMesh.position.set(-400, -0.1, -900);
+    const bayMat = new StandardMaterial('bayMat', scene);
+    bayMat.diffuseColor = waterColor;
+    bayMesh.material = bayMat;
+
+    // ---- Buildings & Landmarks ----
+    spawnBuildings(scene);
+
+    // ---- Day/Night Cycle ----
+    this.dayNight = new DayNightCycle(scene, { cycleDurationSeconds: 600 });
 
     // Fullscreen GUI layer for floating player name labels
     this.labelUI = AdvancedDynamicTexture.CreateFullscreenUI('playerLabelsUI', true, scene);
@@ -103,6 +179,7 @@ export class MainScene {
       this.sendPlayerInput();
       this.applyLocalPrediction();
       this.interpolateRemotePlayers();
+      this.dayNight.update(this.engine.getDeltaTime());
     });
 
     return scene;

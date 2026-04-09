@@ -6,7 +6,7 @@
 - None
 
 ### Backlog
-(Phase 1 COMPLETE — moving to Phase 2)
+(Phase 1 & 2 COMPLETE — moving to Phase 3: Economy & Persistence)
 
 ### Done
 - [x] Project scaffolding and monorepo setup
@@ -28,3 +28,8 @@
 - [x] TASK-007: Client-side prediction (instant local movement, snap correction >2 units)
 - [x] TASK-009: Input throttling (20Hz match, 66% bandwidth reduction)
 - [x] QA audit: Fixed double schema registration, Color4 type fix
+- [x] City terrain: 5 district grounds, roads, river, bay, spawn at City Hall
+- [x] Buildings: 9 landmarks + 60 purchasable plots (12 per district)
+- [x] Day/night cycle: 10-min sun rotation, sky color transitions, light intensity
+- [x] Minimap: Canvas-based 150px map with district colors and player dots
+- [x] Wired buildings + day/night into MainScene

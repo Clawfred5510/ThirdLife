@@ -1,3 +1,3 @@
 // Entity factories — create game objects from components
-// Examples: createPlayer(), createBuilding(), createNPC()
-export {};
+export { spawnBuildings } from './buildings';
+export type { BuildingDef } from './buildings';
