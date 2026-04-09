@@ -1,7 +1,8 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
-import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, getPlayerProperties, seedProperties } from '../db';
+import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS } from '@gamestu/shared';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties } from '../db';
+import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
@@ -92,6 +93,48 @@ export class GameRoom extends Room<GameState> {
       }
     });
 
+    this.onMessage(MessageType.PLAYER_COLOR, (client: Client, data: { color: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.color !== 'string') return;
+      player.color = data.color;
+    });
+
+    this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const stop = BUS_STOPS[data.stopIndex];
+      if (!stop) return;
+      player.x = stop.x;
+      player.z = stop.z;
+    });
+
+    // ---- Job system handlers ----
+
+    this.onMessage(MessageType.JOB_BOARD, (client: Client) => {
+      client.send(MessageType.JOB_BOARD, { jobs: getJobBoard() });
+    });
+
+    this.onMessage(MessageType.JOB_START, (client: Client, data: { jobType: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.jobType !== 'string') return;
+
+      const job = startJob(client.sessionId, data.jobType);
+      if (!job) {
+        client.send(MessageType.JOB_START, { error: 'Cannot start job (cooldown or invalid type)' });
+        return;
+      }
+
+      client.send(MessageType.JOB_START, {
+        jobType: job.jobType,
+        objectives: job.objectives.map(o => ({ type: o.type, x: o.x, z: o.z, radius: o.radius, duration: o.duration, completed: o.completed })),
+        timeLimit: job.timeLimit,
+        currentObjective: job.currentObjective,
+      });
+      console.log(`${player.name} started job: ${job.jobType}`);
+    });
+
     console.log(`GameRoom created: ${this.roomId}`);
   }
 
@@ -123,6 +166,7 @@ export class GameRoom extends Room<GameState> {
     }
     this.state.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
+    cancelJob(client.sessionId);
   }
 
   update(deltaTime: number) {
@@ -148,7 +192,81 @@ export class GameRoom extends Room<GameState> {
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
 
-    // Future: physics, NPC AI, economy ticks
+    // ---- Job system tick ----
+    for (const playerId of getActiveJobPlayerIds()) {
+      const player = this.state.players.get(playerId);
+      if (!player) continue;
+
+      const client = this.clients.find(c => c.sessionId === playerId);
+      if (!client) continue;
+
+      // Check time expiry first
+      if (checkTimeExpired(playerId)) {
+        client.send(MessageType.JOB_COMPLETE, { success: false, reason: 'Time expired', reward: 0 });
+        continue;
+      }
+
+      const job = getActiveJob(playerId);
+      if (!job) continue;
+
+      // Shop assistant wait-progress tick
+      if (job.jobType === 'shop_assistant') {
+        const waitResult = tickWaitProgress(playerId, player.x, player.z, dt);
+        if (waitResult) {
+          if (waitResult.jobDone) {
+            // Persist earnings
+            const newCredits = player.credits + waitResult.reward;
+            updatePlayerCredits(playerId, newCredits);
+            player.credits = newCredits;
+            client.send(MessageType.JOB_COMPLETE, { success: true, reward: waitResult.reward });
+            client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+          } else if (waitResult.shiftDone) {
+            const updatedJob = getActiveJob(playerId);
+            client.send(MessageType.JOB_UPDATE, {
+              shiftComplete: true,
+              shiftReward: waitResult.reward,
+              shiftsCompleted: updatedJob?.shiftsCompleted ?? 0,
+              maxShifts: updatedJob?.maxShifts ?? 3,
+              waitProgress: 0,
+            });
+          }
+        } else {
+          // Send wait progress update
+          client.send(MessageType.JOB_UPDATE, {
+            currentObjective: job.currentObjective,
+            waitProgress: job.waitProgress,
+            remaining: getRemainingTime(playerId),
+          });
+        }
+        continue;
+      }
+
+      // For goto/interact jobs — check if player reached current objective
+      const result = checkObjective(playerId, player.x, player.z);
+      if (result.jobDone) {
+        // Persist earnings
+        const newCredits = player.credits + result.reward;
+        updatePlayerCredits(playerId, newCredits);
+        player.credits = newCredits;
+        client.send(MessageType.JOB_COMPLETE, { success: true, reward: result.reward });
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      } else if (result.completed) {
+        // Objective completed but job continues
+        const updatedJob = getActiveJob(playerId);
+        client.send(MessageType.JOB_UPDATE, {
+          currentObjective: updatedJob?.currentObjective ?? 0,
+          spotReward: result.reward,
+          remaining: getRemainingTime(playerId),
+        });
+      } else {
+        // Send periodic progress (only every ~1 sec to reduce bandwidth — check tick count)
+        // For simplicity, send every tick; the client can throttle display updates
+        client.send(MessageType.JOB_UPDATE, {
+          currentObjective: job.currentObjective,
+          remaining: getRemainingTime(playerId),
+        });
+      }
+    }
   }
 
   onDispose() {

@@ -8,6 +8,7 @@ export class PlayerState extends Schema {
   @type('number') z: number = 0;
   @type('number') rotation: number = 0;
   @type('number') credits: number = 500;
+  @type('string') color: string = '#3366cc';
 }
 
 export class GameState extends Schema {

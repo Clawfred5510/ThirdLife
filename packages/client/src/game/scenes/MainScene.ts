@@ -2,6 +2,7 @@ import {
   Scene,
   Engine,
   ArcRotateCamera,
+  FollowCamera,
   HemisphericLight,
   MeshBuilder,
   Vector3,
@@ -22,6 +23,7 @@ import {
 import { PlayerInput, TICK_RATE, PLAYER_SPEED } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings } from '../entities/buildings';
+import { spawnNPCs } from '../entities/npcs';
 
 /** Module-level reference to the active DayNightCycle for external access. */
 let activeDayNight: DayNightCycle | null = null;
@@ -30,6 +32,14 @@ let activeDayNight: DayNightCycle | null = null;
 export function getDayNightCycle(): DayNightCycle | null {
   return activeDayNight;
 }
+
+/** Convert a hex color string (e.g. '#3366cc') to a Babylon Color3. */
+const hexToColor3 = (hex: string): Color3 => {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return new Color3(r, g, b);
+};
 
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
@@ -40,6 +50,8 @@ interface RemotePlayer {
   targetX: number;
   targetY: number;
   targetZ: number;
+  /** Last known color hex, used to detect changes. */
+  currentColor: string;
 }
 
 /** How quickly remote meshes interpolate toward their target (0-1, applied per-frame). */
@@ -64,6 +76,12 @@ export class MainScene {
   /** Timestamp of the last input sent to the server (for throttling). */
   private lastInputTime = 0;
 
+  /** Reference to the initial ArcRotateCamera so it can be disposed when follow camera activates. */
+  private arcCamera: ArcRotateCamera | null = null;
+
+  /** Scene reference for creating follow camera later. */
+  private sceneRef: Scene | null = null;
+
   constructor(
     private engine: Engine,
     private canvas: HTMLCanvasElement,
@@ -73,11 +91,13 @@ export class MainScene {
     const scene = new Scene(this.engine);
     scene.clearColor = new Color4(0.53, 0.81, 0.92, 1);
 
-    // Camera
+    // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
     camera.attachControl(this.canvas, true);
     camera.lowerRadiusLimit = 5;
     camera.upperRadiusLimit = 100;
+    this.arcCamera = camera;
+    this.sceneRef = scene;
 
     // Lighting
     const light = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
@@ -164,6 +184,9 @@ export class MainScene {
     // Fullscreen GUI layer for floating player name labels
     this.labelUI = AdvancedDynamicTexture.CreateFullscreenUI('playerLabelsUI', true, scene);
 
+    // ---- NPCs ----
+    spawnNPCs(scene, this.labelUI);
+
     // ---- Network listeners ----
 
     onPlayerAdd((sessionId: string, player: PlayerSnapshot) => {
@@ -202,7 +225,8 @@ export class MainScene {
     mesh.position.set(player.x, player.y + 1, player.z);
 
     const mat = new StandardMaterial(`playerMat_${sessionId}`, scene);
-    mat.diffuseColor = isLocal ? new Color3(0.2, 0.4, 0.8) : new Color3(0.8, 0.3, 0.2);
+    const playerColor = player.color || (isLocal ? '#3366cc' : '#cc4d33');
+    mat.diffuseColor = hexToColor3(playerColor);
     mesh.material = mat;
 
     // Floating name label
@@ -230,7 +254,28 @@ export class MainScene {
       targetX: player.x,
       targetY: player.y,
       targetZ: player.z,
+      currentColor: playerColor,
     });
+
+    // Switch to third-person FollowCamera when the local player mesh is ready
+    if (isLocal && this.sceneRef) {
+      const followCam = new FollowCamera('followCamera', new Vector3(player.x, player.y + 15, player.z + 15), this.sceneRef);
+      followCam.lockedTarget = mesh;
+      followCam.radius = 15;
+      followCam.heightOffset = 8;
+      followCam.rotationOffset = 180;
+      followCam.cameraAcceleration = 0.05;
+      followCam.maxCameraSpeed = 10;
+
+      this.sceneRef.activeCamera = followCam;
+
+      // Dispose the initial ArcRotateCamera
+      if (this.arcCamera) {
+        this.arcCamera.detachControl();
+        this.arcCamera.dispose();
+        this.arcCamera = null;
+      }
+    }
   }
 
   private removeRemotePlayer(sessionId: string): void {
@@ -248,6 +293,15 @@ export class MainScene {
       remote.targetX = player.x;
       remote.targetY = player.y;
       remote.targetZ = player.z;
+
+      // Update mesh color if it changed
+      if (player.color && player.color !== remote.currentColor) {
+        const mat = remote.mesh.material as StandardMaterial;
+        if (mat) {
+          mat.diffuseColor = hexToColor3(player.color);
+        }
+        remote.currentColor = player.color;
+      }
 
       // For local player: snap to server position if prediction drifted too far
       if (sessionId === getSessionId()) {

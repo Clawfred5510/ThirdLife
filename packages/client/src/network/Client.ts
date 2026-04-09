@@ -15,6 +15,7 @@ export interface PlayerSnapshot {
   y: number;
   z: number;
   rotation: number;
+  color: string;
 }
 
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;
@@ -23,6 +24,8 @@ export type PlayerChangeCallback = (sessionId: string, player: PlayerSnapshot) =
 export type ChatCallback = (message: ChatMessage) => void;
 export type CreditsUpdateCallback = (credits: number) => void;
 export type PropertyUpdateCallback = (update: { propertyId: number; ownerId: string; ownerName: string }) => void;
+export type JobUpdateCallback = (update: { jobType: string; objective: string; timeRemaining: number; progress: string }) => void;
+export type JobCompleteCallback = (result: { jobType: string; reward: number }) => void;
 
 // ---------- Registered listeners ----------
 
@@ -32,6 +35,8 @@ const onPlayerChangeListeners: PlayerChangeCallback[] = [];
 const onChatListeners: ChatCallback[] = [];
 const onCreditsUpdateListeners: CreditsUpdateCallback[] = [];
 const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
+const onJobUpdateListeners: JobUpdateCallback[] = [];
+const onJobCompleteListeners: JobCompleteCallback[] = [];
 
 /** Subscribe and return an unsubscribe function to avoid listener leaks. */
 export function onPlayerAdd(cb: PlayerAddCallback): () => void {
@@ -82,6 +87,22 @@ export function onPropertyUpdate(cb: PropertyUpdateCallback): () => void {
   };
 }
 
+export function onJobUpdate(cb: JobUpdateCallback): () => void {
+  onJobUpdateListeners.push(cb);
+  return () => {
+    const idx = onJobUpdateListeners.indexOf(cb);
+    if (idx !== -1) onJobUpdateListeners.splice(idx, 1);
+  };
+}
+
+export function onJobComplete(cb: JobCompleteCallback): () => void {
+  onJobCompleteListeners.push(cb);
+  return () => {
+    const idx = onJobCompleteListeners.indexOf(cb);
+    if (idx !== -1) onJobCompleteListeners.splice(idx, 1);
+  };
+}
+
 // ---------- Helpers ----------
 
 function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
@@ -92,6 +113,7 @@ function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
     y: player['y'] as number,
     z: player['z'] as number,
     rotation: player['rotation'] as number,
+    color: (player['color'] as string) ?? '#3366cc',
   };
 }
 
@@ -132,6 +154,14 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onPropertyUpdateListeners) cb(msg);
   });
 
+  room.onMessage(MessageType.JOB_UPDATE, (msg: { jobType: string; objective: string; timeRemaining: number; progress: string }) => {
+    for (const cb of onJobUpdateListeners) cb(msg);
+  });
+
+  room.onMessage(MessageType.JOB_COMPLETE, (msg: { jobType: string; reward: number }) => {
+    for (const cb of onJobCompleteListeners) cb(msg);
+  });
+
   console.log(`Connected to room: ${room.roomId}`);
   return room;
 }
@@ -158,6 +188,18 @@ export function sendBuyProperty(propertyId: number): void {
 
 export function sendPlayerColor(color: string): void {
   room?.send(MessageType.PLAYER_COLOR, { color });
+}
+
+export function sendFastTravel(stopIndex: number): void {
+  room?.send(MessageType.FAST_TRAVEL, { stopIndex });
+}
+
+export function sendJobStart(jobType: string): void {
+  room?.send(MessageType.JOB_START, { jobType });
+}
+
+export function sendJobBoard(): void {
+  room?.send(MessageType.JOB_BOARD, {});
 }
 
 export function getPlayerName(): string | null {

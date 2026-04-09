@@ -6,6 +6,8 @@ import { Minimap } from './components/Minimap';
 import { Wallet } from './components/Wallet';
 import { PropertyPanel } from './components/PropertyPanel';
 import { GameMenu } from './components/GameMenu';
+import { JobBoard } from './components/JobBoard';
+import { FastTravel } from './components/FastTravel';
 
 export const App: React.FC = () => {
   return (
@@ -17,6 +19,8 @@ export const App: React.FC = () => {
       <Minimap />
       <PropertyPanel />
       <GameMenu />
+      <JobBoard />
+      <FastTravel />
     </>
   );
 };
