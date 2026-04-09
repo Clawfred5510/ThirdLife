@@ -10,6 +10,7 @@ export interface PlayerInput {
   left: boolean;
   right: boolean;
   jump: boolean;
+  rotation?: number; // facing direction in radians
 }
 
 export interface PlayerData {
@@ -25,6 +26,12 @@ export interface BuildingData {
   name: string;
   position: Vec3;
   type: string;
+}
+
+export interface ChatMessage {
+  senderId: string;
+  senderName: string;
+  text: string;
 }
 
 export enum MessageType {

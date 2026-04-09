@@ -6,14 +6,7 @@
 - None
 
 ### Backlog
-- [ ] TASK-004: Implement basic chat system (send/receive messages)
-- [ ] TASK-005: Add player connect/disconnect visual feedback
-- [ ] TASK-006: Add server-side input validation
-- [ ] TASK-007: Client-side prediction for smooth movement
-- [ ] TASK-008: Basic ground collision detection
-- [ ] TASK-009: Input throttling (match server tick rate, reduce bandwidth)
-- [ ] TASK-010: Player rotation sync
-- [ ] TASK-011: Player name labels (billboard text above meshes)
+(Phase 1 COMPLETE — moving to Phase 2)
 
 ### Done
 - [x] Project scaffolding and monorepo setup
@@ -24,5 +17,14 @@
 - [x] TASK-001: Player movement with WASD/arrow keyboard input
 - [x] TASK-002: Player position sync (server-authoritative, delta-time, input buffering)
 - [x] TASK-003: Remote player mesh rendering with lerp interpolation
+- [x] TASK-004: Chat system with React UI, sender names, message sanitization
+- [x] TASK-005: Player connect/disconnect toasts, HUD player count + connection status
+- [x] TASK-006: Server-side input validation, world bounds clamping (-1000 to 1000)
+- [x] TASK-008: Ground collision (Y clamp) + ground expanded to 2000x2000
+- [x] TASK-010: Player rotation sync (optional in input, server applies)
+- [x] TASK-011: Player name labels (billboard GUI text above meshes)
 - [x] Economy design document (currency, jobs, property market, anti-exploit)
 - [x] City layout design — Haven Point (5 districts, ~605 plots, spawn at City Hall)
+- [x] TASK-007: Client-side prediction (instant local movement, snap correction >2 units)
+- [x] TASK-009: Input throttling (20Hz match, 66% bandwidth reduction)
+- [x] QA audit: Fixed double schema registration, Color4 type fix

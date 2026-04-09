@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus.js';
-import { DEFAULT_SERVER_PORT, MessageType, PlayerInput } from '@gamestu/shared';
+import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage } from '@gamestu/shared';
 
 const SERVER_URL = `ws://localhost:${DEFAULT_SERVER_PORT}`;
 
@@ -20,12 +20,14 @@ export interface PlayerSnapshot {
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;
 export type PlayerRemoveCallback = (sessionId: string) => void;
 export type PlayerChangeCallback = (sessionId: string, player: PlayerSnapshot) => void;
+export type ChatCallback = (message: ChatMessage) => void;
 
 // ---------- Registered listeners ----------
 
 const onPlayerAddListeners: PlayerAddCallback[] = [];
 const onPlayerRemoveListeners: PlayerRemoveCallback[] = [];
 const onPlayerChangeListeners: PlayerChangeCallback[] = [];
+const onChatListeners: ChatCallback[] = [];
 
 export function onPlayerAdd(cb: PlayerAddCallback): void {
   onPlayerAddListeners.push(cb);
@@ -37,6 +39,10 @@ export function onPlayerRemove(cb: PlayerRemoveCallback): void {
 
 export function onPlayerChange(cb: PlayerChangeCallback): void {
   onPlayerChangeListeners.push(cb);
+}
+
+export function onChat(cb: ChatCallback): void {
+  onChatListeners.push(cb);
 }
 
 // ---------- Helpers ----------
@@ -77,6 +83,10 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onPlayerRemoveListeners) cb(sessionId);
   });
 
+  room.onMessage(MessageType.CHAT, (msg: ChatMessage) => {
+    for (const cb of onChatListeners) cb(msg);
+  });
+
   console.log(`Connected to room: ${room.roomId}`);
   return room;
 }
@@ -91,6 +101,10 @@ export function getSessionId(): string | null {
 
 export function sendInput(input: PlayerInput): void {
   room?.send(MessageType.PLAYER_INPUT, input);
+}
+
+export function sendChat(text: string): void {
+  room?.send(MessageType.CHAT, { text });
 }
 
 export function disconnect(): void {

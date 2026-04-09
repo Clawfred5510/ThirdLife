@@ -1,6 +1,6 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
-import { TICK_RATE, PLAYER_SPEED, MessageType, PlayerInput } from '@gamestu/shared';
+import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput } from '@gamestu/shared';
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
@@ -16,6 +16,17 @@ export class GameRoom extends Room<GameState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
+      // Validate that all input fields are booleans
+      if (
+        typeof input.forward !== 'boolean' ||
+        typeof input.backward !== 'boolean' ||
+        typeof input.left !== 'boolean' ||
+        typeof input.right !== 'boolean' ||
+        typeof input.jump !== 'boolean'
+      ) {
+        return; // reject garbage input
+      }
+
       // Store latest input — applied in update() with real delta time.
       // Clear when no movement requested so update() doesn't keep moving the player.
       if (input.forward || input.backward || input.left || input.right) {
@@ -26,9 +37,18 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
+      if (typeof message.text !== 'string') return;
+
+      const text = message.text.trim().slice(0, 200);
+      if (text.length === 0) return;
+
+      const player = this.state.players.get(client.sessionId);
+      const senderName = player?.name ?? 'Unknown';
+
       this.broadcast(MessageType.CHAT, {
         senderId: client.sessionId,
-        text: message.text,
+        senderName,
+        text,
       });
     });
 
@@ -70,6 +90,13 @@ export class GameRoom extends Room<GameState> {
       if (input.backward) player.z += speed;
       if (input.left) player.x -= speed;
       if (input.right) player.x += speed;
+
+      // Sync rotation from client input
+      player.rotation = input.rotation ?? player.rotation;
+
+      // Clamp positions to world bounds
+      player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
+      player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
 
     // Future: physics, NPC AI, economy ticks
