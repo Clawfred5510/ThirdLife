@@ -34,3 +34,6 @@ coverage/
 
 # Assets (large binary files tracked separately)
 *.blend1
+
+# SQLite database
+data/

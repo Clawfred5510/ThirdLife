@@ -1,6 +1,7 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput } from '@gamestu/shared';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, getPlayerProperties } from '../db';
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
@@ -52,26 +53,52 @@ export class GameRoom extends Room<GameState> {
       });
     });
 
+    this.onMessage(MessageType.BUY_PROPERTY, (client: Client, data: { propertyId: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.propertyId !== 'number') return;
+
+      const success = purchaseProperty(data.propertyId, client.sessionId);
+      if (success) {
+        // Reload credits from DB and sync to Colyseus state
+        player.credits = getPlayerCreditsFromDb(client.sessionId);
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+        // Broadcast property ownership change to all clients
+        this.broadcast(MessageType.PROPERTY_UPDATE, {
+          propertyId: data.propertyId,
+          ownerId: client.sessionId,
+          ownerName: player.name,
+        });
+        console.log(`${player.name} purchased property #${data.propertyId}`);
+      } else {
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits, error: 'Purchase failed' });
+      }
+    });
+
     console.log(`GameRoom created: ${this.roomId}`);
   }
 
   onJoin(client: Client, options: { name?: string }) {
+    const displayName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
+    const row = getOrCreatePlayer(client.sessionId, displayName);
+
     const player = new PlayerState();
     player.id = client.sessionId;
-    player.name = options.name || `Player_${client.sessionId.slice(0, 4)}`;
-    // Spawn near City Hall (design: 1400,800 → babylon: 400, -200)
-    player.x = 400 + (Math.random() * 20 - 10);
-    player.y = 0;
-    player.z = -200 + (Math.random() * 20 - 10);
+    player.name = row.name;
+    player.x = row.x;
+    player.y = row.y;
+    player.z = row.z;
+    player.credits = row.credits;
 
     this.state.players.set(client.sessionId, player);
-    console.log(`${player.name} joined (${client.sessionId})`);
+    console.log(`${player.name} joined (${client.sessionId}) — credits: ${player.credits}`);
   }
 
   onLeave(client: Client) {
     const player = this.state.players.get(client.sessionId);
     if (player) {
-      console.log(`${player.name} left (${client.sessionId})`);
+      savePlayerPosition(client.sessionId, player.x, player.y, player.z);
+      console.log(`${player.name} left (${client.sessionId}) — position saved`);
     }
     this.state.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);

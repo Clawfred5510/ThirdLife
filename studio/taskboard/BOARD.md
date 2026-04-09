@@ -6,7 +6,7 @@
 - None
 
 ### Backlog
-(Phase 1 & 2 COMPLETE — moving to Phase 3: Economy & Persistence)
+(Phases 1-3 COMPLETE — moving to Phase 4: Polish & Content)
 
 ### Done
 - [x] Project scaffolding and monorepo setup
@@ -33,3 +33,12 @@
 - [x] Day/night cycle: 10-min sun rotation, sky color transitions, light intensity
 - [x] Minimap: Canvas-based 150px map with district colors and player dots
 - [x] Wired buildings + day/night into MainScene
+- [x] SQLite database with players + properties tables, WAL mode
+- [x] Player persistence (save position on leave, restore on join)
+- [x] Credits in PlayerState, synced to client
+- [x] Property purchase handler (server validates, deducts credits, broadcasts)
+- [x] Wallet UI (credits display in HUD)
+- [x] PropertyPanel UI (E to interact, buy button, ownership display)
+- [x] Economy message types (BUY_PROPERTY, CREDITS_UPDATE, PROPERTY_UPDATE)
+- [x] Jobs design doc (4 starter jobs with payout formulas)
+- [x] Tutorial design doc (5-minute guided flow, ends at 775 CR)

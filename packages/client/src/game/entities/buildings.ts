@@ -124,7 +124,7 @@ function generatePurchasablePlots(): BuildingDef[] {
 // Combined building list
 // ---------------------------------------------------------------------------
 
-const ALL_BUILDINGS: BuildingDef[] = [...LANDMARKS, ...generatePurchasablePlots()];
+export const ALL_BUILDINGS: BuildingDef[] = [...LANDMARKS, ...generatePurchasablePlots()];
 
 // ---------------------------------------------------------------------------
 // Public API

@@ -7,6 +7,7 @@ export class PlayerState extends Schema {
   @type('number') y: number = 0;
   @type('number') z: number = 0;
   @type('number') rotation: number = 0;
+  @type('number') credits: number = 500;
 }
 
 export class GameState extends Schema {

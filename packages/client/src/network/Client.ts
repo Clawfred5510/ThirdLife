@@ -21,6 +21,8 @@ export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => v
 export type PlayerRemoveCallback = (sessionId: string) => void;
 export type PlayerChangeCallback = (sessionId: string, player: PlayerSnapshot) => void;
 export type ChatCallback = (message: ChatMessage) => void;
+export type CreditsUpdateCallback = (credits: number) => void;
+export type PropertyUpdateCallback = (update: { propertyId: number; ownerId: string; ownerName: string }) => void;
 
 // ---------- Registered listeners ----------
 
@@ -28,6 +30,8 @@ const onPlayerAddListeners: PlayerAddCallback[] = [];
 const onPlayerRemoveListeners: PlayerRemoveCallback[] = [];
 const onPlayerChangeListeners: PlayerChangeCallback[] = [];
 const onChatListeners: ChatCallback[] = [];
+const onCreditsUpdateListeners: CreditsUpdateCallback[] = [];
+const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
 
 export function onPlayerAdd(cb: PlayerAddCallback): void {
   onPlayerAddListeners.push(cb);
@@ -43,6 +47,14 @@ export function onPlayerChange(cb: PlayerChangeCallback): void {
 
 export function onChat(cb: ChatCallback): void {
   onChatListeners.push(cb);
+}
+
+export function onCreditsUpdate(cb: CreditsUpdateCallback): void {
+  onCreditsUpdateListeners.push(cb);
+}
+
+export function onPropertyUpdate(cb: PropertyUpdateCallback): void {
+  onPropertyUpdateListeners.push(cb);
 }
 
 // ---------- Helpers ----------
@@ -87,6 +99,14 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onChatListeners) cb(msg);
   });
 
+  room.onMessage(MessageType.CREDITS_UPDATE, (msg: { credits: number }) => {
+    for (const cb of onCreditsUpdateListeners) cb(msg.credits);
+  });
+
+  room.onMessage(MessageType.PROPERTY_UPDATE, (msg: { propertyId: number; ownerId: string; ownerName: string }) => {
+    for (const cb of onPropertyUpdateListeners) cb(msg);
+  });
+
   console.log(`Connected to room: ${room.roomId}`);
   return room;
 }
@@ -105,6 +125,10 @@ export function sendInput(input: PlayerInput): void {
 
 export function sendChat(text: string): void {
   room?.send(MessageType.CHAT, { text });
+}
+
+export function sendBuyProperty(propertyId: number): void {
+  room?.send(MessageType.BUY_PROPERTY, { propertyId });
 }
 
 export function disconnect(): void {

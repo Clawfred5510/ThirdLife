@@ -39,4 +39,7 @@ export enum MessageType {
   CHAT = 'chat',
   BUILD = 'build',
   INTERACT = 'interact',
+  BUY_PROPERTY = 'buy_property',
+  CREDITS_UPDATE = 'credits_update',
+  PROPERTY_UPDATE = 'property_update',
 }
