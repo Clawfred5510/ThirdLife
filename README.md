@@ -20,7 +20,7 @@ npm run dev:server
 # Start the client dev server (port 3000, opens browser)
 npm run dev:client
 
-# Start the studio dashboard (port 3001, opens browser)
+# Start the studio dashboard (port 3002, opens browser)
 npm run dev:dashboard
 ```
 

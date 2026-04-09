@@ -65,7 +65,7 @@ export const HealthMonitor: React.FC = () => {
           <div style={styles.cardTitle}>Dashboard</div>
           <div style={{ ...styles.indicator, background: '#3fb950' }} />
           <div style={{ ...styles.status, color: '#3fb950' }}>Running</div>
-          <div style={styles.detail}>Port: 3001</div>
+          <div style={styles.detail}>Port: 3002</div>
         </div>
       </div>
 

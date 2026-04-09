@@ -5,6 +5,9 @@ import { TICK_RATE, PLAYER_SPEED, MessageType, PlayerInput } from '@gamestu/shar
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
 
+  /** Latest input per player, consumed each server tick. */
+  private pendingInputs = new Map<string, PlayerInput>();
+
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
@@ -13,13 +16,13 @@ export class GameRoom extends Room<GameState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
 
-      const delta = (deltaTime: number) => PLAYER_SPEED * (deltaTime / 1000);
-      const speed = delta(16); // ~60fps equivalent
-
-      if (input.forward) player.z -= speed;
-      if (input.backward) player.z += speed;
-      if (input.left) player.x -= speed;
-      if (input.right) player.x += speed;
+      // Store latest input — applied in update() with real delta time.
+      // Clear when no movement requested so update() doesn't keep moving the player.
+      if (input.forward || input.backward || input.left || input.right) {
+        this.pendingInputs.set(client.sessionId, input);
+      } else {
+        this.pendingInputs.delete(client.sessionId);
+      }
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
@@ -50,9 +53,25 @@ export class GameRoom extends Room<GameState> {
       console.log(`${player.name} left (${client.sessionId})`);
     }
     this.state.players.delete(client.sessionId);
+    this.pendingInputs.delete(client.sessionId);
   }
 
-  update(_deltaTime: number) {
+  update(deltaTime: number) {
+    // deltaTime is in milliseconds from Colyseus simulation interval
+    const dt = deltaTime / 1000; // convert to seconds
+
+    this.pendingInputs.forEach((input, sessionId) => {
+      const player = this.state.players.get(sessionId);
+      if (!player) return;
+
+      const speed = PLAYER_SPEED * dt;
+
+      if (input.forward) player.z -= speed;
+      if (input.backward) player.z += speed;
+      if (input.left) player.x -= speed;
+      if (input.right) player.x += speed;
+    });
+
     // Future: physics, NPC AI, economy ticks
   }
 
