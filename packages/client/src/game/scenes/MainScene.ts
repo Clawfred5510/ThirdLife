@@ -94,6 +94,7 @@ export class MainScene {
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
     camera.attachControl(this.canvas, true);
+    camera.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
     camera.lowerRadiusLimit = 5;
     camera.upperRadiusLimit = 100;
     this.arcCamera = camera;
@@ -221,13 +222,28 @@ export class MainScene {
 
   private addRemotePlayer(sessionId: string, player: PlayerSnapshot, scene: Scene): void {
     const isLocal = sessionId === getSessionId();
-    const mesh = MeshBuilder.CreateBox(`player_${sessionId}`, { size: 1, height: 2 }, scene);
-    mesh.position.set(player.x, player.y + 1, player.z);
+
+    // Capsule body + sphere head for a humanoid silhouette
+    const mesh = MeshBuilder.CreateCapsule(`player_${sessionId}`, {
+      height: 1.8,
+      radius: 0.3,
+      tessellation: 12,
+      subdivisions: 1,
+    }, scene);
+    mesh.position.set(player.x, player.y + 0.9, player.z);
 
     const mat = new StandardMaterial(`playerMat_${sessionId}`, scene);
     const playerColor = player.color || (isLocal ? '#3366cc' : '#cc4d33');
     mat.diffuseColor = hexToColor3(playerColor);
     mesh.material = mat;
+
+    // Head sphere parented to body
+    const head = MeshBuilder.CreateSphere(`head_${sessionId}`, { diameter: 0.4, segments: 8 }, scene);
+    head.parent = mesh;
+    head.position.y = 0.65; // relative to capsule center
+    const headMat = new StandardMaterial(`headMat_${sessionId}`, scene);
+    headMat.diffuseColor = hexToColor3(playerColor);
+    head.material = headMat;
 
     // Floating name label
     const labelRect = new Rectangle(`label_${sessionId}`);
@@ -246,7 +262,7 @@ export class MainScene {
 
     this.labelUI.addControl(labelRect);
     labelRect.linkWithMesh(mesh);
-    labelRect.linkOffsetY = -120;
+    labelRect.linkOffsetY = -110;
 
     this.remotePlayers.set(sessionId, {
       mesh,
@@ -266,6 +282,7 @@ export class MainScene {
       followCam.rotationOffset = 180;
       followCam.cameraAcceleration = 0.05;
       followCam.maxCameraSpeed = 10;
+      followCam.inputs.removeByType('FollowCameraKeyboardMoveInput');
 
       this.sceneRef.activeCamera = followCam;
 
@@ -347,12 +364,12 @@ export class MainScene {
     this.remotePlayers.forEach((remote) => {
       const pos = remote.mesh.position;
       pos.x += (remote.targetX - pos.x) * LERP_FACTOR;
-      pos.y += (remote.targetY + 1 - pos.y) * LERP_FACTOR; // +1 for half-height offset
+      pos.y += (remote.targetY + 0.9 - pos.y) * LERP_FACTOR; // +0.9 for capsule half-height
       pos.z += (remote.targetZ - pos.z) * LERP_FACTOR;
 
-      // Clamp Y to ground level (half-height = 1.0) to prevent drift below terrain
-      if (pos.y < 1.0) {
-        pos.y = 1.0;
+      // Clamp Y to ground level (capsule half-height = 0.9) to prevent drift below terrain
+      if (pos.y < 0.9) {
+        pos.y = 0.9;
       }
     });
   }
@@ -360,11 +377,21 @@ export class MainScene {
   // ---------- Keyboard ----------
 
   private setupKeyboardInput(): void {
-    const onKey = (e: KeyboardEvent, down: boolean) => {
-      this.keys[e.code] = down;
-    };
-    window.addEventListener('keydown', (e) => onKey(e, true));
-    window.addEventListener('keyup', (e) => onKey(e, false));
+    const gameKeys = new Set([
+      'KeyW', 'KeyA', 'KeyS', 'KeyD',
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Space',
+    ]);
+
+    window.addEventListener('keydown', (e) => {
+      if (gameKeys.has(e.code)) e.preventDefault();
+      this.keys[e.code] = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (gameKeys.has(e.code)) e.preventDefault();
+      this.keys[e.code] = false;
+    });
   }
 
   private sendPlayerInput(): void {
