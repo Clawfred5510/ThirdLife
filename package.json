@@ -1,0 +1,27 @@
+{
+  "name": "gamestu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GameStu — Virtual Game Studio. Home of ThirdLife.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:client": "npm run dev --workspace=packages/client",
+    "dev:server": "npm run dev --workspace=packages/server",
+    "dev:dashboard": "npm run dev --workspace=packages/dashboard",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint 'packages/*/src/**/*.{ts,tsx}'",
+    "lint:fix": "eslint 'packages/*/src/**/*.{ts,tsx}' --fix",
+    "format": "prettier --write 'packages/*/src/**/*.{ts,tsx}'",
+    "format:check": "prettier --check 'packages/*/src/**/*.{ts,tsx}'"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0"
+  }
+}

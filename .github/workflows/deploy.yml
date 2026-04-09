@@ -1,0 +1,35 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'packages/client/**'
+      - 'packages/server/**'
+      - 'packages/shared/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # TODO: Add deployment steps
+      # Options: Vercel (client), Railway/Fly.io (server)
+      - name: Deploy placeholder
+        run: echo "Deployment not yet configured. Build artifacts ready in packages/*/dist/"
