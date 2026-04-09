@@ -94,6 +94,7 @@ export class MainScene {
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
     camera.attachControl(this.canvas, true);
+    scene.activeCamera = camera;
     camera.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
     camera.lowerRadiusLimit = 5;
     camera.upperRadiusLimit = 100;

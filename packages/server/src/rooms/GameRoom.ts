@@ -154,6 +154,8 @@ export class GameRoom extends Room<GameState> {
     player.y = row.y;
     player.z = row.z;
     player.credits = row.credits;
+    player.color = '#3366cc';
+    player.rotation = 0;
 
     this.state.players.set(client.sessionId, player);
 

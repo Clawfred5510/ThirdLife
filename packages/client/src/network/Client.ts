@@ -139,12 +139,10 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onPlayerAddListeners) cb(sessionId, snap);
 
     // Listen for field changes on this player schema instance
-    if (typeof (player as Record<string, unknown>)['onChange'] === 'function') {
-      (player as { onChange: (cb: () => void) => void }).onChange(() => {
-        const updated = snapshotFromSchema(player);
-        for (const cb of onPlayerChangeListeners) cb(sessionId, updated);
-      });
-    }
+    (player as any).onChange(() => {
+      const updated = snapshotFromSchema(player);
+      for (const cb of onPlayerChangeListeners) cb(sessionId, updated);
+    });
   });
 
   room.state.players.onRemove((_player: Record<string, unknown>, sessionId: string) => {
