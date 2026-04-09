@@ -13,6 +13,7 @@ export interface PlayerRow {
   y: number;
   z: number;
   last_login: string | null;
+  tutorial_done: number;
 }
 
 export interface PropertyRow {
@@ -48,8 +49,10 @@ db.exec(`
     x REAL DEFAULT 400,
     y REAL DEFAULT 0,
     z REAL DEFAULT -200,
-    last_login TEXT
+    last_login TEXT,
+    tutorial_done INTEGER DEFAULT 0
   );
+
 
   CREATE TABLE IF NOT EXISTS properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +64,13 @@ db.exec(`
     FOREIGN KEY (owner_id) REFERENCES players(id)
   );
 `);
+
+// Safely add tutorial_done column for existing databases
+try {
+  db.exec(`ALTER TABLE players ADD COLUMN tutorial_done INTEGER DEFAULT 0`);
+} catch (_) {
+  // Column already exists — ignore
+}
 
 // ── Prepared statements ────────────────────────────────────────────────────
 
@@ -98,8 +108,20 @@ const stmtGetPlayerProperties = db.prepare<[string]>(
 
 const stmtCountProperties = db.prepare('SELECT COUNT(*) AS cnt FROM properties');
 
-const stmtInsertProperty = db.prepare<[string, string, number]>(
-  'INSERT INTO properties (building_name, district, price) VALUES (?, ?, ?)',
+const stmtInsertProperty = db.prepare<[string, string, number, number]>(
+  'INSERT INTO properties (building_name, district, price, revenue_rate) VALUES (?, ?, ?, ?)',
+);
+
+const stmtGetPlayerTotalRevenue = db.prepare<[string]>(
+  'SELECT COALESCE(SUM(revenue_rate), 0) AS total FROM properties WHERE owner_id = ?',
+);
+
+const stmtIsTutorialDone = db.prepare<[string]>(
+  'SELECT tutorial_done FROM players WHERE id = ?',
+);
+
+const stmtMarkTutorialDone = db.prepare<[string]>(
+  'UPDATE players SET tutorial_done = 1 WHERE id = ?',
 );
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -152,17 +174,31 @@ export function getPlayerProperties(playerId: string): PropertyRow[] {
 }
 
 export function seedProperties(
-  buildings: Array<{ name: string; district: string; price: number }>,
+  buildings: Array<{ name: string; district: string; price: number; revenue_rate: number }>,
 ): void {
   const { cnt } = stmtCountProperties.get() as { cnt: number };
   if (cnt > 0) return; // already seeded
 
   const insertMany = db.transaction(() => {
     for (const b of buildings) {
-      stmtInsertProperty.run(b.name, b.district, b.price);
+      stmtInsertProperty.run(b.name, b.district, b.price, b.revenue_rate);
     }
   });
   insertMany();
+}
+
+export function getPlayerTotalRevenue(playerId: string): number {
+  const row = stmtGetPlayerTotalRevenue.get(playerId) as { total: number };
+  return row.total;
+}
+
+export function isTutorialDone(playerId: string): boolean {
+  const row = stmtIsTutorialDone.get(playerId) as { tutorial_done: number } | undefined;
+  return (row?.tutorial_done ?? 0) === 1;
+}
+
+export function markTutorialDone(playerId: string): void {
+  stmtMarkTutorialDone.run(playerId);
 }
 
 export default db;

@@ -41,7 +41,7 @@ export const Toast: React.FC = () => {
     <div
       style={{
         position: 'absolute',
-        top: 16,
+        top: 180,
         right: 16,
         display: 'flex',
         flexDirection: 'column',

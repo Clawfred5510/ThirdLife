@@ -26,6 +26,7 @@ export type CreditsUpdateCallback = (credits: number) => void;
 export type PropertyUpdateCallback = (update: { propertyId: number; ownerId: string; ownerName: string }) => void;
 export type JobUpdateCallback = (update: { jobType: string; objective: string; timeRemaining: number; progress: string }) => void;
 export type JobCompleteCallback = (result: { jobType: string; reward: number }) => void;
+export type TutorialCallback = (message: string) => void;
 
 // ---------- Registered listeners ----------
 
@@ -37,6 +38,7 @@ const onCreditsUpdateListeners: CreditsUpdateCallback[] = [];
 const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
 const onJobUpdateListeners: JobUpdateCallback[] = [];
 const onJobCompleteListeners: JobCompleteCallback[] = [];
+const onTutorialListeners: TutorialCallback[] = [];
 
 /** Subscribe and return an unsubscribe function to avoid listener leaks. */
 export function onPlayerAdd(cb: PlayerAddCallback): () => void {
@@ -103,6 +105,14 @@ export function onJobComplete(cb: JobCompleteCallback): () => void {
   };
 }
 
+export function onTutorial(cb: TutorialCallback): () => void {
+  onTutorialListeners.push(cb);
+  return () => {
+    const idx = onTutorialListeners.indexOf(cb);
+    if (idx !== -1) onTutorialListeners.splice(idx, 1);
+  };
+}
+
 // ---------- Helpers ----------
 
 function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
@@ -160,6 +170,10 @@ export async function connect(playerName: string): Promise<Room> {
 
   room.onMessage(MessageType.JOB_COMPLETE, (msg: { jobType: string; reward: number }) => {
     for (const cb of onJobCompleteListeners) cb(msg);
+  });
+
+  room.onMessage(MessageType.TUTORIAL, (msg: { message: string }) => {
+    for (const cb of onTutorialListeners) cb(msg.message);
   });
 
   console.log(`Connected to room: ${room.roomId}`);

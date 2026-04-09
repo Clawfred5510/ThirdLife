@@ -10,5 +10,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'babylon-core': ['@babylonjs/core'],
+          'babylon-gui': ['@babylonjs/gui'],
+          'babylon-loaders': ['@babylonjs/loaders'],
+          'colyseus': ['colyseus.js'],
+          'react-vendor': ['react', 'react-dom'],
+        },
+      },
+    },
   },
 });

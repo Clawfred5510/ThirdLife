@@ -1,14 +1,18 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties } from '../db';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
+import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
 
   /** Latest input per player, consumed each server tick. */
   private pendingInputs = new Map<string, PlayerInput>();
+
+  /** Accumulated time (ms) since last revenue tick. */
+  private lastRevenueTick = 0;
 
   onCreate() {
     this.setState(new GameState());
@@ -22,11 +26,12 @@ export class GameRoom extends Room<GameState> {
       { name: 'Waterfront', plots: 12, minPrice: 3000, maxPrice: 15000 },
       { name: 'Entertainment', plots: 12, minPrice: 500, maxPrice: 10000 },
     ];
-    const seedBuildings: Array<{ name: string; district: string; price: number }> = [];
+    const seedBuildings: Array<{ name: string; district: string; price: number; revenue_rate: number }> = [];
     for (const d of districts) {
       for (let i = 1; i <= d.plots; i++) {
         const price = Math.round(d.minPrice + (d.maxPrice - d.minPrice) * (i / d.plots));
-        seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price });
+        const revenue_rate = Math.round(price * 0.02); // 2% of purchase price per tick
+        seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price, revenue_rate });
       }
     }
     seedProperties(seedBuildings);
@@ -155,6 +160,9 @@ export class GameRoom extends Room<GameState> {
     // Send initial credits so client UI can display them immediately
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
 
+    // Start tutorial for new players
+    startTutorialIfNeeded(client.sessionId, client);
+
     console.log(`${player.name} joined (${client.sessionId}) — credits: ${player.credits}`);
   }
 
@@ -167,6 +175,7 @@ export class GameRoom extends Room<GameState> {
     this.state.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
     cancelJob(client.sessionId);
+    cancelTutorial(client.sessionId);
   }
 
   update(deltaTime: number) {
@@ -191,6 +200,25 @@ export class GameRoom extends Room<GameState> {
       player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
+
+    // ---- Passive revenue tick (every 60 seconds) ----
+    this.lastRevenueTick += deltaTime;
+    if (this.lastRevenueTick >= 60000) {
+      this.lastRevenueTick = 0;
+      this.state.players.forEach((player, sessionId) => {
+        const revenue = getPlayerTotalRevenue(sessionId);
+        if (revenue > 0) {
+          const newCredits = player.credits + revenue;
+          updatePlayerCredits(sessionId, newCredits);
+          player.credits = newCredits;
+          const client = this.clients.find(c => c.sessionId === sessionId);
+          if (client) {
+            client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+          }
+          console.log(`${player.name} earned ${revenue} passive revenue (total: ${player.credits})`);
+        }
+      });
+    }
 
     // ---- Job system tick ----
     for (const playerId of getActiveJobPlayerIds()) {

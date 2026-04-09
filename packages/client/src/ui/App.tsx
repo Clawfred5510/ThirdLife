@@ -8,6 +8,7 @@ import { PropertyPanel } from './components/PropertyPanel';
 import { GameMenu } from './components/GameMenu';
 import { JobBoard } from './components/JobBoard';
 import { FastTravel } from './components/FastTravel';
+import { TutorialOverlay } from './components/TutorialOverlay';
 
 export const App: React.FC = () => {
   return (
@@ -21,6 +22,7 @@ export const App: React.FC = () => {
       <GameMenu />
       <JobBoard />
       <FastTravel />
+      <TutorialOverlay />
     </>
   );
 };

@@ -48,4 +48,5 @@ export enum MessageType {
   JOB_UPDATE = 'job_update',
   JOB_COMPLETE = 'job_complete',
   JOB_BOARD = 'job_board',
+  TUTORIAL = 'tutorial',
 }
