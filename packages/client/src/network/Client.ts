@@ -1,7 +1,11 @@
 import { Client, Room } from 'colyseus.js';
 import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage } from '@gamestu/shared';
 
-const SERVER_URL = `ws://localhost:${DEFAULT_SERVER_PORT}`;
+const SERVER_URL = typeof window !== 'undefined' && (window as any).__GAME_SERVER_URL__
+  ? (window as any).__GAME_SERVER_URL__
+  : (typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? `wss://${window.location.host}/ws`
+    : `ws://${window.location.host}/ws`);
 
 let client: Client | null = null;
 let room: Room | null = null;
