@@ -203,6 +203,19 @@ export class MainScene {
       this.updateRemotePlayerTarget(sessionId, player);
     });
 
+    // Expose offline spawn method for when server is unavailable
+    (this as any)._offlinePlayerSpawn = (localId: string) => {
+      this.addRemotePlayer(localId, {
+        id: localId,
+        name: 'You (Offline)',
+        x: 0,
+        y: 0,
+        z: 0,
+        rotation: 0,
+        color: '#3366cc',
+      }, scene);
+    };
+
     // ---- Keyboard input ----
 
     this.setupKeyboardInput();
@@ -222,7 +235,7 @@ export class MainScene {
   // ---------- Remote player management ----------
 
   private addRemotePlayer(sessionId: string, player: PlayerSnapshot, scene: Scene): void {
-    const isLocal = sessionId === getSessionId();
+    const isLocal = sessionId === getSessionId() || sessionId.startsWith('local_offline_');
 
     // Capsule body + sphere head for a humanoid silhouette
     const mesh = MeshBuilder.CreateCapsule(`player_${sessionId}`, {
