@@ -13,15 +13,9 @@ app.use(express.json());
 
 const httpServer = createServer(app);
 
-// ── Colyseus game server (WebSocket at /ws) ────────────────────────────────
-// The `path: '/ws'` option is forwarded to the ws WebSocket.Server,
-// so only WebSocket upgrade requests starting with /ws are accepted.
-// HTTP matchmaking requests to /ws/matchmake/... also work because
-// Colyseus checks if the URL *contains* "/matchmake".
+// ── Colyseus game server ──────────────────────────────────────────────────
 const gameServer = new Server({
   server: httpServer,
-  // @ts-expect-error — 'path' is forwarded to ws.WebSocketServer via WebSocketTransport
-  path: '/ws',
 });
 
 gameServer.define('game', GameRoom);
@@ -34,7 +28,7 @@ app.use('/api', studioApi);
 const clientDist = path.resolve(__dirname, '../../client/dist');
 app.use(express.static(clientDist));
 
-// SPA fallback: serve index.html for any non-API route
+// SPA fallback: serve index.html for any non-API, non-matchmake route
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
@@ -44,9 +38,9 @@ const PORT = Number(process.env.PORT) || 8080;
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log(`🎮 ${GAME_NAME} Standalone Server`);
-  console.log(`   HTTP:      http://0.0.0.0:${PORT}`);
-  console.log(`   WebSocket: ws://0.0.0.0:${PORT}/ws`);
+  console.log(`  ${GAME_NAME} Standalone Server`);
+  console.log(`   HTTP:      http://localhost:${PORT}`);
+  console.log(`   WebSocket: ws://localhost:${PORT}`);
   console.log(`   Client:    ${clientDist}`);
   console.log('');
 });

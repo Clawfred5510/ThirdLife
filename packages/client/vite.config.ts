@@ -8,14 +8,6 @@ export default defineConfig({
     port: 3000,
     open: false,
     host: '0.0.0.0',
-    proxy: {
-      '/ws': {
-        target: 'ws://localhost:2567',
-        ws: true,
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/ws/, ''),
-      },
-    },
   },
   resolve: {
     alias: {
