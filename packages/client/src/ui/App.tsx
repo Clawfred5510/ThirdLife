@@ -6,9 +6,16 @@ import { Minimap } from './components/Minimap';
 import { Wallet } from './components/Wallet';
 import { PropertyPanel } from './components/PropertyPanel';
 import { GameMenu } from './components/GameMenu';
-import { JobBoard } from './components/JobBoard';
+import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
-import { TutorialOverlay } from './components/TutorialOverlay';
+
+/** Lazy-loaded components gated by feature flags. */
+const JobBoard = React.lazy(() =>
+  import('./components/JobBoard').then((m) => ({ default: m.JobBoard })),
+);
+const TutorialOverlay = React.lazy(() =>
+  import('./components/TutorialOverlay').then((m) => ({ default: m.TutorialOverlay })),
+);
 
 export const App: React.FC = () => {
   return (
@@ -20,9 +27,17 @@ export const App: React.FC = () => {
       <Minimap />
       <PropertyPanel />
       <GameMenu />
-      <JobBoard />
+      {features.JOBS && (
+        <React.Suspense fallback={null}>
+          <JobBoard />
+        </React.Suspense>
+      )}
       <FastTravel />
-      <TutorialOverlay />
+      {features.TUTORIAL && (
+        <React.Suspense fallback={null}>
+          <TutorialOverlay />
+        </React.Suspense>
+      )}
     </>
   );
 };

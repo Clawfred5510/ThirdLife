@@ -1,167 +1,184 @@
 import {
   Scene,
   MeshBuilder,
-  Vector3,
   Color3,
   StandardMaterial,
   AbstractMesh,
 } from '@babylonjs/core';
 
-/** Definition for a single building or landmark in Haven Point. */
-export interface BuildingDef {
-  name: string;
-  /** Design coordinate X (0-2000). */
+// ---------------------------------------------------------------------------
+// Parcel grid — uniform 50×50 grid replacing legacy districts/landmarks
+// ---------------------------------------------------------------------------
+
+/** Definition for a single parcel on the grid. */
+export interface ParcelDef {
+  /** Unique numeric ID: `gx * GRID_SIZE + gy`. */
+  id: number;
+  /** Grid column index (0 = west, GRID_SIZE-1 = east). */
+  grid_x: number;
+  /** Grid row index (0 = south, GRID_SIZE-1 = north). */
+  grid_y: number;
+  /** World-space centre X of the parcel. */
   x: number;
-  /** Design coordinate Z (0-2000). */
+  /** World-space centre Z of the parcel. */
   z: number;
-  width: number;
-  depth: number;
-  height: number;
-  /** RGB colour, each channel 0-1. */
-  color: [number, number, number];
-  district: string;
-  purchasable: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Landmark buildings (non-purchasable, hand-placed from the design doc)
-// ---------------------------------------------------------------------------
+// --- Grid configuration -----------------------------------------------------
 
-const LANDMARKS: BuildingDef[] = [
-  { name: 'City Hall',       x: 1400, z: 800,  width: 60,  depth: 60,  height: 15,  color: [0.85, 0.85, 0.8],  district: 'Downtown',      purchasable: false },
-  { name: 'Haven Tower',     x: 1500, z: 700,  width: 30,  depth: 30,  height: 40,  color: [0.7, 0.75, 0.85],  district: 'Downtown',      purchasable: false },
-  { name: 'Central Market',  x: 1350, z: 600,  width: 50,  depth: 50,  height: 5,   color: [0.8, 0.6, 0.3],    district: 'Downtown',      purchasable: false },
-  { name: 'Grand Stage',     x: 500,  z: 800,  width: 80,  depth: 60,  height: 8,   color: [0.6, 0.3, 0.6],    district: 'Entertainment', purchasable: false },
-  { name: 'Haven Park',      x: 450,  z: 1600, width: 100, depth: 100, height: 0.5, color: [0.3, 0.7, 0.3],    district: 'Residential',   purchasable: false },
-  { name: 'Power Plant',     x: 1800, z: 1700, width: 60,  depth: 60,  height: 20,  color: [0.4, 0.4, 0.4],    district: 'Industrial',    purchasable: false },
-  { name: 'Freight Yard',    x: 1500, z: 1800, width: 80,  depth: 80,  height: 3,   color: [0.45, 0.42, 0.4],  district: 'Industrial',    purchasable: false },
-  { name: 'Lighthouse',      x: 1950, z: 50,   width: 10,  depth: 10,  height: 25,  color: [0.9, 0.9, 0.85],   district: 'Waterfront',    purchasable: false },
-  { name: 'Haven Marina',    x: 1700, z: 150,  width: 60,  depth: 40,  height: 4,   color: [0.5, 0.4, 0.3],    district: 'Waterfront',    purchasable: false },
-];
+/** Number of parcels along each axis. */
+export const GRID_COLS = 50;
 
-// ---------------------------------------------------------------------------
-// District bounds used for procedural purchasable-plot generation
-// ---------------------------------------------------------------------------
+/** Number of parcels along each axis. */
+export const GRID_ROWS = 50;
 
-interface DistrictBounds {
-  name: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  /** Base colour for purchasable plots (slightly lighter than ground). */
-  plotColor: [number, number, number];
-}
+/** Size of each parcel cell (metres). */
+const CELL_SIZE = 40;
 
-const DISTRICT_BOUNDS: DistrictBounds[] = [
-  { name: 'Downtown',      x1: 1100, y1: 400,  x2: 1800, y2: 1100, plotColor: [0.7, 0.73, 0.78] },
-  { name: 'Residential',   x1: 100,  y1: 1100, x2: 900,  y2: 1900, plotColor: [0.55, 0.75, 0.45] },
-  { name: 'Industrial',    x1: 1100, y1: 1200, x2: 1900, y2: 1900, plotColor: [0.58, 0.58, 0.56] },
-  { name: 'Waterfront',    x1: 1200, y1: 0,    x2: 2000, y2: 500,  plotColor: [0.82, 0.78, 0.62] },
-  { name: 'Entertainment', x1: 100,  y1: 400,  x2: 900,  y2: 1100, plotColor: [0.65, 0.55, 0.7] },
-];
+/** Width of roads between parcels (metres). */
+const ROAD_WIDTH = 8;
 
 /**
- * Deterministic pseudo-random number generator (mulberry32) so procedural
- * plot layouts are reproducible across sessions.
+ * Total grid footprint:
+ *   total = COLS * CELL_SIZE + (COLS - 1) * ROAD_WIDTH
+ *        = 50 * 40 + 49 * 8 = 2000 + 392 = 2392
+ *
+ * Parcels are centred around (0, 0) in world space.
  */
-function mulberry32(seed: number): () => number {
-  let s = seed | 0;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const GRID_TOTAL_W = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * ROAD_WIDTH;
+const GRID_TOTAL_H = GRID_ROWS * CELL_SIZE + (GRID_ROWS - 1) * ROAD_WIDTH;
 
-/** Generate purchasable plot definitions for every district. */
-function generatePurchasablePlots(): BuildingDef[] {
-  const plots: BuildingDef[] = [];
-  const rand = mulberry32(42);
+// The stride from one cell origin to the next (cell + road)
+const STRIDE = CELL_SIZE + ROAD_WIDTH;
 
-  for (const d of DISTRICT_BOUNDS) {
-    const marginX = (d.x2 - d.x1) * 0.1;
-    const marginY = (d.y2 - d.y1) * 0.1;
-    const innerX1 = d.x1 + marginX;
-    const innerX2 = d.x2 - marginX;
-    const innerY1 = d.y1 + marginY;
-    const innerY2 = d.y2 - marginY;
+// ---------------------------------------------------------------------------
+// Grid generation
+// ---------------------------------------------------------------------------
 
-    const cols = 4;
-    const rows = 3;
-    const cellW = (innerX2 - innerX1) / cols;
-    const cellH = (innerY2 - innerY1) / rows;
+/** Generate the full parcel grid. */
+export function generateParcelGrid(): ParcelDef[] {
+  const parcels: ParcelDef[] = [];
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const cx = innerX1 + (c + 0.5) * cellW;
-        const cz = innerY1 + (r + 0.5) * cellH;
+  for (let gy = 0; gy < GRID_ROWS; gy++) {
+    for (let gx = 0; gx < GRID_COLS; gx++) {
+      const x = gx * STRIDE - GRID_TOTAL_W / 2 + CELL_SIZE / 2;
+      const z = gy * STRIDE - GRID_TOTAL_H / 2 + CELL_SIZE / 2;
 
-        const w = 20 + rand() * 20;   // 20-40
-        const dp = 20 + rand() * 20;   // 20-40
-        const h = 3 + rand() * 5;      // 3-8
-
-        plots.push({
-          name: `${d.name}_Plot_${r}_${c}`,
-          x: cx,
-          z: cz,
-          width: w,
-          depth: dp,
-          height: h,
-          color: d.plotColor,
-          district: d.name,
-          purchasable: true,
-        });
-      }
+      parcels.push({
+        id: gx * GRID_COLS + gy,
+        grid_x: gx,
+        grid_y: gy,
+        x,
+        z,
+      });
     }
   }
 
-  return plots;
+  return parcels;
 }
 
-// ---------------------------------------------------------------------------
-// Combined building list
-// ---------------------------------------------------------------------------
-
-export const ALL_BUILDINGS: BuildingDef[] = [...LANDMARKS, ...generatePurchasablePlots()];
+/** Pre-computed grid of 2,500 parcels. */
+export const ALL_PARCELS = generateParcelGrid();
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public API — spawn grid into scene
 // ---------------------------------------------------------------------------
 
 /**
- * Spawn all buildings and landmarks into the given Babylon scene.
+ * Spawn the uniform parcel grid into the given Babylon scene.
  *
- * Design coordinates (0-2000) are converted to Babylon world coordinates:
- *   babylon.x = design.x - 1000
- *   babylon.y = height / 2          (box pivot is at centre)
- *   babylon.z = design.z - 1000
+ * Replaces the old district/landmark system with a flat ground plane,
+ * grid roads, and empty parcel slots.
  *
  * @returns An array of every mesh created.
  */
 export function spawnBuildings(scene: Scene): AbstractMesh[] {
   const meshes: AbstractMesh[] = [];
 
-  for (const def of ALL_BUILDINGS) {
-    const mesh = MeshBuilder.CreateBox(
-      `bldg_${def.name}`,
-      { width: def.width, height: def.height, depth: def.depth },
-      scene,
-    );
+  // ---- Base ground plane (grass/earth) ----
+  const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 100;
+  const ground = MeshBuilder.CreateGround('gridGround', {
+    width: groundSize,
+    height: groundSize,
+    subdivisions: 4,
+  }, scene);
+  const groundMat = new StandardMaterial('gridGroundMat', scene);
+  groundMat.diffuseColor = new Color3(0.3, 0.42, 0.25);
+  ground.material = groundMat;
+  ground.position.y = -0.02;
+  meshes.push(ground);
 
-    mesh.position = new Vector3(
-      def.x - 1000,
-      def.height / 2,
-      def.z - 1000,
-    );
+  // ---- Grid roads ----
+  const roadMat = new StandardMaterial('gridRoadMat', scene);
+  roadMat.diffuseColor = new Color3(0.25, 0.25, 0.25);
 
-    const mat = new StandardMaterial(`bldgMat_${def.name}`, scene);
-    mat.diffuseColor = new Color3(def.color[0], def.color[1], def.color[2]);
-    mesh.material = mat;
+  // Horizontal roads (one between each row, plus borders)
+  for (let gy = 0; gy <= GRID_ROWS; gy++) {
+    const z = gy * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_H / 2;
+    const road = MeshBuilder.CreateGround(`roadH_${gy}`, {
+      width: GRID_TOTAL_W + ROAD_WIDTH,
+      height: ROAD_WIDTH,
+    }, scene);
+    road.position.set(0, 0.01, z);
+    road.material = roadMat;
+    meshes.push(road);
+  }
 
-    meshes.push(mesh);
+  // Vertical roads (one between each column, plus borders)
+  for (let gx = 0; gx <= GRID_COLS; gx++) {
+    const x = gx * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_W / 2;
+    const road = MeshBuilder.CreateGround(`roadV_${gx}`, {
+      width: ROAD_WIDTH,
+      height: GRID_TOTAL_H + ROAD_WIDTH,
+    }, scene);
+    road.position.set(x, 0.01, 0);
+    road.material = roadMat;
+    meshes.push(road);
+  }
+
+  // ---- Parcel lot markers (flat pads) ----
+  const lotMat = new StandardMaterial('lotMat', scene);
+  lotMat.diffuseColor = new Color3(0.45, 0.48, 0.42);
+
+  // Only create visible lot markers for a subset to save draw calls
+  // (2,500 boxes is a lot — use instancing or skip for now and just
+  //  render roads as the visual grid structure)
+  // Instead, render thin border outlines for every 5th parcel as grid guides
+  const guideMat = new StandardMaterial('guideMat', scene);
+  guideMat.diffuseColor = new Color3(0.55, 0.58, 0.52);
+
+  for (const parcel of ALL_PARCELS) {
+    // Only place guide markers every 10 parcels for orientation
+    if (parcel.grid_x % 10 === 0 && parcel.grid_y % 10 === 0) {
+      const marker = MeshBuilder.CreateGround(`guide_${parcel.id}`, {
+        width: CELL_SIZE - 2,
+        height: CELL_SIZE - 2,
+      }, scene);
+      marker.position.set(parcel.x, 0.03, parcel.z);
+      marker.material = guideMat;
+      meshes.push(marker);
+    }
   }
 
   return meshes;
 }
+
+// ---------------------------------------------------------------------------
+// Legacy compatibility re-exports (consumers may still reference these)
+// ---------------------------------------------------------------------------
+
+/** @deprecated Use ParcelDef instead. Kept for backward compatibility. */
+export interface BuildingDef {
+  name: string;
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+  color: [number, number, number];
+  district: string;
+  purchasable: boolean;
+}
+
+/** @deprecated Use ALL_PARCELS instead. */
+export const ALL_BUILDINGS: BuildingDef[] = [];

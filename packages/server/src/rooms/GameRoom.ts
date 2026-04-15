@@ -1,6 +1,6 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerState } from '../state/GameState';
-import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS } from '@gamestu/shared';
+import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS, features } from '@gamestu/shared';
 import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
@@ -114,31 +114,33 @@ export class GameRoom extends Room<GameState> {
       player.z = stop.z;
     });
 
-    // ---- Job system handlers ----
+    // ---- Job system handlers (gated by FEATURE_JOBS) ----
 
-    this.onMessage(MessageType.JOB_BOARD, (client: Client) => {
-      client.send(MessageType.JOB_BOARD, { jobs: getJobBoard() });
-    });
-
-    this.onMessage(MessageType.JOB_START, (client: Client, data: { jobType: string }) => {
-      const player = this.state.players.get(client.sessionId);
-      if (!player) return;
-      if (typeof data.jobType !== 'string') return;
-
-      const job = startJob(client.sessionId, data.jobType);
-      if (!job) {
-        client.send(MessageType.JOB_START, { error: 'Cannot start job (cooldown or invalid type)' });
-        return;
-      }
-
-      client.send(MessageType.JOB_START, {
-        jobType: job.jobType,
-        objectives: job.objectives.map(o => ({ type: o.type, x: o.x, z: o.z, radius: o.radius, duration: o.duration, completed: o.completed })),
-        timeLimit: job.timeLimit,
-        currentObjective: job.currentObjective,
+    if (features.JOBS) {
+      this.onMessage(MessageType.JOB_BOARD, (client: Client) => {
+        client.send(MessageType.JOB_BOARD, { jobs: getJobBoard() });
       });
-      console.log(`${player.name} started job: ${job.jobType}`);
-    });
+
+      this.onMessage(MessageType.JOB_START, (client: Client, data: { jobType: string }) => {
+        const player = this.state.players.get(client.sessionId);
+        if (!player) return;
+        if (typeof data.jobType !== 'string') return;
+
+        const job = startJob(client.sessionId, data.jobType);
+        if (!job) {
+          client.send(MessageType.JOB_START, { error: 'Cannot start job (cooldown or invalid type)' });
+          return;
+        }
+
+        client.send(MessageType.JOB_START, {
+          jobType: job.jobType,
+          objectives: job.objectives.map(o => ({ type: o.type, x: o.x, z: o.z, radius: o.radius, duration: o.duration, completed: o.completed })),
+          timeLimit: job.timeLimit,
+          currentObjective: job.currentObjective,
+        });
+        console.log(`${player.name} started job: ${job.jobType}`);
+      });
+    }
 
     console.log(`GameRoom created: ${this.roomId}`);
   }
@@ -162,8 +164,10 @@ export class GameRoom extends Room<GameState> {
     // Send initial credits so client UI can display them immediately
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
 
-    // Start tutorial for new players
-    startTutorialIfNeeded(client.sessionId, client);
+    // Start tutorial for new players (gated by FEATURE_TUTORIAL)
+    if (features.TUTORIAL) {
+      startTutorialIfNeeded(client.sessionId, client);
+    }
 
     console.log(`${player.name} joined (${client.sessionId}) — credits: ${player.credits}`);
   }
@@ -176,8 +180,11 @@ export class GameRoom extends Room<GameState> {
     }
     this.state.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
+    // Cancel job and tutorial on leave (safe to call even if features are off)
     cancelJob(client.sessionId);
-    cancelTutorial(client.sessionId);
+    if (features.TUTORIAL) {
+      cancelTutorial(client.sessionId);
+    }
   }
 
   update(deltaTime: number) {
@@ -222,79 +229,81 @@ export class GameRoom extends Room<GameState> {
       });
     }
 
-    // ---- Job system tick ----
-    for (const playerId of getActiveJobPlayerIds()) {
-      const player = this.state.players.get(playerId);
-      if (!player) continue;
+    // ---- Job system tick (gated by FEATURE_JOBS) ----
+    if (features.JOBS) {
+      for (const playerId of getActiveJobPlayerIds()) {
+        const player = this.state.players.get(playerId);
+        if (!player) continue;
 
-      const client = this.clients.find(c => c.sessionId === playerId);
-      if (!client) continue;
+        const client = this.clients.find(c => c.sessionId === playerId);
+        if (!client) continue;
 
-      // Check time expiry first
-      if (checkTimeExpired(playerId)) {
-        client.send(MessageType.JOB_COMPLETE, { success: false, reason: 'Time expired', reward: 0 });
-        continue;
-      }
+        // Check time expiry first
+        if (checkTimeExpired(playerId)) {
+          client.send(MessageType.JOB_COMPLETE, { success: false, reason: 'Time expired', reward: 0 });
+          continue;
+        }
 
-      const job = getActiveJob(playerId);
-      if (!job) continue;
+        const job = getActiveJob(playerId);
+        if (!job) continue;
 
-      // Shop assistant wait-progress tick
-      if (job.jobType === 'shop_assistant') {
-        const waitResult = tickWaitProgress(playerId, player.x, player.z, dt);
-        if (waitResult) {
-          if (waitResult.jobDone) {
-            // Persist earnings
-            const newCredits = player.credits + waitResult.reward;
-            updatePlayerCredits(playerId, newCredits);
-            player.credits = newCredits;
-            client.send(MessageType.JOB_COMPLETE, { success: true, reward: waitResult.reward });
-            client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-          } else if (waitResult.shiftDone) {
-            const updatedJob = getActiveJob(playerId);
+        // Shop assistant wait-progress tick
+        if (job.jobType === 'shop_assistant') {
+          const waitResult = tickWaitProgress(playerId, player.x, player.z, dt);
+          if (waitResult) {
+            if (waitResult.jobDone) {
+              // Persist earnings
+              const newCredits = player.credits + waitResult.reward;
+              updatePlayerCredits(playerId, newCredits);
+              player.credits = newCredits;
+              client.send(MessageType.JOB_COMPLETE, { success: true, reward: waitResult.reward });
+              client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+            } else if (waitResult.shiftDone) {
+              const updatedJob = getActiveJob(playerId);
+              client.send(MessageType.JOB_UPDATE, {
+                shiftComplete: true,
+                shiftReward: waitResult.reward,
+                shiftsCompleted: updatedJob?.shiftsCompleted ?? 0,
+                maxShifts: updatedJob?.maxShifts ?? 3,
+                waitProgress: 0,
+              });
+            }
+          } else {
+            // Send wait progress update
             client.send(MessageType.JOB_UPDATE, {
-              shiftComplete: true,
-              shiftReward: waitResult.reward,
-              shiftsCompleted: updatedJob?.shiftsCompleted ?? 0,
-              maxShifts: updatedJob?.maxShifts ?? 3,
-              waitProgress: 0,
+              currentObjective: job.currentObjective,
+              waitProgress: job.waitProgress,
+              remaining: getRemainingTime(playerId),
             });
           }
+          continue;
+        }
+
+        // For goto/interact jobs — check if player reached current objective
+        const result = checkObjective(playerId, player.x, player.z);
+        if (result.jobDone) {
+          // Persist earnings
+          const newCredits = player.credits + result.reward;
+          updatePlayerCredits(playerId, newCredits);
+          player.credits = newCredits;
+          client.send(MessageType.JOB_COMPLETE, { success: true, reward: result.reward });
+          client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+        } else if (result.completed) {
+          // Objective completed but job continues
+          const updatedJob = getActiveJob(playerId);
+          client.send(MessageType.JOB_UPDATE, {
+            currentObjective: updatedJob?.currentObjective ?? 0,
+            spotReward: result.reward,
+            remaining: getRemainingTime(playerId),
+          });
         } else {
-          // Send wait progress update
+          // Send periodic progress (only every ~1 sec to reduce bandwidth — check tick count)
+          // For simplicity, send every tick; the client can throttle display updates
           client.send(MessageType.JOB_UPDATE, {
             currentObjective: job.currentObjective,
-            waitProgress: job.waitProgress,
             remaining: getRemainingTime(playerId),
           });
         }
-        continue;
-      }
-
-      // For goto/interact jobs — check if player reached current objective
-      const result = checkObjective(playerId, player.x, player.z);
-      if (result.jobDone) {
-        // Persist earnings
-        const newCredits = player.credits + result.reward;
-        updatePlayerCredits(playerId, newCredits);
-        player.credits = newCredits;
-        client.send(MessageType.JOB_COMPLETE, { success: true, reward: result.reward });
-        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-      } else if (result.completed) {
-        // Objective completed but job continues
-        const updatedJob = getActiveJob(playerId);
-        client.send(MessageType.JOB_UPDATE, {
-          currentObjective: updatedJob?.currentObjective ?? 0,
-          spotReward: result.reward,
-          remaining: getRemainingTime(playerId),
-        });
-      } else {
-        // Send periodic progress (only every ~1 sec to reduce bandwidth — check tick count)
-        // For simplicity, send every tick; the client can throttle display updates
-        client.send(MessageType.JOB_UPDATE, {
-          currentObjective: job.currentObjective,
-          remaining: getRemainingTime(playerId),
-        });
       }
     }
   }

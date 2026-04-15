@@ -8,6 +8,14 @@ export default defineConfig({
     port: 3000,
     open: false,
     host: '0.0.0.0',
+    proxy: {
+      // Forward WebSocket connections to Colyseus game server
+      '/ws': {
+        target: 'ws://localhost:2567',
+        ws: true,
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     alias: {

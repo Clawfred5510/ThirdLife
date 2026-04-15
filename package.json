@@ -19,11 +19,13 @@
     "lint": "eslint 'packages/*/src/**/*.{ts,tsx}'",
     "lint:fix": "eslint 'packages/*/src/**/*.{ts,tsx}' --fix",
     "format": "prettier --write 'packages/*/src/**/*.{ts,tsx}'",
-    "format:check": "prettier --check 'packages/*/src/**/*.{ts,tsx}'"
+    "format:check": "prettier --check 'packages/*/src/**/*.{ts,tsx}'",
+    "play": "concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\""
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "concurrently": "^9.2.1",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
     "typescript": "^5.5.0"
