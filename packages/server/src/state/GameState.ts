@@ -1,20 +1,22 @@
-import { Schema, MapSchema, type } from '@colyseus/schema';
+import { Schema } from '@colyseus/schema';
 
-export class PlayerState extends Schema {
-  @type('string') id: string = '';
-  @type('string') name: string = '';
-  @type('number') x: number = 0;
-  @type('number') y: number = 0;
-  @type('number') z: number = 0;
-  @type('number') rotation: number = 0;
-  @type('number') credits: number = 500;
-  @type('string') color: string = '#3366cc';
-}
+/**
+ * Empty Colyseus schema. We intentionally avoid MapSchema / nested Schema
+ * because @colyseus/schema@2.0.37 (legacy, matching colyseus@0.15) has a
+ * reflection decoder bug ("refId not found") that prevents state sync on
+ * the client. All game state (players, parcels) is synced via plain
+ * messages instead — see GameRoom for the message contract.
+ */
+export class GameState extends Schema {}
 
-// NOTE: parcels are intentionally NOT in the schema. Syncing 2,500 MapSchema
-// entries on join broke the client-side reflection decoder ("refId not found").
-// Parcels are pushed on join via `MessageType.PARCEL_STATE` and
-// per-parcel updates via `MessageType.PARCEL_UPDATE` broadcasts.
-export class GameState extends Schema {
-  @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
+// Plain player-data type used in server-side Maps.
+export interface PlayerData {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  rotation: number;
+  credits: number;
+  color: string;
 }

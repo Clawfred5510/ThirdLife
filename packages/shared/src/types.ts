@@ -64,4 +64,8 @@ export enum MessageType {
   UPDATE_BUSINESS = 'update_business',
   PARCEL_STATE = 'parcel_state',
   PARCEL_UPDATE = 'parcel_update',
+  PLAYER_JOIN = 'player_join',
+  PLAYER_LEAVE = 'player_leave',
+  PLAYER_STATE = 'player_state',
+  PLAYER_UPDATE = 'player_update',
 }

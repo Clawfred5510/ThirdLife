@@ -1,12 +1,17 @@
 import { Room, Client } from 'colyseus';
-import { GameState, PlayerState } from '../state/GameState';
+import { GameState, PlayerData } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS, features } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue, seedParcels, claimParcel, updateBusiness as updateBusinessInDb, getAllParcels } from '../db';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerTotalRevenue, seedParcels, claimParcel, updateBusiness as updateBusinessInDb, getAllParcels } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
+const PLAYER_BROADCAST_INTERVAL_MS = 100; // 10 Hz
+
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
+
+  /** Server-side player map (NOT in Colyseus schema — see state/GameState.ts). */
+  private players = new Map<string, PlayerData>();
 
   /** Latest input per player, consumed each server tick. */
   private pendingInputs = new Map<string, PlayerInput>();
@@ -14,39 +19,22 @@ export class GameRoom extends Room<GameState> {
   /** Accumulated time (ms) since last revenue tick. */
   private lastRevenueTick = 0;
 
+  /** Accumulated time (ms) since last player-state broadcast. */
+  private lastBroadcastTick = 0;
+
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
 
-    // Seed purchasable properties into DB if empty (12 per district, 60 total)
-    // NOTE: kept for backward compat but no longer the primary game mechanic
-    // const districts = [
-    //   { name: 'Downtown', plots: 12, minPrice: 3000, maxPrice: 15000 },
-    //   { name: 'Residential', plots: 12, minPrice: 1000, maxPrice: 5000 },
-    //   { name: 'Industrial', plots: 12, minPrice: 1000, maxPrice: 8000 },
-    //   { name: 'Waterfront', plots: 12, minPrice: 3000, maxPrice: 15000 },
-    //   { name: 'Entertainment', plots: 12, minPrice: 500, maxPrice: 10000 },
-    // ];
-    // const seedBuildings: Array<{ name: string; district: string; price: number; revenue_rate: number }> = [];
-    // for (const d of districts) {
-    //   for (let i = 1; i <= d.plots; i++) {
-    //     const price = Math.round(d.minPrice + (d.maxPrice - d.minPrice) * (i / d.plots));
-    //     const revenue_rate = Math.round(price * 0.02);
-    //     seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price, revenue_rate });
-    //   }
-    // }
-    // seedProperties(seedBuildings);
-
-    // ---- Seed parcels into DB (not into state schema — would break decoder) ----
+    // ---- Seed parcels into DB ----
     seedParcels();
     const allParcels = getAllParcels();
     console.log(`[GameRoom] ${allParcels.length} parcels in DB`);
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
 
-      // Validate that all input fields are booleans
       if (
         typeof input.forward !== 'boolean' ||
         typeof input.backward !== 'boolean' ||
@@ -54,25 +42,27 @@ export class GameRoom extends Room<GameState> {
         typeof input.right !== 'boolean' ||
         typeof input.jump !== 'boolean'
       ) {
-        return; // reject garbage input
+        return;
       }
 
-      // Store latest input — applied in update() with real delta time.
-      // Clear when no movement requested so update() doesn't keep moving the player.
       if (input.forward || input.backward || input.left || input.right) {
         this.pendingInputs.set(client.sessionId, input);
       } else {
         this.pendingInputs.delete(client.sessionId);
       }
+
+      // Apply rotation immediately (not movement — that happens in update tick)
+      if (typeof input.rotation === 'number') {
+        player.rotation = input.rotation;
+      }
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
       if (typeof message.text !== 'string') return;
-
       const text = message.text.trim().slice(0, 200);
       if (text.length === 0) return;
 
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       const senderName = player?.name ?? 'Unknown';
 
       this.broadcast(MessageType.CHAT, {
@@ -83,37 +73,34 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.BUY_PROPERTY, (client: Client, data: { propertyId: number }) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.propertyId !== 'number') return;
 
       const success = purchaseProperty(data.propertyId, client.sessionId);
       if (success) {
-        // Reload credits from DB and sync to Colyseus state
         player.credits = getPlayerCreditsFromDb(client.sessionId);
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-        // Broadcast property ownership change to all clients
         this.broadcast(MessageType.PROPERTY_UPDATE, {
           propertyId: data.propertyId,
           ownerId: client.sessionId,
           ownerName: player.name,
         });
-        console.log(`${player.name} purchased property #${data.propertyId}`);
       } else {
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits, error: 'Purchase failed' });
       }
     });
 
     this.onMessage(MessageType.PLAYER_COLOR, (client: Client, data: { color: string }) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.color !== 'string') return;
       player.color = data.color;
+      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
-    // ---- Parcel claim handler ----
     this.onMessage(MessageType.CLAIM_PARCEL, (client: Client, data: { parcelId: number }) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
 
@@ -121,8 +108,6 @@ export class GameRoom extends Room<GameState> {
       if (success) {
         player.credits = getPlayerCreditsFromDb(client.sessionId);
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-
-        // Broadcast parcel update to all clients (parcels live outside schema)
         this.broadcast(MessageType.PARCEL_UPDATE, {
           id: data.parcelId,
           owner_id: client.sessionId,
@@ -134,9 +119,8 @@ export class GameRoom extends Room<GameState> {
       }
     });
 
-    // ---- Business update handler ----
     this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
 
@@ -150,22 +134,20 @@ export class GameRoom extends Room<GameState> {
           color: data.color,
           height: data.height,
         });
-        console.log(`${player.name} updated business on parcel #${data.parcelId}`);
       } else {
         client.send(MessageType.UPDATE_BUSINESS, { error: 'Update failed (not owner or parcel not claimed)' });
       }
     });
 
     this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {
-      const player = this.state.players.get(client.sessionId);
+      const player = this.players.get(client.sessionId);
       if (!player) return;
       const stop = BUS_STOPS[data.stopIndex];
       if (!stop) return;
       player.x = stop.x;
       player.z = stop.z;
+      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
-
-    // ---- Job system handlers (gated by FEATURE_JOBS) ----
 
     if (features.JOBS) {
       this.onMessage(MessageType.JOB_BOARD, (client: Client) => {
@@ -173,7 +155,7 @@ export class GameRoom extends Room<GameState> {
       });
 
       this.onMessage(MessageType.JOB_START, (client: Client, data: { jobType: string }) => {
-        const player = this.state.players.get(client.sessionId);
+        const player = this.players.get(client.sessionId);
         if (!player) return;
         if (typeof data.jobType !== 'string') return;
 
@@ -185,37 +167,52 @@ export class GameRoom extends Room<GameState> {
 
         client.send(MessageType.JOB_START, {
           jobType: job.jobType,
-          objectives: job.objectives.map(o => ({ type: o.type, x: o.x, z: o.z, radius: o.radius, duration: o.duration, completed: o.completed })),
+          objectives: job.objectives.map((o) => ({
+            type: o.type,
+            x: o.x,
+            z: o.z,
+            radius: o.radius,
+            duration: o.duration,
+            completed: o.completed,
+          })),
           timeLimit: job.timeLimit,
           currentObjective: job.currentObjective,
         });
-        console.log(`${player.name} started job: ${job.jobType}`);
       });
     }
 
-    console.log(`GameRoom created: ${this.roomId} with ${allParcels.length} parcels`);
+    console.log(`GameRoom created: ${this.roomId}`);
   }
 
   onJoin(client: Client, options: { name?: string }) {
     const displayName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
     const row = getOrCreatePlayer(client.sessionId, displayName);
 
-    const player = new PlayerState();
-    player.id = client.sessionId;
-    player.name = row.name;
-    player.x = row.x;
-    player.y = row.y;
-    player.z = row.z;
-    player.credits = row.credits;
-    player.color = '#3366cc';
-    player.rotation = 0;
+    const player: PlayerData = {
+      id: client.sessionId,
+      name: row.name,
+      x: row.x,
+      y: row.y,
+      z: row.z,
+      rotation: 0,
+      credits: row.credits,
+      color: '#3366cc',
+    };
+    this.players.set(client.sessionId, player);
 
-    this.state.players.set(client.sessionId, player);
+    // Tell the joining client about itself + all current players
+    client.send(MessageType.PLAYER_STATE, {
+      self: client.sessionId,
+      players: Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+    });
 
-    // Send initial credits so client UI can display them immediately
+    // Tell everyone else about the new player
+    this.broadcast(MessageType.PLAYER_JOIN, this.snapshotPlayer(player), { except: client });
+
+    // Initial credits UI sync
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
 
-    // Send full parcel snapshot (outside schema to avoid decoder issues)
+    // Parcel snapshot
     const snapshot = getAllParcels().map((p) => ({
       id: p.id,
       grid_x: p.grid_x,
@@ -228,7 +225,6 @@ export class GameRoom extends Room<GameState> {
     }));
     client.send(MessageType.PARCEL_STATE, { parcels: snapshot });
 
-    // Start tutorial for new players (gated by FEATURE_TUTORIAL)
     if (features.TUTORIAL) {
       startTutorialIfNeeded(client.sessionId, client);
     }
@@ -237,58 +233,72 @@ export class GameRoom extends Room<GameState> {
   }
 
   onLeave(client: Client) {
-    const player = this.state.players.get(client.sessionId);
+    const player = this.players.get(client.sessionId);
     if (player) {
       savePlayerPosition(client.sessionId, player.x, player.y, player.z);
       console.log(`${player.name} left (${client.sessionId}) — position saved`);
     }
-    this.state.players.delete(client.sessionId);
+    this.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
-    // Cancel job and tutorial on leave (safe to call even if features are off)
     cancelJob(client.sessionId);
     if (features.TUTORIAL) {
       cancelTutorial(client.sessionId);
     }
+    this.broadcast(MessageType.PLAYER_LEAVE, { id: client.sessionId });
+  }
+
+  private snapshotPlayer(p: PlayerData) {
+    return {
+      id: p.id,
+      name: p.name,
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      rotation: p.rotation,
+      color: p.color,
+    };
   }
 
   update(deltaTime: number) {
-    // deltaTime is in milliseconds from Colyseus simulation interval
-    const dt = deltaTime / 1000; // convert to seconds
+    const dt = deltaTime / 1000;
 
     this.pendingInputs.forEach((input, sessionId) => {
-      const player = this.state.players.get(sessionId);
+      const player = this.players.get(sessionId);
       if (!player) return;
 
       const speed = PLAYER_SPEED * dt;
-
       if (input.forward) player.z -= speed;
       if (input.backward) player.z += speed;
       if (input.left) player.x -= speed;
       if (input.right) player.x += speed;
 
-      // Sync rotation from client input
-      player.rotation = input.rotation ?? player.rotation;
-
-      // Clamp positions to world bounds
       player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
+
+    // ---- Broadcast player positions at fixed rate ----
+    this.lastBroadcastTick += deltaTime;
+    if (this.lastBroadcastTick >= PLAYER_BROADCAST_INTERVAL_MS && this.players.size > 0) {
+      this.lastBroadcastTick = 0;
+      this.broadcast(MessageType.PLAYER_STATE, {
+        players: Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+      });
+    }
 
     // ---- Passive revenue tick (every 60 seconds) ----
     this.lastRevenueTick += deltaTime;
     if (this.lastRevenueTick >= 60000) {
       this.lastRevenueTick = 0;
-      this.state.players.forEach((player, sessionId) => {
+      this.players.forEach((player, sessionId) => {
         const revenue = getPlayerTotalRevenue(sessionId);
         if (revenue > 0) {
           const newCredits = player.credits + revenue;
           updatePlayerCredits(sessionId, newCredits);
           player.credits = newCredits;
-          const client = this.clients.find(c => c.sessionId === sessionId);
+          const client = this.clients.find((c) => c.sessionId === sessionId);
           if (client) {
             client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
           }
-          console.log(`${player.name} earned ${revenue} passive revenue (total: ${player.credits})`);
         }
       });
     }
@@ -296,13 +306,12 @@ export class GameRoom extends Room<GameState> {
     // ---- Job system tick (gated by FEATURE_JOBS) ----
     if (features.JOBS) {
       for (const playerId of getActiveJobPlayerIds()) {
-        const player = this.state.players.get(playerId);
+        const player = this.players.get(playerId);
         if (!player) continue;
 
-        const client = this.clients.find(c => c.sessionId === playerId);
+        const client = this.clients.find((c) => c.sessionId === playerId);
         if (!client) continue;
 
-        // Check time expiry first
         if (checkTimeExpired(playerId)) {
           client.send(MessageType.JOB_COMPLETE, { success: false, reason: 'Time expired', reward: 0 });
           continue;
@@ -311,12 +320,10 @@ export class GameRoom extends Room<GameState> {
         const job = getActiveJob(playerId);
         if (!job) continue;
 
-        // Shop assistant wait-progress tick
         if (job.jobType === 'shop_assistant') {
           const waitResult = tickWaitProgress(playerId, player.x, player.z, dt);
           if (waitResult) {
             if (waitResult.jobDone) {
-              // Persist earnings
               const newCredits = player.credits + waitResult.reward;
               updatePlayerCredits(playerId, newCredits);
               player.credits = newCredits;
@@ -333,7 +340,6 @@ export class GameRoom extends Room<GameState> {
               });
             }
           } else {
-            // Send wait progress update
             client.send(MessageType.JOB_UPDATE, {
               currentObjective: job.currentObjective,
               waitProgress: job.waitProgress,
@@ -343,17 +349,14 @@ export class GameRoom extends Room<GameState> {
           continue;
         }
 
-        // For goto/interact jobs — check if player reached current objective
         const result = checkObjective(playerId, player.x, player.z);
         if (result.jobDone) {
-          // Persist earnings
           const newCredits = player.credits + result.reward;
           updatePlayerCredits(playerId, newCredits);
           player.credits = newCredits;
           client.send(MessageType.JOB_COMPLETE, { success: true, reward: result.reward });
           client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
         } else if (result.completed) {
-          // Objective completed but job continues
           const updatedJob = getActiveJob(playerId);
           client.send(MessageType.JOB_UPDATE, {
             currentObjective: updatedJob?.currentObjective ?? 0,
@@ -361,8 +364,6 @@ export class GameRoom extends Room<GameState> {
             remaining: getRemainingTime(playerId),
           });
         } else {
-          // Send periodic progress (only every ~1 sec to reduce bandwidth — check tick count)
-          // For simplicity, send every tick; the client can throttle display updates
           client.send(MessageType.JOB_UPDATE, {
             currentObjective: job.currentObjective,
             remaining: getRemainingTime(playerId),

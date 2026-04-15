@@ -20,8 +20,7 @@ const SERVER_URL = resolveServerUrl();
 
 let client: Client | null = null;
 let room: Room | null = null;
-
-// ---------- Callback types ----------
+let mySessionId: string | null = null;
 
 export interface PlayerSnapshot {
   id: string;
@@ -45,8 +44,6 @@ export type TutorialCallback = (message: string) => void;
 export type ParcelStateCallback = (parcels: ParcelData[]) => void;
 export type ParcelUpdateCallback = (update: Partial<ParcelData> & { owner_name?: string; error?: string }) => void;
 
-// ---------- Registered listeners ----------
-
 const onPlayerAddListeners: PlayerAddCallback[] = [];
 const onPlayerRemoveListeners: PlayerRemoveCallback[] = [];
 const onPlayerChangeListeners: PlayerChangeCallback[] = [];
@@ -59,130 +56,139 @@ const onTutorialListeners: TutorialCallback[] = [];
 const onParcelStateListeners: ParcelStateCallback[] = [];
 const onParcelUpdateListeners: ParcelUpdateCallback[] = [];
 
-/** Subscribe and return an unsubscribe function to avoid listener leaks. */
 export function onPlayerAdd(cb: PlayerAddCallback): () => void {
   onPlayerAddListeners.push(cb);
   return () => {
-    const idx = onPlayerAddListeners.indexOf(cb);
-    if (idx !== -1) onPlayerAddListeners.splice(idx, 1);
+    const i = onPlayerAddListeners.indexOf(cb);
+    if (i !== -1) onPlayerAddListeners.splice(i, 1);
   };
 }
-
 export function onPlayerRemove(cb: PlayerRemoveCallback): () => void {
   onPlayerRemoveListeners.push(cb);
   return () => {
-    const idx = onPlayerRemoveListeners.indexOf(cb);
-    if (idx !== -1) onPlayerRemoveListeners.splice(idx, 1);
+    const i = onPlayerRemoveListeners.indexOf(cb);
+    if (i !== -1) onPlayerRemoveListeners.splice(i, 1);
   };
 }
-
 export function onPlayerChange(cb: PlayerChangeCallback): () => void {
   onPlayerChangeListeners.push(cb);
   return () => {
-    const idx = onPlayerChangeListeners.indexOf(cb);
-    if (idx !== -1) onPlayerChangeListeners.splice(idx, 1);
+    const i = onPlayerChangeListeners.indexOf(cb);
+    if (i !== -1) onPlayerChangeListeners.splice(i, 1);
   };
 }
-
 export function onChat(cb: ChatCallback): () => void {
   onChatListeners.push(cb);
   return () => {
-    const idx = onChatListeners.indexOf(cb);
-    if (idx !== -1) onChatListeners.splice(idx, 1);
+    const i = onChatListeners.indexOf(cb);
+    if (i !== -1) onChatListeners.splice(i, 1);
   };
 }
-
 export function onCreditsUpdate(cb: CreditsUpdateCallback): () => void {
   onCreditsUpdateListeners.push(cb);
   return () => {
-    const idx = onCreditsUpdateListeners.indexOf(cb);
-    if (idx !== -1) onCreditsUpdateListeners.splice(idx, 1);
+    const i = onCreditsUpdateListeners.indexOf(cb);
+    if (i !== -1) onCreditsUpdateListeners.splice(i, 1);
   };
 }
-
 export function onPropertyUpdate(cb: PropertyUpdateCallback): () => void {
   onPropertyUpdateListeners.push(cb);
   return () => {
-    const idx = onPropertyUpdateListeners.indexOf(cb);
-    if (idx !== -1) onPropertyUpdateListeners.splice(idx, 1);
+    const i = onPropertyUpdateListeners.indexOf(cb);
+    if (i !== -1) onPropertyUpdateListeners.splice(i, 1);
   };
 }
-
 export function onJobUpdate(cb: JobUpdateCallback): () => void {
   onJobUpdateListeners.push(cb);
   return () => {
-    const idx = onJobUpdateListeners.indexOf(cb);
-    if (idx !== -1) onJobUpdateListeners.splice(idx, 1);
+    const i = onJobUpdateListeners.indexOf(cb);
+    if (i !== -1) onJobUpdateListeners.splice(i, 1);
   };
 }
-
 export function onJobComplete(cb: JobCompleteCallback): () => void {
   onJobCompleteListeners.push(cb);
   return () => {
-    const idx = onJobCompleteListeners.indexOf(cb);
-    if (idx !== -1) onJobCompleteListeners.splice(idx, 1);
+    const i = onJobCompleteListeners.indexOf(cb);
+    if (i !== -1) onJobCompleteListeners.splice(i, 1);
   };
 }
-
 export function onTutorial(cb: TutorialCallback): () => void {
   onTutorialListeners.push(cb);
   return () => {
-    const idx = onTutorialListeners.indexOf(cb);
-    if (idx !== -1) onTutorialListeners.splice(idx, 1);
+    const i = onTutorialListeners.indexOf(cb);
+    if (i !== -1) onTutorialListeners.splice(i, 1);
   };
 }
-
 export function onParcelState(cb: ParcelStateCallback): () => void {
   onParcelStateListeners.push(cb);
   return () => {
-    const idx = onParcelStateListeners.indexOf(cb);
-    if (idx !== -1) onParcelStateListeners.splice(idx, 1);
+    const i = onParcelStateListeners.indexOf(cb);
+    if (i !== -1) onParcelStateListeners.splice(i, 1);
   };
 }
-
 export function onParcelUpdate(cb: ParcelUpdateCallback): () => void {
   onParcelUpdateListeners.push(cb);
   return () => {
-    const idx = onParcelUpdateListeners.indexOf(cb);
-    if (idx !== -1) onParcelUpdateListeners.splice(idx, 1);
+    const i = onParcelUpdateListeners.indexOf(cb);
+    if (i !== -1) onParcelUpdateListeners.splice(i, 1);
   };
 }
 
-// ---------- Helpers ----------
+// Local cache of every known player snapshot (keyed by sessionId)
+const knownPlayers = new Map<string, PlayerSnapshot>();
+let myLastName: string | null = null;
 
-function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
-  return {
-    id: player['id'] as string,
-    name: player['name'] as string,
-    x: player['x'] as number,
-    y: player['y'] as number,
-    z: player['z'] as number,
-    rotation: player['rotation'] as number,
-    color: (player['color'] as string) ?? '#3366cc',
-  };
+function applyPlayer(snap: PlayerSnapshot, emitEventsForSelf: boolean) {
+  const existing = knownPlayers.get(snap.id);
+  knownPlayers.set(snap.id, snap);
+  if (!existing) {
+    if (!emitEventsForSelf && snap.id === mySessionId) return;
+    for (const cb of onPlayerAddListeners) cb(snap.id, snap);
+    if (snap.id === mySessionId) myLastName = snap.name;
+  } else {
+    if (!emitEventsForSelf && snap.id === mySessionId) {
+      // still update local cache for self, no event
+      return;
+    }
+    for (const cb of onPlayerChangeListeners) cb(snap.id, snap);
+  }
 }
-
-// ---------- Connection ----------
 
 export async function connect(playerName: string): Promise<Room> {
   client = new Client(SERVER_URL);
   room = await client.joinOrCreate('game', { name: playerName });
+  mySessionId = room.sessionId;
+  knownPlayers.clear();
 
-  room.state.players.onAdd((player: Record<string, unknown>, sessionId: string) => {
-    const snap = snapshotFromSchema(player);
-    console.log(`Player joined: ${snap.name} (${sessionId})`);
-    for (const cb of onPlayerAddListeners) cb(sessionId, snap);
-
-    // Listen for field changes on this player schema instance
-    (player as any).onChange(() => {
-      const updated = snapshotFromSchema(player);
-      for (const cb of onPlayerChangeListeners) cb(sessionId, updated);
-    });
+  // Bulk player snapshot (sent on join, and periodic broadcasts)
+  room.onMessage(MessageType.PLAYER_STATE, (msg: { self?: string; players: PlayerSnapshot[] }) => {
+    if (msg.self) mySessionId = msg.self;
+    const seen = new Set<string>();
+    for (const p of msg.players) {
+      seen.add(p.id);
+      applyPlayer(p, /*emitEventsForSelf*/ true);
+    }
+    // Remove stale players not in latest snapshot
+    for (const id of Array.from(knownPlayers.keys())) {
+      if (!seen.has(id)) {
+        knownPlayers.delete(id);
+        for (const cb of onPlayerRemoveListeners) cb(id);
+      }
+    }
   });
 
-  room.state.players.onRemove((_player: Record<string, unknown>, sessionId: string) => {
-    console.log(`Player left: ${sessionId}`);
-    for (const cb of onPlayerRemoveListeners) cb(sessionId);
+  room.onMessage(MessageType.PLAYER_JOIN, (msg: PlayerSnapshot) => {
+    applyPlayer(msg, true);
+  });
+
+  room.onMessage(MessageType.PLAYER_UPDATE, (msg: PlayerSnapshot) => {
+    applyPlayer(msg, true);
+  });
+
+  room.onMessage(MessageType.PLAYER_LEAVE, (msg: { id: string }) => {
+    if (knownPlayers.delete(msg.id)) {
+      for (const cb of onPlayerRemoveListeners) cb(msg.id);
+    }
   });
 
   room.onMessage(MessageType.CHAT, (msg: ChatMessage) => {
@@ -217,11 +223,7 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onParcelUpdateListeners) cb(msg);
   });
 
-  // Parcels are synced via PARCEL_STATE (snapshot on join) and PARCEL_UPDATE
-  // (incremental) messages above. They do NOT live in the Colyseus state
-  // schema because syncing 2,500 entries broke the reflection decoder.
-
-  console.log(`Connected to room: ${room.roomId}`);
+  console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);
   return room;
 }
 
@@ -230,7 +232,7 @@ export function getRoom(): Room | null {
 }
 
 export function getSessionId(): string | null {
-  return room?.sessionId ?? null;
+  return mySessionId;
 }
 
 export function sendInput(input: PlayerInput): void {
@@ -262,11 +264,11 @@ export function sendJobBoard(): void {
 }
 
 export function getPlayerName(): string | null {
-  // The player name is stored as a join option; retrieve from room state if available
-  const sid = room?.sessionId;
-  if (!sid || !room) return null;
-  const player = room.state.players?.get(sid) as Record<string, unknown> | undefined;
-  return (player?.['name'] as string) ?? null;
+  if (mySessionId) {
+    const me = knownPlayers.get(mySessionId);
+    if (me?.name) return me.name;
+  }
+  return myLastName;
 }
 
 export function sendClaimParcel(parcelId: number): void {
@@ -281,4 +283,6 @@ export function disconnect(): void {
   room?.leave();
   room = null;
   client = null;
+  mySessionId = null;
+  knownPlayers.clear();
 }
