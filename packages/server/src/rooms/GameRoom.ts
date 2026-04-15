@@ -1,7 +1,7 @@
 import { Room, Client } from 'colyseus';
-import { GameState, PlayerState } from '../state/GameState';
+import { GameState, PlayerState, ParcelState } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS, features } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue } from '../db';
+import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue, seedParcels, claimParcel, updateBusiness as updateBusinessInDb, getAllParcels } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -19,22 +19,40 @@ export class GameRoom extends Room<GameState> {
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
 
     // Seed purchasable properties into DB if empty (12 per district, 60 total)
-    const districts = [
-      { name: 'Downtown', plots: 12, minPrice: 3000, maxPrice: 15000 },
-      { name: 'Residential', plots: 12, minPrice: 1000, maxPrice: 5000 },
-      { name: 'Industrial', plots: 12, minPrice: 1000, maxPrice: 8000 },
-      { name: 'Waterfront', plots: 12, minPrice: 3000, maxPrice: 15000 },
-      { name: 'Entertainment', plots: 12, minPrice: 500, maxPrice: 10000 },
-    ];
-    const seedBuildings: Array<{ name: string; district: string; price: number; revenue_rate: number }> = [];
-    for (const d of districts) {
-      for (let i = 1; i <= d.plots; i++) {
-        const price = Math.round(d.minPrice + (d.maxPrice - d.minPrice) * (i / d.plots));
-        const revenue_rate = Math.round(price * 0.02); // 2% of purchase price per tick
-        seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price, revenue_rate });
-      }
+    // NOTE: kept for backward compat but no longer the primary game mechanic
+    // const districts = [
+    //   { name: 'Downtown', plots: 12, minPrice: 3000, maxPrice: 15000 },
+    //   { name: 'Residential', plots: 12, minPrice: 1000, maxPrice: 5000 },
+    //   { name: 'Industrial', plots: 12, minPrice: 1000, maxPrice: 8000 },
+    //   { name: 'Waterfront', plots: 12, minPrice: 3000, maxPrice: 15000 },
+    //   { name: 'Entertainment', plots: 12, minPrice: 500, maxPrice: 10000 },
+    // ];
+    // const seedBuildings: Array<{ name: string; district: string; price: number; revenue_rate: number }> = [];
+    // for (const d of districts) {
+    //   for (let i = 1; i <= d.plots; i++) {
+    //     const price = Math.round(d.minPrice + (d.maxPrice - d.minPrice) * (i / d.plots));
+    //     const revenue_rate = Math.round(price * 0.02);
+    //     seedBuildings.push({ name: `${d.name} Plot ${i}`, district: d.name, price, revenue_rate });
+    //   }
+    // }
+    // seedProperties(seedBuildings);
+
+    // ---- Seed parcels (2,500 grid cells) ----
+    seedParcels();
+    const allParcels = getAllParcels();
+    for (const p of allParcels) {
+      const ps = new ParcelState();
+      ps.id = p.id;
+      ps.grid_x = p.grid_x;
+      ps.grid_y = p.grid_y;
+      ps.owner_id = p.owner_id ?? '';
+      ps.business_name = p.business_name ?? '';
+      ps.business_type = p.business_type ?? '';
+      ps.color = p.color;
+      ps.height = p.height;
+      this.state.parcels.set(String(p.id), ps);
     }
-    seedProperties(seedBuildings);
+    console.log(`[GameRoom] Loaded ${allParcels.length} parcels into state`);
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
       const player = this.state.players.get(client.sessionId);
@@ -105,6 +123,66 @@ export class GameRoom extends Room<GameState> {
       player.color = data.color;
     });
 
+    // ---- Parcel claim handler ----
+    this.onMessage(MessageType.CLAIM_PARCEL, (client: Client, data: { parcelId: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
+
+      const success = claimParcel(data.parcelId, client.sessionId);
+      if (success) {
+        player.credits = getPlayerCreditsFromDb(client.sessionId);
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+
+        // Update parcel state in Colyseus synced map
+        const ps = this.state.parcels.get(String(data.parcelId));
+        if (ps) {
+          ps.owner_id = client.sessionId;
+        }
+
+        // Broadcast parcel update to all clients
+        this.broadcast(MessageType.PARCEL_UPDATE, {
+          id: data.parcelId,
+          owner_id: client.sessionId,
+          owner_name: player.name,
+        });
+        console.log(`${player.name} claimed parcel #${data.parcelId}`);
+      } else {
+        client.send(MessageType.CLAIM_PARCEL, { error: 'Claim failed (already claimed or insufficient credits)' });
+      }
+    });
+
+    // ---- Business update handler ----
+    this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
+
+      const success = updateBusinessInDb(data.parcelId, client.sessionId, data);
+      if (success) {
+        // Update parcel state in Colyseus synced map
+        const ps = this.state.parcels.get(String(data.parcelId));
+        if (ps) {
+          if (data.name !== undefined) ps.business_name = data.name;
+          if (data.type !== undefined) ps.business_type = data.type;
+          if (data.color !== undefined) ps.color = data.color;
+          if (data.height !== undefined) ps.height = data.height;
+        }
+
+        this.broadcast(MessageType.PARCEL_UPDATE, {
+          id: data.parcelId,
+          owner_id: client.sessionId,
+          business_name: data.name,
+          business_type: data.type,
+          color: data.color,
+          height: data.height,
+        });
+        console.log(`${player.name} updated business on parcel #${data.parcelId}`);
+      } else {
+        client.send(MessageType.UPDATE_BUSINESS, { error: 'Update failed (not owner or parcel not claimed)' });
+      }
+    });
+
     this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -142,7 +220,7 @@ export class GameRoom extends Room<GameState> {
       });
     }
 
-    console.log(`GameRoom created: ${this.roomId}`);
+    console.log(`GameRoom created: ${this.roomId} with ${allParcels.length} parcels`);
   }
 
   onJoin(client: Client, options: { name?: string }) {

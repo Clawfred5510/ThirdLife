@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus.js';
-import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage } from '@gamestu/shared';
+import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage, ParcelData } from '@gamestu/shared';
 
 const SERVER_URL = typeof window !== 'undefined' && (window as any).__GAME_SERVER_URL__
   ? (window as any).__GAME_SERVER_URL__
@@ -29,6 +29,8 @@ export type PropertyUpdateCallback = (update: { propertyId: number; ownerId: str
 export type JobUpdateCallback = (update: { jobType: string; objective: string; timeRemaining: number; progress: string }) => void;
 export type JobCompleteCallback = (result: { jobType: string; reward: number }) => void;
 export type TutorialCallback = (message: string) => void;
+export type ParcelStateCallback = (parcels: ParcelData[]) => void;
+export type ParcelUpdateCallback = (update: Partial<ParcelData> & { owner_name?: string; error?: string }) => void;
 
 // ---------- Registered listeners ----------
 
@@ -41,6 +43,8 @@ const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
 const onJobUpdateListeners: JobUpdateCallback[] = [];
 const onJobCompleteListeners: JobCompleteCallback[] = [];
 const onTutorialListeners: TutorialCallback[] = [];
+const onParcelStateListeners: ParcelStateCallback[] = [];
+const onParcelUpdateListeners: ParcelUpdateCallback[] = [];
 
 /** Subscribe and return an unsubscribe function to avoid listener leaks. */
 export function onPlayerAdd(cb: PlayerAddCallback): () => void {
@@ -115,7 +119,36 @@ export function onTutorial(cb: TutorialCallback): () => void {
   };
 }
 
+export function onParcelState(cb: ParcelStateCallback): () => void {
+  onParcelStateListeners.push(cb);
+  return () => {
+    const idx = onParcelStateListeners.indexOf(cb);
+    if (idx !== -1) onParcelStateListeners.splice(idx, 1);
+  };
+}
+
+export function onParcelUpdate(cb: ParcelUpdateCallback): () => void {
+  onParcelUpdateListeners.push(cb);
+  return () => {
+    const idx = onParcelUpdateListeners.indexOf(cb);
+    if (idx !== -1) onParcelUpdateListeners.splice(idx, 1);
+  };
+}
+
 // ---------- Helpers ----------
+
+function parcelSnapshotFromSchema(parcel: Record<string, unknown>): ParcelData {
+  return {
+    id: parcel['id'] as number,
+    grid_x: parcel['grid_x'] as number,
+    grid_y: parcel['grid_y'] as number,
+    owner_id: (parcel['owner_id'] as string) ?? '',
+    business_name: (parcel['business_name'] as string) ?? '',
+    business_type: (parcel['business_type'] as string) ?? '',
+    color: (parcel['color'] as string) ?? '#4a90d9',
+    height: (parcel['height'] as number) ?? 4,
+  };
+}
 
 function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
   return {
@@ -176,6 +209,25 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onTutorialListeners) cb(msg.message);
   });
 
+  room.onMessage(MessageType.PARCEL_STATE, (msg: { parcels: ParcelData[] }) => {
+    for (const cb of onParcelStateListeners) cb(msg.parcels);
+  });
+
+  room.onMessage(MessageType.PARCEL_UPDATE, (msg: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
+    for (const cb of onParcelUpdateListeners) cb(msg);
+  });
+
+  // Listen for Colyseus schema-based parcel state changes (MapSchema)
+  room.state.parcels?.onAdd?.((parcel: Record<string, unknown>, key: string) => {
+    const snap = parcelSnapshotFromSchema(parcel);
+    for (const cb of onParcelUpdateListeners) cb(snap);
+  });
+
+  room.state.parcels?.onChange?.((parcel: Record<string, unknown>, key: string) => {
+    const snap = parcelSnapshotFromSchema(parcel);
+    for (const cb of onParcelUpdateListeners) cb(snap);
+  });
+
   console.log(`Connected to room: ${room.roomId}`);
   return room;
 }
@@ -222,6 +274,14 @@ export function getPlayerName(): string | null {
   if (!sid || !room) return null;
   const player = room.state.players?.get(sid) as Record<string, unknown> | undefined;
   return (player?.['name'] as string) ?? null;
+}
+
+export function sendClaimParcel(parcelId: number): void {
+  room?.send(MessageType.CLAIM_PARCEL, { parcelId });
+}
+
+export function sendUpdateBusiness(parcelId: number, data: { name?: string; type?: string; color?: string; height?: number }): void {
+  room?.send(MessageType.UPDATE_BUSINESS, { parcelId, ...data });
 }
 
 export function disconnect(): void {

@@ -136,28 +136,20 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // ---- Parcel lot markers (flat pads) ----
+  // ---- Parcel lot markers (flat pads for every parcel) ----
   const lotMat = new StandardMaterial('lotMat', scene);
   lotMat.diffuseColor = new Color3(0.45, 0.48, 0.42);
 
-  // Only create visible lot markers for a subset to save draw calls
-  // (2,500 boxes is a lot — use instancing or skip for now and just
-  //  render roads as the visual grid structure)
-  // Instead, render thin border outlines for every 5th parcel as grid guides
-  const guideMat = new StandardMaterial('guideMat', scene);
-  guideMat.diffuseColor = new Color3(0.55, 0.58, 0.52);
-
   for (const parcel of ALL_PARCELS) {
-    // Only place guide markers every 10 parcels for orientation
-    if (parcel.grid_x % 10 === 0 && parcel.grid_y % 10 === 0) {
-      const marker = MeshBuilder.CreateGround(`guide_${parcel.id}`, {
-        width: CELL_SIZE - 2,
-        height: CELL_SIZE - 2,
-      }, scene);
-      marker.position.set(parcel.x, 0.03, parcel.z);
-      marker.material = guideMat;
-      meshes.push(marker);
-    }
+    const lot = MeshBuilder.CreateGround(`lot_${parcel.id}`, {
+      width: CELL_SIZE - 1,
+      height: CELL_SIZE - 1,
+    }, scene);
+    lot.position.set(parcel.x, 0.02, parcel.z);
+    lot.material = lotMat;
+    lot.isPickable = true;
+    lot.metadata = { parcelId: parcel.id };
+    meshes.push(lot);
   }
 
   return meshes;

@@ -34,6 +34,17 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface ParcelData {
+  id: number;
+  grid_x: number;
+  grid_y: number;
+  owner_id: string;
+  business_name: string;
+  business_type: string;
+  color: string;
+  height: number;
+}
+
 export enum MessageType {
   PLAYER_INPUT = 'player_input',
   CHAT = 'chat',
@@ -49,4 +60,8 @@ export enum MessageType {
   JOB_COMPLETE = 'job_complete',
   JOB_BOARD = 'job_board',
   TUTORIAL = 'tutorial',
+  CLAIM_PARCEL = 'claim_parcel',
+  UPDATE_BUSINESS = 'update_business',
+  PARCEL_STATE = 'parcel_state',
+  PARCEL_UPDATE = 'parcel_update',
 }

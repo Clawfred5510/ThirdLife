@@ -5,6 +5,7 @@ import { Toast } from './components/Toast';
 import { Minimap } from './components/Minimap';
 import { Wallet } from './components/Wallet';
 import { PropertyPanel } from './components/PropertyPanel';
+import { ParcelPanel } from './components/ParcelPanel';
 import { GameMenu } from './components/GameMenu';
 import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
@@ -26,6 +27,7 @@ export const App: React.FC = () => {
       <Toast />
       <Minimap />
       <PropertyPanel />
+      <ParcelPanel />
       <GameMenu />
       {features.JOBS && (
         <React.Suspense fallback={null}>

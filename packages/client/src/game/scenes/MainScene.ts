@@ -10,6 +10,8 @@ import {
   Color4,
   StandardMaterial,
   AbstractMesh,
+  ActionManager,
+  ExecuteCodeAction,
 } from '@babylonjs/core';
 import { AdvancedDynamicTexture, Rectangle, TextBlock } from '@babylonjs/gui';
 import {
@@ -19,11 +21,13 @@ import {
   sendInput,
   getSessionId,
   PlayerSnapshot,
+  onParcelUpdate,
 } from '../../network/Client';
-import { PlayerInput, TICK_RATE, PLAYER_SPEED, features } from '@gamestu/shared';
+import { PlayerInput, TICK_RATE, PLAYER_SPEED, features, ParcelData } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
-import { spawnBuildings } from '../entities/buildings';
+import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
 import { spawnNPCs } from '../entities/npcs';
+import { selectParcel } from '../../ui/components/ParcelPanel';
 
 /** Module-level reference to the active DayNightCycle for external access. */
 let activeDayNight: DayNightCycle | null = null;
@@ -57,9 +61,22 @@ interface RemotePlayer {
 /** How quickly remote meshes interpolate toward their target (0-1, applied per-frame). */
 const LERP_FACTOR = 0.2;
 
+/** Per-parcel rendering data. */
+interface ParcelRenderData {
+  /** The ground tile mesh (always present). */
+  ground: AbstractMesh;
+  /** The business box mesh (only when owned). */
+  box: AbstractMesh | null;
+  /** Floating business name label (only when owned with a name). */
+  label: Rectangle | null;
+}
+
 export class MainScene {
   /** Remote player meshes keyed by Colyseus sessionId. */
   private remotePlayers = new Map<string, RemotePlayer>();
+
+  /** Parcel rendering data keyed by parcel ID. */
+  private parcelRenders = new Map<number, ParcelRenderData>();
 
   /** Fullscreen GUI layer for player name labels. */
   private labelUI!: AdvancedDynamicTexture;
@@ -85,6 +102,9 @@ export class MainScene {
   /** Session ID of the local player — set from Colyseus when online, or from offline spawn. */
   private localPlayerId: string | null = null;
 
+  /** Lookup from world position to parcel ID. */
+  private parcelByDef = new Map<string, number>();
+
   constructor(
     private engine: Engine,
     private canvas: HTMLCanvasElement,
@@ -109,7 +129,7 @@ export class MainScene {
     light.intensity = 0.9;
 
     // ---- Uniform parcel grid (replaces legacy districts, river, bay, boulevards) ----
-    spawnBuildings(scene);
+    this.spawnBuildingsAndSetupParcels(scene);
 
     // ---- Day/Night Cycle ----
     if (features.DAY_NIGHT) {
@@ -143,6 +163,12 @@ export class MainScene {
       this.updateRemotePlayerTarget(sessionId, player);
     });
 
+    // ---- Parcel update listener (from Colyseus schema sync + broadcast messages) ----
+    onParcelUpdate((update: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
+      if (update.id === undefined) return;
+      this.handleParcelUpdate(update.id, update);
+    });
+
     // Expose offline spawn method for when server is unavailable
     (this as any)._offlinePlayerSpawn = (localId: string) => {
       this.localPlayerId = localId;
@@ -173,6 +199,229 @@ export class MainScene {
     });
 
     return scene;
+  }
+
+  // ---------- Parcel system ----------
+
+  private spawnBuildingsAndSetupParcels(scene: Scene): void {
+    // Build a lookup map from world position to parcel ID
+    for (const p of ALL_PARCELS) {
+      this.parcelByDef.set(`${p.x},${p.z}`, p.id);
+    }
+
+    const meshes = spawnBuildings(scene);
+
+    // Register each parcel ground tile for pointer picking
+    for (const mesh of meshes) {
+      if (mesh.name.startsWith('lot_') && mesh.metadata?.parcelId !== undefined) {
+        const parcelId = mesh.metadata.parcelId as number;
+        this.parcelRenders.set(parcelId, {
+          ground: mesh,
+          box: null,
+          label: null,
+        });
+
+        // Set up click action on each parcel ground tile
+        mesh.actionManager = new ActionManager(scene);
+        mesh.actionManager.registerAction(
+          new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+            this.onParcelClicked(parcelId);
+          }),
+        );
+      }
+    }
+  }
+
+  private onParcelClicked(parcelId: number): void {
+    const renderData = this.parcelRenders.get(parcelId);
+    if (!renderData) return;
+
+    const def = ALL_PARCELS.find((p) => p.id === parcelId);
+    if (!def) return;
+
+    // Get the current state from the render data (box presence indicates owned)
+    const parcelInfo: ParcelData = {
+      id: parcelId,
+      grid_x: def.grid_x,
+      grid_y: def.grid_y,
+      owner_id: '',
+      business_name: '',
+      business_type: '',
+      color: '#4a90d9',
+      height: 4,
+    };
+
+    // Check if there's a box (business) on this parcel — the box stores metadata
+    if (renderData.box) {
+      const meta = renderData.box.metadata;
+      parcelInfo.owner_id = meta?.owner_id ?? '';
+      parcelInfo.business_name = meta?.business_name ?? '';
+      parcelInfo.business_type = meta?.business_type ?? '';
+      parcelInfo.color = meta?.color ?? '#4a90d9';
+      parcelInfo.height = meta?.height ?? 4;
+    }
+
+    selectParcel(parcelInfo);
+  }
+
+  private handleParcelUpdate(parcelId: number, data: Partial<ParcelData>): void {
+    const renderData = this.parcelRenders.get(parcelId);
+    if (!renderData || !this.sceneRef) return;
+
+    const def = ALL_PARCELS.find((p) => p.id === parcelId);
+    if (!def) return;
+
+    // If owner_id is empty string or undefined, remove the business
+    const ownerId = data.owner_id ?? '';
+    if (ownerId === '') {
+      this.removeBusinessFromParcel(renderData);
+      return;
+    }
+
+    // Update or create the business box
+    this.updateOrCreateBusinessBox(renderData, def, data);
+  }
+
+  private updateOrCreateBusinessBox(
+    renderData: ParcelRenderData,
+    def: ParcelDef,
+    data: Partial<ParcelData>,
+  ): void {
+    const scene = this.sceneRef!;
+
+    if (!renderData.box) {
+      // Create new business box
+      const height = data.height ?? 4;
+      const box = MeshBuilder.CreateBox(`bizBox_${def.id}`, {
+        width: 14,
+        height: Math.max(0.5, height),
+        depth: 14,
+      }, scene);
+      box.position.set(def.x, Math.max(0.5, height) / 2, def.z);
+
+      const mat = new StandardMaterial(`bizMat_${def.id}`, scene);
+      mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
+      box.material = mat;
+
+      box.isPickable = true;
+      box.metadata = {
+        parcelId: def.id,
+        owner_id: data.owner_id ?? '',
+        business_name: data.business_name ?? '',
+        business_type: data.business_type ?? '',
+        color: data.color ?? '#4a90d9',
+        height: height,
+      };
+
+      // Click action on the business box too
+      box.actionManager = new ActionManager(scene);
+      box.actionManager.registerAction(
+        new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+          this.onParcelClicked(def.id);
+        }),
+      );
+
+      renderData.box = box;
+
+      // Create floating label if there's a business name
+      if (data.business_name && data.business_name.trim() !== '') {
+        const labelRect = new Rectangle(`bizLabel_${def.id}`);
+        labelRect.width = '140px';
+        labelRect.height = '28px';
+        labelRect.cornerRadius = 4;
+        labelRect.color = 'transparent';
+        labelRect.background = 'rgba(0,0,0,0.55)';
+        labelRect.thickness = 0;
+
+        const labelText = new TextBlock(`bizLabelText_${def.id}`, data.business_name);
+        labelText.color = 'white';
+        labelText.fontSize = 12;
+        labelText.resizeToFit = true;
+        labelRect.addControl(labelText);
+
+        this.labelUI.addControl(labelRect);
+        labelRect.linkWithMesh(box);
+        labelRect.linkOffsetY = -40;
+
+        renderData.label = labelRect;
+      }
+    } else {
+      // Update existing box
+      const box = renderData.box;
+      const newHeight = data.height ?? Number(box.metadata?.height ?? 4);
+      const newColor = data.color ?? box.metadata?.color ?? '#4a90d9';
+
+      // Update height
+      if (data.height !== undefined) {
+        box.scaling.y = Math.max(0.5, newHeight) / Math.max(0.5, Number(box.metadata?.height ?? 4));
+        box.position.y = Math.max(0.5, newHeight) / 2;
+      }
+
+      // Update color
+      if (data.color !== undefined) {
+        const mat = box.material as StandardMaterial;
+        if (mat) {
+          mat.diffuseColor = hexToColor3(newColor);
+        }
+      }
+
+      // Update metadata
+      box.metadata = {
+        ...box.metadata,
+        owner_id: data.owner_id ?? box.metadata?.owner_id ?? '',
+        business_name: data.business_name ?? box.metadata?.business_name ?? '',
+        business_type: data.business_type ?? box.metadata?.business_type ?? '',
+        color: newColor,
+        height: newHeight,
+      };
+
+      // Update label
+      if (data.business_name !== undefined) {
+        const name = data.business_name.trim();
+        if (name === '' && renderData.label) {
+          renderData.label.dispose();
+          renderData.label = null;
+        } else if (name !== '') {
+          if (renderData.label) {
+            // Update existing label text
+            const textBlock = renderData.label.children?.[0] as TextBlock | undefined;
+            if (textBlock) textBlock.text = name;
+          } else {
+            // Create new label
+            const labelRect = new Rectangle(`bizLabel_${def.id}`);
+            labelRect.width = '140px';
+            labelRect.height = '28px';
+            labelRect.cornerRadius = 4;
+            labelRect.color = 'transparent';
+            labelRect.background = 'rgba(0,0,0,0.55)';
+            labelRect.thickness = 0;
+
+            const labelText = new TextBlock(`bizLabelText_${def.id}`, name);
+            labelText.color = 'white';
+            labelText.fontSize = 12;
+            labelText.resizeToFit = true;
+            labelRect.addControl(labelText);
+
+            this.labelUI.addControl(labelRect);
+            labelRect.linkWithMesh(box);
+            labelRect.linkOffsetY = -40;
+
+            renderData.label = labelRect;
+          }
+        }
+      }
+    }
+  }
+
+  private removeBusinessFromParcel(renderData: ParcelRenderData): void {
+    if (renderData.box) {
+      renderData.box.dispose();
+      renderData.box = null;
+    }
+    if (renderData.label) {
+      renderData.label.dispose();
+      renderData.label = null;
+    }
   }
 
   // ---------- Remote player management ----------
