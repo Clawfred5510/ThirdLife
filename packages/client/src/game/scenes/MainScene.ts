@@ -638,20 +638,51 @@ export class MainScene {
   // ---------- Keyboard ----------
 
   private setupKeyboardInput(): void {
-    const gameKeys = new Set([
+    // Keys we preventDefault() on so the browser doesn't scroll or fire a
+    // global shortcut. Shift is deliberately NOT in this set — it's a
+    // modifier and we don't want to break Shift+letter capitalisation in
+    // the chat input.
+    const preventKeys = new Set([
       'KeyW', 'KeyA', 'KeyS', 'KeyD',
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Space', 'ShiftLeft', 'ShiftRight',
+      'Space',
     ]);
 
+    // When the user is typing into an input / textarea (e.g. the chat box),
+    // suppress all game-key handling. Otherwise WASD would both type letters
+    // AND move the character, and the character could "sprint" just because
+    // the user used Shift to capitalise.
+    const isTypingInInput = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+    };
+
     window.addEventListener('keydown', (e) => {
-      if (gameKeys.has(e.code)) e.preventDefault();
+      if (isTypingInInput(e.target)) return;
+      if (preventKeys.has(e.code)) e.preventDefault();
       this.keys[e.code] = true;
     });
 
     window.addEventListener('keyup', (e) => {
-      if (gameKeys.has(e.code)) e.preventDefault();
+      if (preventKeys.has(e.code)) e.preventDefault();
+      // Always clear the key on keyup, even when typing — prevents sticky
+      // state if the user finished typing while a game key was down.
       this.keys[e.code] = false;
+    });
+
+    // Release every tracked key when we lose focus. Without this, alt-tabbing
+    // while W or Shift is held leaves the key permanently down because the
+    // browser never delivers the keyup — the character would walk or sprint
+    // on its own until the user re-presses and releases the key.
+    const releaseAllKeys = (): void => {
+      for (const code of Object.keys(this.keys)) {
+        this.keys[code] = false;
+      }
+    };
+    window.addEventListener('blur', releaseAllKeys);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) releaseAllKeys();
     });
   }
 
