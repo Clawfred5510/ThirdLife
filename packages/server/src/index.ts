@@ -4,8 +4,10 @@ import express from 'express';
 import cors from 'cors';
 import { GameRoom } from './rooms/GameRoom';
 import studioApi from './api/studio';
+import adminApi from './api/admin';
 import { GAME_NAME, features, initFeatures } from '@gamestu/shared';
 import { config } from './config';
+import { getAllParcels, getAllPlayers } from './db';
 
 initFeatures(config.features);
 
@@ -36,6 +38,20 @@ app.get('/health', (_req, res) => {
   });
 });
 
+app.get('/metrics', (_req, res) => {
+  const parcels = getAllParcels();
+  const players = getAllPlayers();
+  res.json({
+    status: 'ok',
+    uptime_seconds: process.uptime(),
+    players_registered: players.length,
+    parcels_total: parcels.length,
+    parcels_claimed: parcels.filter((p) => !!p.owner_id).length,
+    parcels_with_business: parcels.filter((p) => !!p.business_name).length,
+  });
+});
+
+app.use('/admin', adminApi);
 app.use('/api', studioApi);
 
 httpServer.listen(config.port, config.host, () => {

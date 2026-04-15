@@ -63,6 +63,9 @@ interface DBBackend {
   updateBusiness(parcelId: number, playerId: string, data: BusinessUpdate): boolean;
   getAllParcels(): ParcelRow[];
   getParcelOwner(parcelId: number): string | null;
+  wipeParcels(): void;
+  getAllPlayers(): PlayerRow[];
+  deletePlayer(id: string): boolean;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -261,6 +264,35 @@ class SQLiteDatabase implements DBBackend {
     const row = this.db.prepare('SELECT owner_id FROM parcels WHERE id = ?').get(parcelId) as { owner_id: string | null } | undefined;
     return row?.owner_id ?? null;
   }
+
+  wipeParcels(): void {
+    this.db.prepare(`
+      UPDATE parcels SET
+        owner_id = NULL,
+        business_name = NULL,
+        business_type = NULL,
+        color = '#4a90d9',
+        height = 4,
+        claimed_at = NULL
+    `).run();
+  }
+
+  getAllPlayers(): PlayerRow[] {
+    return this.db.prepare('SELECT * FROM players').all() as PlayerRow[];
+  }
+
+  deletePlayer(id: string): boolean {
+    this.db.prepare(`
+      UPDATE parcels SET
+        owner_id = NULL,
+        business_name = NULL,
+        business_type = NULL,
+        claimed_at = NULL
+      WHERE owner_id = ?
+    `).run(id);
+    const result = this.db.prepare('DELETE FROM players WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
 }
 
 // ── In-Memory Map-based fallback ───────────────────────────────────────────
@@ -408,6 +440,33 @@ class MemoryDB implements DBBackend {
   getParcelOwner(parcelId: number): string | null {
     return this.parcels.get(parcelId)?.owner_id ?? null;
   }
+
+  wipeParcels(): void {
+    for (const p of this.parcels.values()) {
+      p.owner_id = null;
+      p.business_name = null;
+      p.business_type = null;
+      p.color = '#4a90d9';
+      p.height = 4;
+      p.claimed_at = null;
+    }
+  }
+
+  getAllPlayers(): PlayerRow[] {
+    return Array.from(this.players.values());
+  }
+
+  deletePlayer(id: string): boolean {
+    for (const p of this.parcels.values()) {
+      if (p.owner_id === id) {
+        p.owner_id = null;
+        p.business_name = null;
+        p.business_type = null;
+        p.claimed_at = null;
+      }
+    }
+    return this.players.delete(id);
+  }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -497,4 +556,16 @@ export function getAllParcels(): ParcelRow[] {
 
 export function getParcelOwner(parcelId: number): string | null {
   return backend.getParcelOwner(parcelId);
+}
+
+export function wipeParcels(): void {
+  backend.wipeParcels();
+}
+
+export function getAllPlayers(): PlayerRow[] {
+  return backend.getAllPlayers();
+}
+
+export function deletePlayer(id: string): boolean {
+  return backend.deletePlayer(id);
 }
