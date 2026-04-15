@@ -150,19 +150,6 @@ export function onParcelUpdate(cb: ParcelUpdateCallback): () => void {
 
 // ---------- Helpers ----------
 
-function parcelSnapshotFromSchema(parcel: Record<string, unknown>): ParcelData {
-  return {
-    id: parcel['id'] as number,
-    grid_x: parcel['grid_x'] as number,
-    grid_y: parcel['grid_y'] as number,
-    owner_id: (parcel['owner_id'] as string) ?? '',
-    business_name: (parcel['business_name'] as string) ?? '',
-    business_type: (parcel['business_type'] as string) ?? '',
-    color: (parcel['color'] as string) ?? '#4a90d9',
-    height: (parcel['height'] as number) ?? 4,
-  };
-}
-
 function snapshotFromSchema(player: Record<string, unknown>): PlayerSnapshot {
   return {
     id: player['id'] as string,
@@ -230,16 +217,9 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onParcelUpdateListeners) cb(msg);
   });
 
-  // Listen for Colyseus schema-based parcel state changes (MapSchema)
-  room.state.parcels?.onAdd?.((parcel: Record<string, unknown>, key: string) => {
-    const snap = parcelSnapshotFromSchema(parcel);
-    for (const cb of onParcelUpdateListeners) cb(snap);
-  });
-
-  room.state.parcels?.onChange?.((parcel: Record<string, unknown>, key: string) => {
-    const snap = parcelSnapshotFromSchema(parcel);
-    for (const cb of onParcelUpdateListeners) cb(snap);
-  });
+  // Parcels are synced via PARCEL_STATE (snapshot on join) and PARCEL_UPDATE
+  // (incremental) messages above. They do NOT live in the Colyseus state
+  // schema because syncing 2,500 entries broke the reflection decoder.
 
   console.log(`Connected to room: ${room.roomId}`);
   return room;

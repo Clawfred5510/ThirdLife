@@ -1,5 +1,5 @@
 import { Room, Client } from 'colyseus';
-import { GameState, PlayerState, ParcelState } from '../state/GameState';
+import { GameState, PlayerState } from '../state/GameState';
 import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS, features } from '@gamestu/shared';
 import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerProperties, seedProperties, getPlayerTotalRevenue, seedParcels, claimParcel, updateBusiness as updateBusinessInDb, getAllParcels } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
@@ -37,22 +37,10 @@ export class GameRoom extends Room<GameState> {
     // }
     // seedProperties(seedBuildings);
 
-    // ---- Seed parcels (2,500 grid cells) ----
+    // ---- Seed parcels into DB (not into state schema — would break decoder) ----
     seedParcels();
     const allParcels = getAllParcels();
-    for (const p of allParcels) {
-      const ps = new ParcelState();
-      ps.id = p.id;
-      ps.grid_x = p.grid_x;
-      ps.grid_y = p.grid_y;
-      ps.owner_id = p.owner_id ?? '';
-      ps.business_name = p.business_name ?? '';
-      ps.business_type = p.business_type ?? '';
-      ps.color = p.color;
-      ps.height = p.height;
-      this.state.parcels.set(String(p.id), ps);
-    }
-    console.log(`[GameRoom] Loaded ${allParcels.length} parcels into state`);
+    console.log(`[GameRoom] ${allParcels.length} parcels in DB`);
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
       const player = this.state.players.get(client.sessionId);
@@ -134,13 +122,7 @@ export class GameRoom extends Room<GameState> {
         player.credits = getPlayerCreditsFromDb(client.sessionId);
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
 
-        // Update parcel state in Colyseus synced map
-        const ps = this.state.parcels.get(String(data.parcelId));
-        if (ps) {
-          ps.owner_id = client.sessionId;
-        }
-
-        // Broadcast parcel update to all clients
+        // Broadcast parcel update to all clients (parcels live outside schema)
         this.broadcast(MessageType.PARCEL_UPDATE, {
           id: data.parcelId,
           owner_id: client.sessionId,
@@ -160,15 +142,6 @@ export class GameRoom extends Room<GameState> {
 
       const success = updateBusinessInDb(data.parcelId, client.sessionId, data);
       if (success) {
-        // Update parcel state in Colyseus synced map
-        const ps = this.state.parcels.get(String(data.parcelId));
-        if (ps) {
-          if (data.name !== undefined) ps.business_name = data.name;
-          if (data.type !== undefined) ps.business_type = data.type;
-          if (data.color !== undefined) ps.color = data.color;
-          if (data.height !== undefined) ps.height = data.height;
-        }
-
         this.broadcast(MessageType.PARCEL_UPDATE, {
           id: data.parcelId,
           owner_id: client.sessionId,
@@ -241,6 +214,19 @@ export class GameRoom extends Room<GameState> {
 
     // Send initial credits so client UI can display them immediately
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+
+    // Send full parcel snapshot (outside schema to avoid decoder issues)
+    const snapshot = getAllParcels().map((p) => ({
+      id: p.id,
+      grid_x: p.grid_x,
+      grid_y: p.grid_y,
+      owner_id: p.owner_id ?? '',
+      business_name: p.business_name ?? '',
+      business_type: p.business_type ?? '',
+      color: p.color,
+      height: p.height,
+    }));
+    client.send(MessageType.PARCEL_STATE, { parcels: snapshot });
 
     // Start tutorial for new players (gated by FEATURE_TUTORIAL)
     if (features.TUTORIAL) {

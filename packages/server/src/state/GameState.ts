@@ -11,18 +11,10 @@ export class PlayerState extends Schema {
   @type('string') color: string = '#3366cc';
 }
 
-export class ParcelState extends Schema {
-  @type('number') id: number = 0;
-  @type('number') grid_x: number = 0;
-  @type('number') grid_y: number = 0;
-  @type('string') owner_id: string = '';
-  @type('string') business_name: string = '';
-  @type('string') business_type: string = '';
-  @type('string') color: string = '#4a90d9';
-  @type('number') height: number = 4;
-}
-
+// NOTE: parcels are intentionally NOT in the schema. Syncing 2,500 MapSchema
+// entries on join broke the client-side reflection decoder ("refId not found").
+// Parcels are pushed on join via `MessageType.PARCEL_STATE` and
+// per-parcel updates via `MessageType.PARCEL_UPDATE` broadcasts.
 export class GameState extends Schema {
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
-  @type({ map: ParcelState }) parcels = new MapSchema<ParcelState>();
 }
