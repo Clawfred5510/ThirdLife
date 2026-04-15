@@ -9,7 +9,8 @@ A browser-based persistent multiplayer life simulation. Players share a city, ow
 - `packages/client/` — Babylon.js + React + Vite (port 3000)
 - `packages/server/` — Colyseus + Express + Node (port 2567)
 - `packages/shared/` — Shared types and constants
-- `packages/dashboard/` — Studio management dashboard (port 3002)
+
+The old `packages/dashboard/` was removed on 2026-04-15. Studio operations, plan tracking, and live project status now live in the separate **SuSuStudio** repo, deployed at https://susustudio.vercel.app. Master plan: [SuSuStudio/docs/FULL-CHECKLIST.md](https://github.com/Clawfred5510/SuSuStudio/blob/main/docs/FULL-CHECKLIST.md).
 
 **Current Phase:** Phase 1 — Multiplayer Core
 
