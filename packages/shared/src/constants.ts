@@ -1,7 +1,10 @@
 export const TICK_RATE = 20; // Server ticks per second
 export const WORLD_SIZE = 2400; // World dimensions in units (grid ~2392 wide)
 export const MAX_PLAYERS_PER_ROOM = 50;
-export const PLAYER_SPEED = 5; // Units per second
+/** Base walking speed in world units per second. */
+export const PLAYER_SPEED = 10;
+/** Multiplier applied to PLAYER_SPEED while Shift is held. */
+export const SPRINT_MULTIPLIER = 2;
 export const DEFAULT_SERVER_PORT = 2567;
 export const GAME_NAME = 'ThirdLife';
 export const WORLD_HALF = WORLD_SIZE / 2; // 1200

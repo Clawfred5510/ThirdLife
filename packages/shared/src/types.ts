@@ -10,6 +10,7 @@ export interface PlayerInput {
   left: boolean;
   right: boolean;
   jump: boolean;
+  sprint?: boolean;
   rotation?: number; // facing direction in radians
 }
 

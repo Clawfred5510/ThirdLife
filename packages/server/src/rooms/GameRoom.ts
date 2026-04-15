@@ -3,6 +3,7 @@ import { GameState, PlayerData } from '../state/GameState';
 import {
   TICK_RATE,
   PLAYER_SPEED,
+  SPRINT_MULTIPLIER,
   WORLD_HALF,
   MessageType,
   PlayerInput,
@@ -66,6 +67,7 @@ export class GameRoom extends Room<GameState> {
       ) {
         return;
       }
+      if (input.sprint !== undefined && typeof input.sprint !== 'boolean') return;
 
       if (input.forward || input.backward || input.left || input.right) {
         this.pendingInputs.set(client.sessionId, input);
@@ -334,7 +336,8 @@ export class GameRoom extends Room<GameState> {
       const player = this.players.get(sessionId);
       if (!player) return;
 
-      const speed = PLAYER_SPEED * dt;
+      const sprintActive = input.sprint === true;
+      const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * dt;
 
       // Movement is relative to camera yaw (player.rotation, in radians,
       // set from input.rotation). forward = (sin(yaw), cos(yaw)) in XZ;

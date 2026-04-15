@@ -27,7 +27,7 @@ import {
   PlayerSnapshot,
   onParcelUpdate,
 } from '../../network/Client';
-import { PlayerInput, TICK_RATE, PLAYER_SPEED, features, ParcelData } from '@gamestu/shared';
+import { PlayerInput, TICK_RATE, PLAYER_SPEED, SPRINT_MULTIPLIER, features, ParcelData } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
 import { spawnNPCs } from '../entities/npcs';
@@ -576,7 +576,8 @@ export class MainScene {
     if (!remote || !this.arcCamera) return;
 
     const dt = this.engine.getDeltaTime() / 1000;
-    const speed = PLAYER_SPEED * dt;
+    const sprintActive = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
+    const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * dt;
 
     // Camera yaw (same math as sendPlayerInput)
     const dir = this.arcCamera.target.subtract(this.arcCamera.position);
@@ -640,7 +641,7 @@ export class MainScene {
     const gameKeys = new Set([
       'KeyW', 'KeyA', 'KeyS', 'KeyD',
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Space',
+      'Space', 'ShiftLeft', 'ShiftRight',
     ]);
 
     window.addEventListener('keydown', (e) => {
@@ -684,6 +685,7 @@ export class MainScene {
       left: !!this.keys['KeyA'] || !!this.keys['ArrowLeft'],
       right: !!this.keys['KeyD'] || !!this.keys['ArrowRight'],
       jump: !!this.keys['Space'],
+      sprint: !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight'],
       rotation: yaw,
     };
 
