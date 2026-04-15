@@ -54,6 +54,8 @@ interface RemotePlayer {
   targetX: number;
   targetY: number;
   targetZ: number;
+  /** Latest server-authoritative yaw (radians) — smoothed toward each frame. */
+  targetRotation: number;
   /** Last known color hex, used to detect changes. */
   currentColor: string;
 }
@@ -92,6 +94,9 @@ export class MainScene {
 
   /** Timestamp of the last input sent to the server (for throttling). */
   private lastInputTime = 0;
+
+  /** Last yaw sent to the server — used to broadcast pure-rotation updates when idle. */
+  private lastSentYaw = 0;
 
   /** Reference to the initial ArcRotateCamera so it can be disposed when follow camera activates. */
   private arcCamera: ArcRotateCamera | null = null;
@@ -480,8 +485,10 @@ export class MainScene {
       targetX: player.x,
       targetY: player.y,
       targetZ: player.z,
+      targetRotation: player.rotation ?? 0,
       currentColor: playerColor,
     });
+    mesh.rotation.y = player.rotation ?? 0;
 
     // Switch to third-person ArcRotate camera tracking the local player.
     // Standard TPS: camera sits behind the player, WASD moves relative to
@@ -508,6 +515,7 @@ export class MainScene {
       cam.panningSensibility = 0;
       cam.angularSensibilityX = 300;    // lower = more sensitive
       cam.angularSensibilityY = 300;
+      cam.inertia = 0.4;                // less drift after releasing the mouse
       cam.maxZ = 2500;                  // reduce from default 10000 for better depth precision
       cam.useBouncingBehavior = false;
       cam.useAutoRotationBehavior = false;
@@ -536,6 +544,7 @@ export class MainScene {
       remote.targetX = player.x;
       remote.targetY = player.y;
       remote.targetZ = player.z;
+      remote.targetRotation = player.rotation ?? 0;
 
       // Update mesh color if it changed
       if (player.color && player.color !== remote.currentColor) {
@@ -590,8 +599,10 @@ export class MainScene {
       mx /= len; mz /= len;
       remote.mesh.position.x += mx * speed;
       remote.mesh.position.z += mz * speed;
-      remote.mesh.rotation.y = Math.atan2(mx, mz);
     }
+    // Character always faces the camera's forward direction (TPS / Roblox-style).
+    // Yaw is continuous, not gated on movement.
+    remote.mesh.rotation.y = yaw;
 
     // Reconcile with server: lerp mesh toward authoritative target every
     // frame. Tiny nudges hide latency; big diffs (e.g. teleport via fast
@@ -620,6 +631,12 @@ export class MainScene {
       pos.x += (remote.targetX - pos.x) * LERP_FACTOR;
       pos.y += (remote.targetY + 0.9 - pos.y) * LERP_FACTOR; // +0.9 for capsule half-height
       pos.z += (remote.targetZ - pos.z) * LERP_FACTOR;
+
+      // Yaw interpolation, shortest-arc aware
+      let dYaw = remote.targetRotation - remote.mesh.rotation.y;
+      while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+      while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+      remote.mesh.rotation.y += dYaw * LERP_FACTOR;
 
       // Clamp Y to ground level (capsule half-height = 0.9) to prevent drift below terrain
       if (pos.y < 0.9) {
@@ -685,12 +702,24 @@ export class MainScene {
     const now = performance.now();
     const minInterval = 1000 / TICK_RATE;
 
+    // Also send when only rotation changed (idle but orbiting the camera)
+    // so remote players see the character turn in place.
+    let yawDelta = Math.abs(yaw - this.lastSentYaw);
+    if (yawDelta > Math.PI) yawDelta = 2 * Math.PI - yawDelta;
+    const rotationChanged = yawDelta > 0.03; // ~1.7 degrees
+
     if (!isMoving && this.wasMoving) {
       sendInput(input);
       this.lastInputTime = now;
+      this.lastSentYaw = yaw;
     } else if (isMoving && now - this.lastInputTime >= minInterval) {
       sendInput(input);
       this.lastInputTime = now;
+      this.lastSentYaw = yaw;
+    } else if (!isMoving && rotationChanged && now - this.lastInputTime >= minInterval) {
+      sendInput(input);
+      this.lastInputTime = now;
+      this.lastSentYaw = yaw;
     }
 
     this.wasMoving = isMoving;

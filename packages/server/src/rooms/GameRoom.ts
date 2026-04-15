@@ -292,9 +292,11 @@ export class GameRoom extends Room<GameState> {
         mz /= len;
         player.x += mx * speed;
         player.z += mz * speed;
-        // Face the movement direction so the humanoid mesh points forward
-        player.rotation = Math.atan2(mx, mz);
       }
+      // NOTE: player.rotation is authoritative camera yaw set from input.rotation.
+      // We deliberately do NOT override it with movement direction — that would
+      // fight the "camera behind player" feel. Strafing with A/D keeps the
+      // character facing the camera's forward, same as a TPS shooter.
 
       player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
