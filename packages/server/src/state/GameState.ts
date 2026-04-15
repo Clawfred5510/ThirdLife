@@ -1,4 +1,5 @@
 import { Schema, type } from '@colyseus/schema';
+import type { Appearance } from '@gamestu/shared';
 
 /**
  * Minimal Colyseus schema. We deliberately avoid MapSchema / nested Schema
@@ -25,4 +26,5 @@ export interface PlayerData {
   rotation: number;
   credits: number;
   color: string;
+  appearance: Appearance;
 }

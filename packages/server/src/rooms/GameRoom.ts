@@ -1,7 +1,29 @@
 import { Room, Client } from 'colyseus';
 import { GameState, PlayerData } from '../state/GameState';
-import { TICK_RATE, PLAYER_SPEED, WORLD_HALF, MessageType, PlayerInput, BUS_STOPS, features } from '@gamestu/shared';
-import { getOrCreatePlayer, savePlayerPosition, purchaseProperty, getPlayerCredits as getPlayerCreditsFromDb, updatePlayerCredits, getPlayerTotalRevenue, seedParcels, claimParcel, updateBusiness as updateBusinessInDb, getAllParcels } from '../db';
+import {
+  TICK_RATE,
+  PLAYER_SPEED,
+  WORLD_HALF,
+  MessageType,
+  PlayerInput,
+  BUS_STOPS,
+  features,
+  Appearance,
+  DEFAULT_APPEARANCE,
+} from '@gamestu/shared';
+import {
+  getOrCreatePlayer,
+  savePlayerPosition,
+  purchaseProperty,
+  getPlayerCredits as getPlayerCreditsFromDb,
+  updatePlayerCredits,
+  getPlayerTotalRevenue,
+  seedParcels,
+  claimParcel,
+  updateBusiness as updateBusinessInDb,
+  getAllParcels,
+  savePlayerAppearance,
+} from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -98,6 +120,38 @@ export class GameRoom extends Room<GameState> {
       if (!player) return;
       if (typeof data.color !== 'string') return;
       player.color = data.color;
+      player.appearance.shirt_color = data.color;
+      savePlayerAppearance(client.sessionId, JSON.stringify(player.appearance));
+      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
+    });
+
+    this.onMessage(MessageType.UPDATE_APPEARANCE, (client: Client, data: Partial<Appearance>) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+
+      const HEX = /^#[0-9a-fA-F]{6}$/;
+      const HAT = new Set(['none', 'cap', 'tophat', 'beanie']);
+      const SHIRT = new Set(['basic', 'stripe', 'vest']);
+      const PANTS = new Set(['basic', 'shorts']);
+      const SHOES = new Set(['basic', 'boots']);
+      const ACC = new Set(['none', 'chain', 'sunglasses', 'bowtie']);
+
+      const next: Appearance = { ...player.appearance };
+      if (typeof data.body_color === 'string' && HEX.test(data.body_color)) next.body_color = data.body_color;
+      if (typeof data.hat_style === 'string' && HAT.has(data.hat_style)) next.hat_style = data.hat_style as Appearance['hat_style'];
+      if (typeof data.hat_color === 'string' && HEX.test(data.hat_color)) next.hat_color = data.hat_color;
+      if (typeof data.shirt_style === 'string' && SHIRT.has(data.shirt_style)) next.shirt_style = data.shirt_style as Appearance['shirt_style'];
+      if (typeof data.shirt_color === 'string' && HEX.test(data.shirt_color)) next.shirt_color = data.shirt_color;
+      if (typeof data.pants_style === 'string' && PANTS.has(data.pants_style)) next.pants_style = data.pants_style as Appearance['pants_style'];
+      if (typeof data.pants_color === 'string' && HEX.test(data.pants_color)) next.pants_color = data.pants_color;
+      if (typeof data.shoes_style === 'string' && SHOES.has(data.shoes_style)) next.shoes_style = data.shoes_style as Appearance['shoes_style'];
+      if (typeof data.shoes_color === 'string' && HEX.test(data.shoes_color)) next.shoes_color = data.shoes_color;
+      if (typeof data.accessory_style === 'string' && ACC.has(data.accessory_style)) next.accessory_style = data.accessory_style as Appearance['accessory_style'];
+      if (typeof data.accessory_color === 'string' && HEX.test(data.accessory_color)) next.accessory_color = data.accessory_color;
+
+      player.appearance = next;
+      player.color = next.shirt_color; // legacy `color` tracks shirt
+      savePlayerAppearance(client.sessionId, JSON.stringify(next));
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
@@ -190,6 +244,16 @@ export class GameRoom extends Room<GameState> {
     const displayName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
     const row = getOrCreatePlayer(client.sessionId, displayName);
 
+    let appearance: Appearance = { ...DEFAULT_APPEARANCE };
+    if (row.appearance) {
+      try {
+        const parsed = JSON.parse(row.appearance);
+        appearance = { ...DEFAULT_APPEARANCE, ...parsed };
+      } catch (_) {
+        // Corrupt JSON — fall back to defaults
+      }
+    }
+
     const player: PlayerData = {
       id: client.sessionId,
       name: row.name,
@@ -198,7 +262,8 @@ export class GameRoom extends Room<GameState> {
       z: row.z,
       rotation: 0,
       credits: row.credits,
-      color: '#3366cc',
+      color: appearance.shirt_color,
+      appearance,
     };
     this.players.set(client.sessionId, player);
 
@@ -258,6 +323,7 @@ export class GameRoom extends Room<GameState> {
       z: p.z,
       rotation: p.rotation,
       color: p.color,
+      appearance: p.appearance,
     };
   }
 

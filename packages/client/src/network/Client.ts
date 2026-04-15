@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus.js';
-import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage, ParcelData } from '@gamestu/shared';
+import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage, ParcelData, Appearance } from '@gamestu/shared';
 
 // Resolution order: window override (injected pre-script) → Vite env var → same-host fallback
 function resolveServerUrl(): string {
@@ -30,6 +30,7 @@ export interface PlayerSnapshot {
   z: number;
   rotation: number;
   color: string;
+  appearance?: Appearance;
 }
 
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;
@@ -249,6 +250,15 @@ export function sendBuyProperty(propertyId: number): void {
 
 export function sendPlayerColor(color: string): void {
   room?.send(MessageType.PLAYER_COLOR, { color });
+}
+
+export function sendUpdateAppearance(partial: Partial<Appearance>): void {
+  room?.send(MessageType.UPDATE_APPEARANCE, partial);
+}
+
+export function getLocalPlayer(): PlayerSnapshot | null {
+  if (!mySessionId) return null;
+  return knownPlayers.get(mySessionId) ?? null;
 }
 
 export function sendFastTravel(stopIndex: number): void {

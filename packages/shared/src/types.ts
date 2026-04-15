@@ -34,6 +34,40 @@ export interface ChatMessage {
   text: string;
 }
 
+export type HatStyle = 'none' | 'cap' | 'tophat' | 'beanie';
+export type ShirtStyle = 'basic' | 'stripe' | 'vest';
+export type PantsStyle = 'basic' | 'shorts';
+export type ShoesStyle = 'basic' | 'boots';
+export type AccessoryStyle = 'none' | 'chain' | 'sunglasses' | 'bowtie';
+
+export interface Appearance {
+  body_color: string;
+  hat_style: HatStyle;
+  hat_color: string;
+  shirt_style: ShirtStyle;
+  shirt_color: string;
+  pants_style: PantsStyle;
+  pants_color: string;
+  shoes_style: ShoesStyle;
+  shoes_color: string;
+  accessory_style: AccessoryStyle;
+  accessory_color: string;
+}
+
+export const DEFAULT_APPEARANCE: Appearance = {
+  body_color: '#eac39e',
+  hat_style: 'none',
+  hat_color: '#222222',
+  shirt_style: 'basic',
+  shirt_color: '#3366cc',
+  pants_style: 'basic',
+  pants_color: '#222233',
+  shoes_style: 'basic',
+  shoes_color: '#1a1a1a',
+  accessory_style: 'none',
+  accessory_color: '#f0c040',
+};
+
 export interface ParcelData {
   id: number;
   grid_x: number;
@@ -68,4 +102,5 @@ export enum MessageType {
   PLAYER_LEAVE = 'player_leave',
   PLAYER_STATE = 'player_state',
   PLAYER_UPDATE = 'player_update',
+  UPDATE_APPEARANCE = 'update_appearance',
 }

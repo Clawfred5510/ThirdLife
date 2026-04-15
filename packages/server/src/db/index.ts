@@ -14,6 +14,7 @@ export interface PlayerRow {
   z: number;
   last_login: string | null;
   tutorial_done: number;
+  appearance: string | null;
 }
 
 export interface PropertyRow {
@@ -66,6 +67,7 @@ interface DBBackend {
   wipeParcels(): void;
   getAllPlayers(): PlayerRow[];
   deletePlayer(id: string): boolean;
+  savePlayerAppearance(id: string, appearanceJson: string): void;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -121,6 +123,12 @@ class SQLiteDatabase implements DBBackend {
     // Safely add tutorial_done column for existing databases
     try {
       this.db.exec(`ALTER TABLE players ADD COLUMN tutorial_done INTEGER DEFAULT 0`);
+    } catch (_) {
+      // Column already exists — ignore
+    }
+    // Appearance JSON (hat/shirt/pants/shoes/accessory + colors)
+    try {
+      this.db.exec(`ALTER TABLE players ADD COLUMN appearance TEXT`);
     } catch (_) {
       // Column already exists — ignore
     }
@@ -293,6 +301,10 @@ class SQLiteDatabase implements DBBackend {
     const result = this.db.prepare('DELETE FROM players WHERE id = ?').run(id);
     return result.changes > 0;
   }
+
+  savePlayerAppearance(id: string, appearanceJson: string): void {
+    this.db.prepare('UPDATE players SET appearance = ? WHERE id = ?').run(appearanceJson, id);
+  }
 }
 
 // ── In-Memory Map-based fallback ───────────────────────────────────────────
@@ -323,6 +335,7 @@ class MemoryDB implements DBBackend {
       z: -200,
       last_login: new Date().toISOString(),
       tutorial_done: 0,
+      appearance: null,
     };
     this.players.set(id, row);
     return row;
@@ -467,6 +480,11 @@ class MemoryDB implements DBBackend {
     }
     return this.players.delete(id);
   }
+
+  savePlayerAppearance(id: string, appearanceJson: string): void {
+    const p = this.players.get(id);
+    if (p) p.appearance = appearanceJson;
+  }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -568,4 +586,8 @@ export function getAllPlayers(): PlayerRow[] {
 
 export function deletePlayer(id: string): boolean {
   return backend.deletePlayer(id);
+}
+
+export function savePlayerAppearance(id: string, appearanceJson: string): void {
+  backend.savePlayerAppearance(id, appearanceJson);
 }

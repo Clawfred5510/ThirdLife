@@ -10,9 +10,13 @@ import {
   Color4,
   StandardMaterial,
   AbstractMesh,
+  Mesh,
+  TransformNode,
   ActionManager,
   ExecuteCodeAction,
 } from '@babylonjs/core';
+import { Avatar, buildAvatar, applyAppearance, disposeAvatar } from '../entities/avatar';
+import { DEFAULT_APPEARANCE } from '@gamestu/shared';
 import { AdvancedDynamicTexture, Rectangle, TextBlock } from '@babylonjs/gui';
 import {
   onPlayerAdd,
@@ -47,17 +51,20 @@ const hexToColor3 = (hex: string): Color3 => {
 
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
+  /** The avatar body mesh — used as the camera/label anchor (torso-height). */
   mesh: AbstractMesh;
+  /** Root TransformNode at the avatar's feet — this is what we move. */
+  root: TransformNode;
+  /** Full avatar bundle (legs, body, head, hat, accessory, etc). */
+  avatar: Avatar;
   /** Floating name label linked to the mesh. */
   label: Rectangle;
-  /** Latest server-authoritative position — interpolated towards each frame. */
   targetX: number;
   targetY: number;
   targetZ: number;
-  /** Latest server-authoritative yaw (radians) — smoothed toward each frame. */
   targetRotation: number;
-  /** Last known color hex, used to detect changes. */
   currentColor: string;
+  appearanceKey: string;
 }
 
 /** How quickly remote meshes interpolate toward their target (0-1, applied per-frame). */
@@ -437,28 +444,14 @@ export class MainScene {
 
   private addRemotePlayer(sessionId: string, player: PlayerSnapshot, scene: Scene): void {
     const isLocal = sessionId === getSessionId() || sessionId === this.localPlayerId;
+    const appearance = player.appearance ?? DEFAULT_APPEARANCE;
 
-    // Capsule body + sphere head for a humanoid silhouette
-    const mesh = MeshBuilder.CreateCapsule(`player_${sessionId}`, {
-      height: 1.8,
-      radius: 0.3,
-      tessellation: 12,
-      subdivisions: 1,
-    }, scene);
-    mesh.position.set(player.x, player.y + 0.9, player.z);
+    const avatar = buildAvatar(scene, sessionId, appearance);
+    avatar.root.position.set(player.x, 0, player.z);
+    avatar.root.rotation.y = player.rotation ?? 0;
 
-    const mat = new StandardMaterial(`playerMat_${sessionId}`, scene);
-    const playerColor = player.color || (isLocal ? '#3366cc' : '#cc4d33');
-    mat.diffuseColor = hexToColor3(playerColor);
-    mesh.material = mat;
-
-    // Head sphere parented to body
-    const head = MeshBuilder.CreateSphere(`head_${sessionId}`, { diameter: 0.4, segments: 8 }, scene);
-    head.parent = mesh;
-    head.position.y = 0.65; // relative to capsule center
-    const headMat = new StandardMaterial(`headMat_${sessionId}`, scene);
-    headMat.diffuseColor = hexToColor3(playerColor);
-    head.material = headMat;
+    // Camera + label anchor on the shirt mesh (torso-height) for a nice eye-level target.
+    const mesh = avatar.body as AbstractMesh;
 
     // Floating name label
     const labelRect = new Rectangle(`label_${sessionId}`);
@@ -477,18 +470,20 @@ export class MainScene {
 
     this.labelUI.addControl(labelRect);
     labelRect.linkWithMesh(mesh);
-    labelRect.linkOffsetY = -110;
+    labelRect.linkOffsetY = -60;
 
     this.remotePlayers.set(sessionId, {
       mesh,
+      root: avatar.root,
+      avatar,
       label: labelRect,
       targetX: player.x,
       targetY: player.y,
       targetZ: player.z,
       targetRotation: player.rotation ?? 0,
-      currentColor: playerColor,
+      currentColor: appearance.shirt_color,
+      appearanceKey: JSON.stringify(appearance),
     });
-    mesh.rotation.y = player.rotation ?? 0;
 
     // Switch to third-person ArcRotate camera tracking the local player.
     // Standard TPS: camera sits behind the player, WASD moves relative to
@@ -533,7 +528,7 @@ export class MainScene {
     const remote = this.remotePlayers.get(sessionId);
     if (remote) {
       remote.label.dispose();
-      remote.mesh.dispose();
+      disposeAvatar(remote.avatar);
       this.remotePlayers.delete(sessionId);
     }
   }
@@ -546,22 +541,23 @@ export class MainScene {
       remote.targetZ = player.z;
       remote.targetRotation = player.rotation ?? 0;
 
-      // Update mesh color if it changed
-      if (player.color && player.color !== remote.currentColor) {
-        const mat = remote.mesh.material as StandardMaterial;
-        if (mat) {
-          mat.diffuseColor = hexToColor3(player.color);
+      // Appearance diff — apply only when the full object actually changed.
+      if (player.appearance) {
+        const key = JSON.stringify(player.appearance);
+        if (key !== remote.appearanceKey) {
+          applyAppearance(this.sceneRef!, remote.avatar, player.appearance);
+          remote.appearanceKey = key;
+          remote.currentColor = player.appearance.shirt_color;
         }
-        remote.currentColor = player.color;
       }
 
       // For local player: snap to server position if prediction drifted too far
       if (sessionId === getSessionId()) {
-        const dx = player.x - remote.mesh.position.x;
-        const dz = player.z - remote.mesh.position.z;
+        const dx = player.x - remote.root.position.x;
+        const dz = player.z - remote.root.position.z;
         if (Math.sqrt(dx * dx + dz * dz) > 2) {
-          remote.mesh.position.x = player.x;
-          remote.mesh.position.z = player.z;
+          remote.root.position.x = player.x;
+          remote.root.position.z = player.z;
         }
       }
     }
@@ -597,51 +593,44 @@ export class MainScene {
     const len = Math.hypot(mx, mz);
     if (len > 0) {
       mx /= len; mz /= len;
-      remote.mesh.position.x += mx * speed;
-      remote.mesh.position.z += mz * speed;
+      remote.root.position.x += mx * speed;
+      remote.root.position.z += mz * speed;
     }
-    // Character always faces the camera's forward direction (TPS / Roblox-style).
-    // Yaw is continuous, not gated on movement.
-    remote.mesh.rotation.y = yaw;
+    remote.root.rotation.y = yaw;
 
-    // Reconcile with server: lerp mesh toward authoritative target every
-    // frame. Tiny nudges hide latency; big diffs (e.g. teleport via fast
-    // travel) snap immediately.
+    // Reconcile with server
     const tx = remote.targetX, tz = remote.targetZ;
-    const dxRec = tx - remote.mesh.position.x;
-    const dzRec = tz - remote.mesh.position.z;
+    const dxRec = tx - remote.root.position.x;
+    const dzRec = tz - remote.root.position.z;
     const distSq = dxRec * dxRec + dzRec * dzRec;
     if (distSq > 25 * 25) {
-      remote.mesh.position.x = tx;
-      remote.mesh.position.z = tz;
+      remote.root.position.x = tx;
+      remote.root.position.z = tz;
     } else if (distSq > 0.01) {
-      const k = 0.08; // soft correction factor (~8% per frame toward server)
-      remote.mesh.position.x += dxRec * k;
-      remote.mesh.position.z += dzRec * k;
+      const k = 0.08;
+      remote.root.position.x += dxRec * k;
+      remote.root.position.z += dzRec * k;
     }
   }
 
   private interpolateRemotePlayers(): void {
     const localId = getSessionId() ?? this.localPlayerId;
     this.remotePlayers.forEach((remote, sessionId) => {
-      // Skip the local player — their position is handled by applyLocalPrediction()
       if (sessionId === localId) return;
 
-      const pos = remote.mesh.position;
+      const pos = remote.root.position;
       pos.x += (remote.targetX - pos.x) * LERP_FACTOR;
-      pos.y += (remote.targetY + 0.9 - pos.y) * LERP_FACTOR; // +0.9 for capsule half-height
+      pos.y += (remote.targetY - pos.y) * LERP_FACTOR;
       pos.z += (remote.targetZ - pos.z) * LERP_FACTOR;
 
       // Yaw interpolation, shortest-arc aware
-      let dYaw = remote.targetRotation - remote.mesh.rotation.y;
+      let dYaw = remote.targetRotation - remote.root.rotation.y;
       while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
       while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-      remote.mesh.rotation.y += dYaw * LERP_FACTOR;
+      remote.root.rotation.y += dYaw * LERP_FACTOR;
 
-      // Clamp Y to ground level (capsule half-height = 0.9) to prevent drift below terrain
-      if (pos.y < 0.9) {
-        pos.y = 0.9;
-      }
+      // Root is at feet — clamp to ground.
+      if (pos.y < 0) pos.y = 0;
     });
   }
 
