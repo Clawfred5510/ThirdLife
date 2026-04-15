@@ -114,8 +114,8 @@ export class MainScene {
   /** Session ID of the local player — set from Colyseus when online, or from offline spawn. */
   private localPlayerId: string | null = null;
 
-  /** The local player's mesh — used by the camera tracker in render loop. */
-  private localPlayerMesh: AbstractMesh | null = null;
+  /** The local avatar's root TransformNode (world-space) — used by the camera tracker. */
+  private localPlayerRoot: TransformNode | null = null;
 
   /** Lookup from world position to parcel ID. */
   private parcelByDef = new Map<string, number>();
@@ -516,10 +516,10 @@ export class MainScene {
       cam.useAutoRotationBehavior = false;
 
       // Anchor camera slightly above the player's shoulders, not their feet
-      cam.target = new Vector3(player.x, player.y + 1.2, player.z);
+      cam.target = new Vector3(player.x, 1.3, player.z);
 
       this.arcCamera = cam;
-      this.localPlayerMesh = mesh;
+      this.localPlayerRoot = avatar.root;
       this.sceneRef.activeCamera = cam;
     }
   }
@@ -692,10 +692,10 @@ export class MainScene {
    * camera orbits around the player as they move.
    */
   private trackPlayerWithCamera(): void {
-    if (!this.arcCamera || !this.localPlayerMesh) return;
-    const p = this.localPlayerMesh.position;
-    // Offset upward so the camera looks at shoulder height, not feet.
-    this.arcCamera.target.set(p.x, p.y + 0.4, p.z);
+    if (!this.arcCamera || !this.localPlayerRoot) return;
+    const p = this.localPlayerRoot.position; // world-space (root has no parent)
+    // Offset upward so the camera looks at shoulder height, not the feet.
+    this.arcCamera.target.set(p.x, p.y + 1.3, p.z);
   }
 
   private sendPlayerInput(): void {
