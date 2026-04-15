@@ -105,7 +105,7 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
   const groundMat = new StandardMaterial('gridGroundMat', scene);
   groundMat.diffuseColor = new Color3(0.3, 0.42, 0.25);
   ground.material = groundMat;
-  ground.position.y = -0.02;
+  ground.position.y = -0.5; // recess base plane to eliminate z-fighting with roads/lots above
   meshes.push(ground);
 
   // ---- Grid roads ----
@@ -119,7 +119,7 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
       width: GRID_TOTAL_W + ROAD_WIDTH,
       height: ROAD_WIDTH,
     }, scene);
-    road.position.set(0, 0.01, z);
+    road.position.set(0, 0.05, z);
     road.material = roadMat;
     meshes.push(road);
   }
@@ -131,7 +131,7 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
       width: ROAD_WIDTH,
       height: GRID_TOTAL_H + ROAD_WIDTH,
     }, scene);
-    road.position.set(x, 0.01, 0);
+    road.position.set(x, 0.05, 0);
     road.material = roadMat;
     meshes.push(road);
   }
@@ -145,7 +145,7 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
       width: CELL_SIZE - 1,
       height: CELL_SIZE - 1,
     }, scene);
-    lot.position.set(parcel.x, 0.02, parcel.z);
+    lot.position.set(parcel.x, 0.1, parcel.z);
     lot.material = lotMat;
     lot.isPickable = true;
     lot.metadata = { parcelId: parcel.id };

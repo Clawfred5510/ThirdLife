@@ -505,9 +505,10 @@ export class MainScene {
       cam.lowerBetaLimit = 0.2;         // don't flip over the top
       cam.upperBetaLimit = Math.PI / 2.05; // don't go below horizontal
       cam.wheelPrecision = 8;
-      cam.panningSensibility = 0;       // disable middle-click pan (keep it simple)
-      cam.angularSensibilityX = 800;
-      cam.angularSensibilityY = 800;
+      cam.panningSensibility = 0;
+      cam.angularSensibilityX = 300;    // lower = more sensitive
+      cam.angularSensibilityY = 300;
+      cam.maxZ = 2500;                  // reduce from default 10000 for better depth precision
       cam.useBouncingBehavior = false;
       cam.useAutoRotationBehavior = false;
 
@@ -558,31 +559,54 @@ export class MainScene {
   }
 
   /**
-   * Apply immediate local movement to the local player's mesh so input feels
-   * responsive without waiting for the server round-trip.
+   * Client-side prediction for the local player so movement feels responsive.
+   * MUST match the server's math (camera-yaw-relative, normalised diagonal)
+   * to avoid the mesh snapping every time a server PLAYER_STATE broadcast
+   * arrives.
    */
   private applyLocalPrediction(): void {
-    // Use Colyseus sessionId when online, fall back to offline player ID
     const localId = getSessionId() ?? this.localPlayerId;
     if (!localId) return;
-
     const remote = this.remotePlayers.get(localId);
-    if (!remote) return;
+    if (!remote || !this.arcCamera) return;
 
-    const dt = this.engine.getDeltaTime() / 1000; // seconds
+    const dt = this.engine.getDeltaTime() / 1000;
     const speed = PLAYER_SPEED * dt;
 
-    let dx = 0;
-    let dz = 0;
+    // Camera yaw (same math as sendPlayerInput)
+    const dir = this.arcCamera.target.subtract(this.arcCamera.position);
+    const yaw = Math.atan2(dir.x, dir.z);
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
+    const rx = Math.cos(yaw), rz = -Math.sin(yaw);
 
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) dz -= speed;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) dz += speed;
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) dx -= speed;
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) dx += speed;
+    let mx = 0, mz = 0;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) { mx += fx; mz += fz; }
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) { mx -= fx; mz -= fz; }
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) { mx += rx; mz += rz; }
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) { mx -= rx; mz -= rz; }
 
-    if (dx !== 0 || dz !== 0) {
-      remote.mesh.position.x += dx;
-      remote.mesh.position.z += dz;
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      mx /= len; mz /= len;
+      remote.mesh.position.x += mx * speed;
+      remote.mesh.position.z += mz * speed;
+      remote.mesh.rotation.y = Math.atan2(mx, mz);
+    }
+
+    // Reconcile with server: lerp mesh toward authoritative target every
+    // frame. Tiny nudges hide latency; big diffs (e.g. teleport via fast
+    // travel) snap immediately.
+    const tx = remote.targetX, tz = remote.targetZ;
+    const dxRec = tx - remote.mesh.position.x;
+    const dzRec = tz - remote.mesh.position.z;
+    const distSq = dxRec * dxRec + dzRec * dzRec;
+    if (distSq > 25 * 25) {
+      remote.mesh.position.x = tx;
+      remote.mesh.position.z = tz;
+    } else if (distSq > 0.01) {
+      const k = 0.08; // soft correction factor (~8% per frame toward server)
+      remote.mesh.position.x += dxRec * k;
+      remote.mesh.position.z += dzRec * k;
     }
   }
 
