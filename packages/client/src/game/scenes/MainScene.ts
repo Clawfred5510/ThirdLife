@@ -82,6 +82,9 @@ export class MainScene {
   /** Scene reference for creating follow camera later. */
   private sceneRef: Scene | null = null;
 
+  /** Session ID of the local player — set from Colyseus when online, or from offline spawn. */
+  private localPlayerId: string | null = null;
+
   constructor(
     private engine: Engine,
     private canvas: HTMLCanvasElement,
@@ -192,6 +195,10 @@ export class MainScene {
     // ---- Network listeners ----
 
     onPlayerAdd((sessionId: string, player: PlayerSnapshot) => {
+      // Track the local player ID so offline movement logic works even online
+      if (sessionId === getSessionId()) {
+        this.localPlayerId = sessionId;
+      }
       this.addRemotePlayer(sessionId, player, scene);
     });
 
@@ -205,6 +212,7 @@ export class MainScene {
 
     // Expose offline spawn method for when server is unavailable
     (this as any)._offlinePlayerSpawn = (localId: string) => {
+      this.localPlayerId = localId;
       this.addRemotePlayer(localId, {
         id: localId,
         name: 'You (Offline)',
@@ -235,7 +243,7 @@ export class MainScene {
   // ---------- Remote player management ----------
 
   private addRemotePlayer(sessionId: string, player: PlayerSnapshot, scene: Scene): void {
-    const isLocal = sessionId === getSessionId() || sessionId.startsWith('local_offline_');
+    const isLocal = sessionId === getSessionId() || sessionId === this.localPlayerId;
 
     // Capsule body + sphere head for a humanoid silhouette
     const mesh = MeshBuilder.CreateCapsule(`player_${sessionId}`, {
@@ -351,7 +359,8 @@ export class MainScene {
    * responsive without waiting for the server round-trip.
    */
   private applyLocalPrediction(): void {
-    const localId = getSessionId();
+    // Use Colyseus sessionId when online, fall back to offline player ID
+    const localId = getSessionId() ?? this.localPlayerId;
     if (!localId) return;
 
     const remote = this.remotePlayers.get(localId);
@@ -375,7 +384,11 @@ export class MainScene {
   }
 
   private interpolateRemotePlayers(): void {
-    this.remotePlayers.forEach((remote) => {
+    const localId = getSessionId() ?? this.localPlayerId;
+    this.remotePlayers.forEach((remote, sessionId) => {
+      // Skip the local player — their position is handled by applyLocalPrediction()
+      if (sessionId === localId) return;
+
       const pos = remote.mesh.position;
       pos.x += (remote.targetX - pos.x) * LERP_FACTOR;
       pos.y += (remote.targetY + 0.9 - pos.y) * LERP_FACTOR; // +0.9 for capsule half-height
