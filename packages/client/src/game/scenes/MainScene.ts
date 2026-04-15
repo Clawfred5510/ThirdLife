@@ -510,7 +510,12 @@ export class MainScene {
       cam.panningSensibility = 0;
       cam.angularSensibilityX = 300;    // lower = more sensitive
       cam.angularSensibilityY = 300;
-      cam.inertia = 0.4;                // less drift after releasing the mouse
+      // Inertia must be 0: the character's yaw and movement direction are
+      // resampled from the live camera yaw every frame. Any residual
+      // rotational inertia decays over several frames, which in-game reads
+      // as a "sway" each time the user nudges the mouse (especially on
+      // diagonals and direction switches).
+      cam.inertia = 0;
       cam.maxZ = 2500;                  // reduce from default 10000 for better depth precision
       cam.useBouncingBehavior = false;
       cam.useAutoRotationBehavior = false;
