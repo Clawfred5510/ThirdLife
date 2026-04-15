@@ -551,11 +551,15 @@ export class MainScene {
         }
       }
 
-      // For local player: snap to server position if prediction drifted too far
+      // For local player: snap ONLY on catastrophic desync — e.g. teleport
+      // via fast travel or a connection stall. Normal latency-driven drift
+      // is handled entirely by client prediction in applyLocalPrediction;
+      // snapping on small diffs caused the start/stop "sway" at faster
+      // movement speeds.
       if (sessionId === getSessionId()) {
         const dx = player.x - remote.root.position.x;
         const dz = player.z - remote.root.position.z;
-        if (Math.sqrt(dx * dx + dz * dz) > 2) {
+        if (dx * dx + dz * dz > 25 * 25) {
           remote.root.position.x = player.x;
           remote.root.position.z = player.z;
         }
@@ -599,7 +603,21 @@ export class MainScene {
     }
     remote.root.rotation.y = yaw;
 
-    // Reconcile with server
+    // Server reconciliation: hard-snap ONLY on catastrophic desync.
+    //
+    // Soft per-frame lerping toward the server's last broadcast feels
+    // smooth in theory but causes visible sway at the start/stop of
+    // movement: the server is always ~1 tick behind the client during
+    // acceleration, and ~1 tick ahead right after a stop (it processes
+    // one more "moving" tick before the release input lands). Pulling
+    // toward either biased target produces a wobble.
+    //
+    // Because our prediction uses the exact same PLAYER_SPEED, yaw
+    // basis, and diagonal-normalisation as the server, position drift
+    // accumulates only from variable dt and would take a very long
+    // stretch to exceed 10 units. So we trust prediction until the
+    // gap is clearly pathological (network stall, teleport, physics
+    // anomaly).
     const tx = remote.targetX, tz = remote.targetZ;
     const dxRec = tx - remote.root.position.x;
     const dzRec = tz - remote.root.position.z;
@@ -607,10 +625,6 @@ export class MainScene {
     if (distSq > 25 * 25) {
       remote.root.position.x = tx;
       remote.root.position.z = tz;
-    } else if (distSq > 0.01) {
-      const k = 0.08;
-      remote.root.position.x += dxRec * k;
-      remote.root.position.z += dzRec * k;
     }
   }
 
