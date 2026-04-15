@@ -64,7 +64,7 @@ export const ParcelPanel: React.FC = () => {
       setEditHeight(parcel.height || 4);
       setMessage('');
     }
-  }, [parcel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [parcel?.id]);
 
   const handleClaim = useCallback(() => {
     if (!parcel) return;

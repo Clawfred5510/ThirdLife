@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import Database from 'better-sqlite3';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -70,8 +71,6 @@ class SQLiteDatabase implements DBBackend {
   private db: any; // better-sqlite3 Database
 
   constructor(dbPath: string) {
-    // Dynamic import to allow try/catch at module level
-    const Database = require('better-sqlite3');
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
