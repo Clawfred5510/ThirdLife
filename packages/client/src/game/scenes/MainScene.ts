@@ -102,6 +102,9 @@ export class MainScene {
   /** Session ID of the local player — set from Colyseus when online, or from offline spawn. */
   private localPlayerId: string | null = null;
 
+  /** The local player's mesh — used by the camera tracker in render loop. */
+  private localPlayerMesh: AbstractMesh | null = null;
+
   /** Lookup from world position to parcel ID. */
   private parcelByDef = new Map<string, number>();
 
@@ -193,6 +196,7 @@ export class MainScene {
       this.sendPlayerInput();
       this.applyLocalPrediction();
       this.interpolateRemotePlayers();
+      this.trackPlayerWithCamera();
       if (this.dayNight) {
         this.dayNight.update(this.engine.getDeltaTime() / 1000);
       }
@@ -479,25 +483,40 @@ export class MainScene {
       currentColor: playerColor,
     });
 
-    // Switch to third-person FollowCamera when the local player mesh is ready
+    // Switch to third-person ArcRotate camera tracking the local player.
+    // Standard TPS: camera sits behind the player, WASD moves relative to
+    // the camera's forward vector, left-drag orbits the camera around
+    // the player, scroll wheel zooms.
     if (isLocal && this.sceneRef) {
-      const followCam = new FollowCamera('followCamera', new Vector3(player.x, player.y + 15, player.z + 15), this.sceneRef);
-      followCam.lockedTarget = mesh;
-      followCam.radius = 15;
-      followCam.heightOffset = 8;
-      followCam.rotationOffset = 180;
-      followCam.cameraAcceleration = 0.05;
-      followCam.maxCameraSpeed = 10;
-      followCam.inputs.removeByType('FollowCameraKeyboardMoveInput');
+      // Reuse the initial ArcRotateCamera instead of creating a new one
+      // so its mouse-drag attachment survives. Just re-point its target.
+      const cam = this.arcCamera ?? new ArcRotateCamera(
+        'playerCamera',
+        Math.PI,        // alpha: start looking from +Z (camera behind player when player faces -Z)
+        Math.PI / 2.4,  // beta: slight downward tilt
+        14,             // radius: distance from player
+        new Vector3(player.x, player.y + 1.2, player.z),
+        this.sceneRef,
+      );
+      cam.attachControl(this.canvas, true);
+      cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
+      cam.lowerRadiusLimit = 4;
+      cam.upperRadiusLimit = 40;
+      cam.lowerBetaLimit = 0.2;         // don't flip over the top
+      cam.upperBetaLimit = Math.PI / 2.05; // don't go below horizontal
+      cam.wheelPrecision = 8;
+      cam.panningSensibility = 0;       // disable middle-click pan (keep it simple)
+      cam.angularSensibilityX = 800;
+      cam.angularSensibilityY = 800;
+      cam.useBouncingBehavior = false;
+      cam.useAutoRotationBehavior = false;
 
-      this.sceneRef.activeCamera = followCam;
+      // Anchor camera slightly above the player's shoulders, not their feet
+      cam.target = new Vector3(player.x, player.y + 1.2, player.z);
 
-      // Dispose the initial ArcRotateCamera
-      if (this.arcCamera) {
-        this.arcCamera.detachControl();
-        this.arcCamera.dispose();
-        this.arcCamera = null;
-      }
+      this.arcCamera = cam;
+      this.localPlayerMesh = mesh;
+      this.sceneRef.activeCamera = cam;
     }
   }
 
@@ -605,20 +624,43 @@ export class MainScene {
     });
   }
 
+  /**
+   * Keep the ArcRotate camera target glued to the local player every frame.
+   * Radius / alpha / beta (mouse drag + wheel) remain user-controlled, so the
+   * camera orbits around the player as they move.
+   */
+  private trackPlayerWithCamera(): void {
+    if (!this.arcCamera || !this.localPlayerMesh) return;
+    const p = this.localPlayerMesh.position;
+    // Offset upward so the camera looks at shoulder height, not feet.
+    this.arcCamera.target.set(p.x, p.y + 0.4, p.z);
+  }
+
   private sendPlayerInput(): void {
+    // Camera yaw in radians, measured around world +Y axis.
+    // ArcRotateCamera.alpha: 0 = camera on +X of target; we want a yaw value
+    // where 0 means "facing world -Z" (Babylon's convention). The forward
+    // direction from the player is (sin(yaw), 0, cos(yaw)).
+    let yaw = 0;
+    if (this.arcCamera) {
+      // Direction from camera to target, projected onto XZ plane.
+      const dir = this.arcCamera.target.subtract(this.arcCamera.position);
+      yaw = Math.atan2(dir.x, dir.z);
+    }
+
     const input: PlayerInput = {
       forward: !!this.keys['KeyW'] || !!this.keys['ArrowUp'],
       backward: !!this.keys['KeyS'] || !!this.keys['ArrowDown'],
       left: !!this.keys['KeyA'] || !!this.keys['ArrowLeft'],
       right: !!this.keys['KeyD'] || !!this.keys['ArrowRight'],
       jump: !!this.keys['Space'],
+      rotation: yaw,
     };
 
     const isMoving = input.forward || input.backward || input.left || input.right || input.jump;
     const now = performance.now();
-    const minInterval = 1000 / TICK_RATE; // 50ms at 20Hz
+    const minInterval = 1000 / TICK_RATE;
 
-    // Always send stop signal immediately when player stops moving
     if (!isMoving && this.wasMoving) {
       sendInput(input);
       this.lastInputTime = now;

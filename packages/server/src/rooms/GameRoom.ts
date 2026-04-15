@@ -51,7 +51,9 @@ export class GameRoom extends Room<GameState> {
         this.pendingInputs.delete(client.sessionId);
       }
 
-      // Apply rotation immediately (not movement — that happens in update tick)
+      // Camera yaw travels with every input packet. Store it so the
+      // per-tick update() can resolve WASD into world-space motion even
+      // when the client isn't moving this exact tick.
       if (typeof input.rotation === 'number') {
         player.rotation = input.rotation;
       }
@@ -267,10 +269,32 @@ export class GameRoom extends Room<GameState> {
       if (!player) return;
 
       const speed = PLAYER_SPEED * dt;
-      if (input.forward) player.z -= speed;
-      if (input.backward) player.z += speed;
-      if (input.left) player.x -= speed;
-      if (input.right) player.x += speed;
+
+      // Movement is relative to camera yaw (player.rotation, in radians,
+      // set from input.rotation). forward = (sin(yaw), cos(yaw)) in XZ;
+      // right = (cos(yaw), -sin(yaw)). Diagonal input is normalized.
+      const yaw = player.rotation || 0;
+      const fx = Math.sin(yaw);
+      const fz = Math.cos(yaw);
+      const rx = Math.cos(yaw);
+      const rz = -Math.sin(yaw);
+
+      let mx = 0;
+      let mz = 0;
+      if (input.forward) { mx += fx; mz += fz; }
+      if (input.backward) { mx -= fx; mz -= fz; }
+      if (input.right) { mx += rx; mz += rz; }
+      if (input.left) { mx -= rx; mz -= rz; }
+
+      const len = Math.hypot(mx, mz);
+      if (len > 0) {
+        mx /= len;
+        mz /= len;
+        player.x += mx * speed;
+        player.z += mz * speed;
+        // Face the movement direction so the humanoid mesh points forward
+        player.rotation = Math.atan2(mx, mz);
+      }
 
       player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
