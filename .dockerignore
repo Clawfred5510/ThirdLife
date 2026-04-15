@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.next
+.git
+.github
+assets
+docs
+studio
+data
+*.log
+PLAN-*.md
+CLAUDE.md
+STUDIO.md
+README.md
+.vercel

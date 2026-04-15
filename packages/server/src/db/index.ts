@@ -412,8 +412,10 @@ class MemoryDB implements DBBackend {
 
 // ── Database initialisation ────────────────────────────────────────────────
 
-const DATA_DIR = path.resolve(__dirname, '../../../../data');
-const DB_PATH = path.resolve(DATA_DIR, 'thirdlife.db');
+const DB_PATH = process.env.DATABASE_PATH
+  ? path.resolve(process.env.DATABASE_PATH)
+  : path.resolve(__dirname, '../../../../data/thirdlife.db');
+const DATA_DIR = path.dirname(DB_PATH);
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });

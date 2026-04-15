@@ -1,9 +1,22 @@
 import { Client, Room } from 'colyseus.js';
 import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage, ParcelData } from '@gamestu/shared';
 
-const SERVER_URL = typeof window !== 'undefined' && (window as any).__GAME_SERVER_URL__
-  ? (window as any).__GAME_SERVER_URL__
-  : `ws://${window.location.host}`;
+// Resolution order: window override (injected pre-script) → Vite env var → same-host fallback
+function resolveServerUrl(): string {
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __GAME_SERVER_URL__?: string };
+    if (w.__GAME_SERVER_URL__) return w.__GAME_SERVER_URL__;
+  }
+  const viteUrl = (import.meta as unknown as { env?: { VITE_SERVER_URL?: string } }).env?.VITE_SERVER_URL;
+  if (viteUrl) return viteUrl;
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}`;
+  }
+  return `ws://localhost:${DEFAULT_SERVER_PORT}`;
+}
+
+const SERVER_URL = resolveServerUrl();
 
 let client: Client | null = null;
 let room: Room | null = null;
