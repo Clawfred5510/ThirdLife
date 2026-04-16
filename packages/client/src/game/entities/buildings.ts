@@ -139,45 +139,28 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // ---- Parcel lot markers — soft sand-coloured pads ----
-  // Each parcel gets a square pad (pickable click target) plus a shared
-  // circular "rim" instance underneath that pokes out slightly at the
-  // corners, giving every lot a soft rounded silhouette without
-  // creating thousands of unique materials.
+  // ---- Parcel lots — soft sand-coloured circular pads ----
+  // Each lot is an inscribed disc so the grid reads like cartoon
+  // stepping-stones with visible road channels between them — no sharp
+  // corners, no overlap into roads.
   const lotMat = new StandardMaterial('lotMat', scene);
-  lotMat.diffuseColor = new Color3(0.78, 0.72, 0.56); // warm sand/limestone
+  lotMat.diffuseColor = new Color3(0.82, 0.76, 0.6);
   lotMat.specularColor = new Color3(0.03, 0.03, 0.03);
 
-  const rimMat = new StandardMaterial('lotRimMat', scene);
-  rimMat.diffuseColor = new Color3(0.62, 0.56, 0.42);
-  rimMat.specularColor = new Color3(0.02, 0.02, 0.02);
-
-  // Build a single rim mesh and use createInstance for every parcel —
-  // thousands of instances share geometry + material = cheap.
-  const rimTemplate = MeshBuilder.CreateDisc('lotRimTpl', {
-    radius: (CELL_SIZE - 2) * 0.68,
-    tessellation: 24,
-  }, scene);
-  rimTemplate.rotation.x = Math.PI / 2;
-  rimTemplate.material = rimMat;
-  rimTemplate.isPickable = false;
-  rimTemplate.isVisible = false; // template itself hidden; instances render
+  // Disc radius: fits inside the cell with margin of road visible.
+  const LOT_RADIUS = (CELL_SIZE - ROAD_WIDTH) * 0.5 + 1.2;
 
   for (const parcel of ALL_PARCELS) {
-    const lot = MeshBuilder.CreateGround(`lot_${parcel.id}`, {
-      width: CELL_SIZE - 2,
-      height: CELL_SIZE - 2,
+    const lot = MeshBuilder.CreateDisc(`lot_${parcel.id}`, {
+      radius: LOT_RADIUS,
+      tessellation: 24,
     }, scene);
+    lot.rotation.x = Math.PI / 2; // lay flat
     lot.position.set(parcel.x, 0.1, parcel.z);
-    lot.material = lotMat;
+    lot.material = lotMat; // all 2,500 share one material = one shader bind
     lot.isPickable = true;
     lot.metadata = { parcelId: parcel.id };
     meshes.push(lot);
-
-    const rim = rimTemplate.createInstance(`rim_${parcel.id}`);
-    rim.position.set(parcel.x, 0.09, parcel.z);
-    rim.rotation.x = Math.PI / 2;
-    rim.isPickable = false;
   }
 
   return meshes;
