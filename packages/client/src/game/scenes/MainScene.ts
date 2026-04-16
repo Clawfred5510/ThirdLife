@@ -19,7 +19,7 @@ import {
   CubeTexture,
   Texture,
 } from '@babylonjs/core';
-import { Avatar, buildAvatar, applyAppearance, disposeAvatar } from '../entities/avatar';
+import { Avatar, buildAvatar, applyAppearance, disposeAvatar, animateAvatar } from '../entities/avatar';
 import { DEFAULT_APPEARANCE } from '@gamestu/shared';
 import { AdvancedDynamicTexture, Rectangle, TextBlock } from '@babylonjs/gui';
 import {
@@ -55,13 +55,9 @@ const hexToColor3 = (hex: string): Color3 => {
 
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
-  /** The avatar body mesh — used as the camera/label anchor (torso-height). */
   mesh: AbstractMesh;
-  /** Root TransformNode at the avatar's feet — this is what we move. */
   root: TransformNode;
-  /** Full avatar bundle (legs, body, head, hat, accessory, etc). */
   avatar: Avatar;
-  /** Floating name label linked to the mesh. */
   label: Rectangle;
   targetX: number;
   targetY: number;
@@ -69,6 +65,8 @@ interface RemotePlayer {
   targetRotation: number;
   currentColor: string;
   appearanceKey: string;
+  prevX: number;
+  prevZ: number;
 }
 
 /** How quickly remote meshes interpolate toward their target (0-1, applied per-frame). */
@@ -242,6 +240,7 @@ export class MainScene {
       this.sendPlayerInput();
       this.applyLocalPrediction();
       this.interpolateRemotePlayers();
+      this.animateAllAvatars();
       this.trackPlayerWithCamera();
       if (this.dayNight) {
         this.dayNight.update(this.engine.getDeltaTime() / 1000);
@@ -538,6 +537,8 @@ export class MainScene {
       targetRotation: player.rotation ?? 0,
       currentColor: appearance.shirt_color,
       appearanceKey: JSON.stringify(appearance),
+      prevX: player.x,
+      prevZ: player.z,
     });
 
     // Switch to third-person ArcRotate camera tracking the local player.
@@ -765,6 +766,20 @@ export class MainScene {
    * Radius / alpha / beta (mouse drag + wheel) remain user-controlled, so the
    * camera orbits around the player as they move.
    */
+  private animateAllAvatars(): void {
+    const dt = this.engine.getDeltaTime() / 1000;
+    const time = performance.now() / 1000;
+    this.remotePlayers.forEach((remote) => {
+      const pos = remote.root.position;
+      const dx = pos.x - remote.prevX;
+      const dz = pos.z - remote.prevZ;
+      const velocity = Math.hypot(dx, dz) / Math.max(dt, 0.001);
+      remote.prevX = pos.x;
+      remote.prevZ = pos.z;
+      animateAvatar(remote.avatar, velocity, dt, time);
+    });
+  }
+
   private trackPlayerWithCamera(): void {
     if (!this.arcCamera || !this.localPlayerRoot) return;
     const p = this.localPlayerRoot.position; // world-space (root has no parent)

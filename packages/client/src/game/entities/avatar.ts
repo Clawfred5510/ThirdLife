@@ -17,50 +17,79 @@ function hexToColor3(hex: string): Color3 {
   return new Color3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
 }
 
-function addToonOutline(mesh: Mesh): void {
+function outline(mesh: Mesh): void {
   mesh.renderOutline = true;
-  mesh.outlineWidth = 0.015;
+  mesh.outlineWidth = 0.012;
   mesh.outlineColor = Color3.Black();
 }
 
-function makeMatte(mat: StandardMaterial): void {
-  mat.specularColor = Color3.Black();
+function matte(scene: Scene, name: string): StandardMaterial {
+  const m = new StandardMaterial(name, scene);
+  m.specularColor = Color3.Black();
+  return m;
 }
 
-/**
- * Bundle of meshes that make up a humanoid avatar. We keep one Avatar per
- * player so appearance updates can mutate in place instead of disposing
- * and rebuilding (cheaper, avoids camera lock targets going stale).
- */
+// -----------------------------------------------------------------------
+// Avatar interface — all animatable limbs exposed for procedural walk
+// -----------------------------------------------------------------------
+
 export interface Avatar {
   root: TransformNode;
-  body: Mesh;        // shirt (upper half) — also the "main" mesh the camera locks on
-  legs: Mesh;        // pants (lower half)
+
+  // Core body parts
+  body: Mesh;
+  legs: Mesh;
   head: Mesh;
   shoeL: Mesh;
   shoeR: Mesh;
+
+  // Arms (new)
+  armUpperL: TransformNode;
+  armUpperR: TransformNode;
+  armLowerL: Mesh;
+  armLowerR: Mesh;
+  handL: Mesh;
+  handR: Mesh;
+
+  // Leg pivots for walk animation
+  legPivotL: TransformNode;
+  legPivotR: TransformNode;
+  legMeshL: Mesh;
+  legMeshR: Mesh;
+
+  // Eyes (face)
+  eyeL: Mesh;
+  eyeR: Mesh;
+
+  // Accessories
   hat: Mesh | null;
   accessory: Mesh | null;
 
+  // Materials
   bodyMat: StandardMaterial;
   legsMat: StandardMaterial;
   headMat: StandardMaterial;
   shoesMat: StandardMaterial;
   hatMat: StandardMaterial;
   accessoryMat: StandardMaterial;
+  armMat: StandardMaterial;
 }
 
-/**
- * Build an avatar rooted at (0,0,0). Caller positions the `root` and
- * uses `.body` as the camera target.
- *
- * Geometry layout (all relative to root at the capsule's feet):
- *   y=0.0 .. 0.15  — shoes
- *   y=0.1 .. 0.9   — legs / pants (lower capsule)
- *   y=0.9 .. 1.7   — body / shirt (upper capsule)
- *   y=1.7 .. 1.95  — head
- *   y=1.95+        — hat
- */
+// -----------------------------------------------------------------------
+// Build avatar — Roblox-ish proportions (~3.5 heads tall, big head,
+// stubby limbs, rounded everywhere, dot eyes)
+// -----------------------------------------------------------------------
+
+/*
+  Layout (y from feet at 0):
+    0.0  .. 0.12  shoes
+    0.1  .. 0.75  legs (two separate capsules on pivots)
+    0.75 .. 1.45  torso (wider capsule)
+    1.0  .. 1.45  arms hang from shoulder height ~1.3
+    1.45 .. 1.95  head (sphere, scaled wider)
+    1.95+         hat
+*/
+
 export function buildAvatar(
   scene: Scene,
   id: string,
@@ -68,85 +97,162 @@ export function buildAvatar(
 ): Avatar {
   const root = new TransformNode(`avatar_${id}`, scene);
 
-  // Legs / pants — lower half of body as a capsule
-  const legs = MeshBuilder.CreateCapsule(`legs_${id}`, {
-    height: 0.9,
-    radius: 0.28,
-    tessellation: 12,
-    subdivisions: 1,
-  }, scene);
-  legs.parent = root;
-  legs.position.y = 0.5;
-  const legsMat = new StandardMaterial(`legsMat_${id}`, scene);
-  makeMatte(legsMat);
-  legs.material = legsMat;
-  addToonOutline(legs);
+  // --- Materials (shared per avatar, mutated by applyAppearance) ---
+  const bodyMat = matte(scene, `bodyMat_${id}`);
+  const legsMat = matte(scene, `legsMat_${id}`);
+  const headMat = matte(scene, `headMat_${id}`);
+  const shoesMat = matte(scene, `shoesMat_${id}`);
+  const hatMat = matte(scene, `hatMat_${id}`);
+  const accessoryMat = matte(scene, `accMat_${id}`);
+  const armMat = matte(scene, `armMat_${id}`);
 
-  // Body / shirt — upper capsule (slightly larger for cartoony proportions)
+  const eyeMat = matte(scene, `eyeMat_${id}`);
+  eyeMat.diffuseColor = new Color3(0.08, 0.08, 0.08);
+
+  // --- Legs (two separate capsules on pivots for walk animation) ---
+  const legPivotL = new TransformNode(`legPivotL_${id}`, scene);
+  legPivotL.parent = root;
+  legPivotL.position.set(-0.12, 0.7, 0);
+  const legMeshL = MeshBuilder.CreateCapsule(`legL_${id}`, {
+    height: 0.6, radius: 0.12, tessellation: 10, subdivisions: 1,
+  }, scene);
+  legMeshL.parent = legPivotL;
+  legMeshL.position.y = -0.28;
+  legMeshL.material = legsMat;
+  outline(legMeshL);
+
+  const legPivotR = new TransformNode(`legPivotR_${id}`, scene);
+  legPivotR.parent = root;
+  legPivotR.position.set(0.12, 0.7, 0);
+  const legMeshR = MeshBuilder.CreateCapsule(`legR_${id}`, {
+    height: 0.6, radius: 0.12, tessellation: 10, subdivisions: 1,
+  }, scene);
+  legMeshR.parent = legPivotR;
+  legMeshR.position.y = -0.28;
+  legMeshR.material = legsMat;
+  outline(legMeshR);
+
+  // Keep a dummy "legs" mesh ref for appearance compatibility
+  const legs = legMeshL;
+
+  // --- Shoes ---
+  const shoeL = MeshBuilder.CreateCapsule(`shoeL_${id}`, {
+    height: 0.14, radius: 0.1, tessellation: 8, subdivisions: 1,
+  }, scene);
+  shoeL.parent = legPivotL;
+  shoeL.position.set(0, -0.56, 0.02);
+  shoeL.material = shoesMat;
+  outline(shoeL);
+
+  const shoeR = MeshBuilder.CreateCapsule(`shoeR_${id}`, {
+    height: 0.14, radius: 0.1, tessellation: 8, subdivisions: 1,
+  }, scene);
+  shoeR.parent = legPivotR;
+  shoeR.position.set(0, -0.56, 0.02);
+  shoeR.material = shoesMat;
+  outline(shoeR);
+
+  // --- Torso ---
   const body = MeshBuilder.CreateCapsule(`body_${id}`, {
-    height: 0.95,
-    radius: 0.32,
-    tessellation: 14,
-    subdivisions: 1,
+    height: 0.7, radius: 0.28, tessellation: 14, subdivisions: 1,
   }, scene);
   body.parent = root;
-  body.position.y = 1.3;
-  const bodyMat = new StandardMaterial(`bodyMat_${id}`, scene);
-  makeMatte(bodyMat);
+  body.position.y = 1.1;
+  body.scaling.set(1.1, 1, 0.85); // wider shoulders, slightly flat front-to-back
   body.material = bodyMat;
-  addToonOutline(body);
+  outline(body);
 
-  // Head sphere (bigger for cartoon feel)
-  const head = MeshBuilder.CreateSphere(`head_${id}`, { diameter: 0.52, segments: 14 }, scene);
+  // --- Arms (upper arm pivot -> upper capsule -> forearm -> hand) ---
+  const shoulderY = 1.28;
+
+  // Left arm
+  const armUpperL = new TransformNode(`armPivotL_${id}`, scene);
+  armUpperL.parent = root;
+  armUpperL.position.set(-0.38, shoulderY, 0);
+  const armUpperMeshL = MeshBuilder.CreateCapsule(`armUL_${id}`, {
+    height: 0.35, radius: 0.08, tessellation: 8, subdivisions: 1,
+  }, scene);
+  armUpperMeshL.parent = armUpperL;
+  armUpperMeshL.position.y = -0.16;
+  armUpperMeshL.material = armMat;
+  outline(armUpperMeshL);
+
+  const armLowerL = MeshBuilder.CreateCapsule(`armLL_${id}`, {
+    height: 0.3, radius: 0.07, tessellation: 8, subdivisions: 1,
+  }, scene);
+  armLowerL.parent = armUpperL;
+  armLowerL.position.y = -0.42;
+  armLowerL.material = bodyMat; // forearm = shirt color
+  outline(armLowerL);
+
+  const handL = MeshBuilder.CreateSphere(`handL_${id}`, { diameter: 0.14, segments: 8 }, scene);
+  handL.parent = armUpperL;
+  handL.position.y = -0.6;
+  handL.material = headMat; // hand = skin color
+  outline(handL);
+
+  // Right arm
+  const armUpperR = new TransformNode(`armPivotR_${id}`, scene);
+  armUpperR.parent = root;
+  armUpperR.position.set(0.38, shoulderY, 0);
+  const armUpperMeshR = MeshBuilder.CreateCapsule(`armUR_${id}`, {
+    height: 0.35, radius: 0.08, tessellation: 8, subdivisions: 1,
+  }, scene);
+  armUpperMeshR.parent = armUpperR;
+  armUpperMeshR.position.y = -0.16;
+  armUpperMeshR.material = armMat;
+  outline(armUpperMeshR);
+
+  const armLowerR = MeshBuilder.CreateCapsule(`armLR_${id}`, {
+    height: 0.3, radius: 0.07, tessellation: 8, subdivisions: 1,
+  }, scene);
+  armLowerR.parent = armUpperR;
+  armLowerR.position.y = -0.42;
+  armLowerR.material = bodyMat;
+  outline(armLowerR);
+
+  const handR = MeshBuilder.CreateSphere(`handR_${id}`, { diameter: 0.14, segments: 8 }, scene);
+  handR.parent = armUpperR;
+  handR.position.y = -0.6;
+  handR.material = headMat;
+  outline(handR);
+
+  // --- Head (wider sphere for Roblox chibi feel) ---
+  const head = MeshBuilder.CreateSphere(`head_${id}`, { diameter: 0.56, segments: 16 }, scene);
   head.parent = root;
-  head.position.y = 1.9;
-  const headMat = new StandardMaterial(`headMat_${id}`, scene);
-  makeMatte(headMat);
+  head.position.y = 1.68;
+  head.scaling.set(1.15, 1.0, 1.0); // wider face
   head.material = headMat;
-  addToonOutline(head);
+  outline(head);
 
-  // Shoes — rounded boxes
-  const shoesMat = new StandardMaterial(`shoesMat_${id}`, scene);
-  makeMatte(shoesMat);
-  const shoeL = MeshBuilder.CreateCapsule(`shoeL_${id}`, {
-    height: 0.16,
-    radius: 0.1,
-    tessellation: 8,
-    subdivisions: 1,
-  }, scene);
-  shoeL.parent = root;
-  shoeL.position.set(-0.15, 0.08, 0.03);
-  shoeL.material = shoesMat;
-  addToonOutline(shoeL);
-  const shoeR = MeshBuilder.CreateCapsule(`shoeR_${id}`, {
-    height: 0.16,
-    radius: 0.1,
-    tessellation: 8,
-    subdivisions: 1,
-  }, scene);
-  shoeR.parent = root;
-  shoeR.position.set(0.15, 0.08, 0.03);
-  shoeR.material = shoesMat;
-  addToonOutline(shoeR);
+  // --- Face: dot eyes ---
+  const eyeL = MeshBuilder.CreateSphere(`eyeL_${id}`, { diameter: 0.06, segments: 6 }, scene);
+  eyeL.parent = head;
+  eyeL.position.set(-0.1, 0.04, -0.24);
+  eyeL.material = eyeMat;
 
-  const hatMat = new StandardMaterial(`hatMat_${id}`, scene);
-  const accessoryMat = new StandardMaterial(`accMat_${id}`, scene);
+  const eyeR = MeshBuilder.CreateSphere(`eyeR_${id}`, { diameter: 0.06, segments: 6 }, scene);
+  eyeR.parent = head;
+  eyeR.position.set(0.1, 0.04, -0.24);
+  eyeR.material = eyeMat;
 
   const avatar: Avatar = {
     root, body, legs, head, shoeL, shoeR,
+    armUpperL, armUpperR, armLowerL, armLowerR, handL, handR,
+    legPivotL, legPivotR, legMeshL, legMeshR,
+    eyeL, eyeR,
     hat: null, accessory: null,
-    bodyMat, legsMat, headMat, shoesMat, hatMat, accessoryMat,
+    bodyMat, legsMat, headMat, shoesMat, hatMat, accessoryMat, armMat,
   };
 
   applyAppearance(scene, avatar, appearance);
   return avatar;
 }
 
-/**
- * Apply an appearance to an existing avatar: updates colours, rebuilds
- * hat & accessory geometry if the style changed, and handles "none" by
- * disposing the slot mesh.
- */
+// -----------------------------------------------------------------------
+// Appearance application (colors + hat/accessory rebuild)
+// -----------------------------------------------------------------------
+
 export function applyAppearance(
   scene: Scene,
   avatar: Avatar,
@@ -158,8 +264,9 @@ export function applyAppearance(
   avatar.shoesMat.diffuseColor = hexToColor3(appearance.shoes_color);
   avatar.hatMat.diffuseColor = hexToColor3(appearance.hat_color);
   avatar.accessoryMat.diffuseColor = hexToColor3(appearance.accessory_color);
+  // Arms = skin color (upper arm shows skin below short sleeves)
+  avatar.armMat.diffuseColor = hexToColor3(appearance.body_color);
 
-  // Hat: dispose + rebuild by style
   if (avatar.hat) { avatar.hat.dispose(); avatar.hat = null; }
   if (appearance.hat_style !== 'none') {
     avatar.hat = buildHat(scene, avatar.root.name, appearance.hat_style);
@@ -167,7 +274,6 @@ export function applyAppearance(
     avatar.hat.material = avatar.hatMat;
   }
 
-  // Accessory: dispose + rebuild by style
   if (avatar.accessory) { avatar.accessory.dispose(); avatar.accessory = null; }
   if (appearance.accessory_style !== 'none') {
     avatar.accessory = buildAccessory(scene, avatar.root.name, appearance.accessory_style);
@@ -176,55 +282,106 @@ export function applyAppearance(
   }
 }
 
+// -----------------------------------------------------------------------
+// Procedural walk / idle animation — call once per frame
+// -----------------------------------------------------------------------
+
+const WALK_SPEED_THRESHOLD = 0.5; // world units/s below which we idle
+const WALK_FREQ = 8;              // steps per second
+const WALK_LEG_SWING = 0.4;       // radians peak leg swing
+const WALK_ARM_SWING = 0.35;
+const WALK_BOB = 0.04;            // body vertical bob amplitude
+const IDLE_BOB = 0.012;           // gentle idle breathing bob
+const IDLE_FREQ = 1.5;
+
+export function animateAvatar(
+  avatar: Avatar,
+  velocity: number,  // magnitude of horizontal movement speed (world units/s)
+  dt: number,        // seconds since last frame
+  time: number,      // running clock (performance.now() / 1000)
+): void {
+  const isWalking = velocity > WALK_SPEED_THRESHOLD;
+
+  if (isWalking) {
+    const t = time * WALK_FREQ;
+    const legAngle = Math.sin(t * Math.PI) * WALK_LEG_SWING;
+    const armAngle = Math.sin(t * Math.PI) * WALK_ARM_SWING;
+
+    // Legs swing opposite to each other
+    avatar.legPivotL.rotation.x = legAngle;
+    avatar.legPivotR.rotation.x = -legAngle;
+
+    // Arms swing opposite to legs
+    avatar.armUpperL.rotation.x = -armAngle;
+    avatar.armUpperR.rotation.x = armAngle;
+
+    // Body bobs up/down at 2x step frequency
+    avatar.body.position.y = 1.1 + Math.abs(Math.sin(t * Math.PI * 2)) * WALK_BOB;
+
+    // Head slight counter-bob
+    avatar.head.position.y = 1.68 - Math.abs(Math.sin(t * Math.PI * 2)) * WALK_BOB * 0.3;
+  } else {
+    // Idle: gentle breathing bob
+    const t = time * IDLE_FREQ;
+    const bob = Math.sin(t * Math.PI * 2) * IDLE_BOB;
+
+    avatar.body.position.y = 1.1 + bob;
+    avatar.head.position.y = 1.68 + bob * 0.5;
+
+    // Smoothly return limbs to rest
+    avatar.legPivotL.rotation.x *= 0.85;
+    avatar.legPivotR.rotation.x *= 0.85;
+    avatar.armUpperL.rotation.x *= 0.85;
+    avatar.armUpperR.rotation.x *= 0.85;
+  }
+}
+
+// -----------------------------------------------------------------------
+// Hat builders
+// -----------------------------------------------------------------------
+
 function buildHat(scene: Scene, avatarId: string, style: Exclude<Appearance['hat_style'], 'none'>): Mesh {
   switch (style) {
     case 'cap': {
       const hat = MeshBuilder.CreateCylinder(`hat_cap_${avatarId}`, {
-        height: 0.14,
-        diameterTop: 0.42,
-        diameterBottom: 0.48,
-        tessellation: 16,
+        height: 0.14, diameterTop: 0.5, diameterBottom: 0.55, tessellation: 18,
       }, scene);
-      hat.position.y = 2.08;
-      // Brim
+      hat.position.y = 1.92;
+      outline(hat);
       const brim = MeshBuilder.CreateCylinder(`hat_capBrim_${avatarId}`, {
-        height: 0.02,
-        diameter: 0.62,
-        tessellation: 16,
+        height: 0.02, diameter: 0.68, tessellation: 18,
       }, scene);
       brim.parent = hat;
-      brim.position.y = -0.07;
-      brim.position.z = 0.1;
+      brim.position.set(0, -0.07, 0.08);
       return hat;
     }
     case 'tophat': {
       const hat = MeshBuilder.CreateCylinder(`hat_top_${avatarId}`, {
-        height: 0.38,
-        diameterTop: 0.36,
-        diameterBottom: 0.36,
-        tessellation: 18,
+        height: 0.4, diameterTop: 0.4, diameterBottom: 0.4, tessellation: 20,
       }, scene);
-      hat.position.y = 2.22;
+      hat.position.y = 2.12;
+      outline(hat);
       const brim = MeshBuilder.CreateCylinder(`hat_topBrim_${avatarId}`, {
-        height: 0.03,
-        diameter: 0.58,
-        tessellation: 18,
+        height: 0.03, diameter: 0.64, tessellation: 20,
       }, scene);
       brim.parent = hat;
-      brim.position.y = -0.19;
+      brim.position.y = -0.2;
       return hat;
     }
     case 'beanie': {
       const hat = MeshBuilder.CreateSphere(`hat_beanie_${avatarId}`, {
-        diameter: 0.45,
-        segments: 10,
-        slice: 0.55,
+        diameter: 0.52, segments: 12, slice: 0.55,
       }, scene);
-      hat.position.y = 1.98;
+      hat.position.y = 1.82;
+      outline(hat);
       return hat;
     }
   }
 }
+
+// -----------------------------------------------------------------------
+// Accessory builders
+// -----------------------------------------------------------------------
 
 function buildAccessory(
   scene: Scene,
@@ -234,46 +391,39 @@ function buildAccessory(
   switch (style) {
     case 'chain': {
       const chain = MeshBuilder.CreateTorus(`acc_chain_${avatarId}`, {
-        diameter: 0.38,
-        thickness: 0.05,
-        tessellation: 24,
+        diameter: 0.42, thickness: 0.04, tessellation: 24,
       }, scene);
-      chain.position.y = 1.55;
+      chain.position.y = 1.42;
       chain.rotation.x = Math.PI / 2;
+      outline(chain);
       return chain;
     }
     case 'sunglasses': {
-      // Two eye lenses bridged — merge into one mesh by creating one wide bar
       const bar = MeshBuilder.CreateBox(`acc_glasses_${avatarId}`, {
-        width: 0.38,
-        height: 0.09,
-        depth: 0.06,
+        width: 0.44, height: 0.1, depth: 0.04,
       }, scene);
-      bar.position.y = 1.88;
-      bar.position.z = -0.18;
+      bar.position.set(0, 1.72, -0.26);
+      outline(bar);
       return bar;
     }
     case 'bowtie': {
       const bow = MeshBuilder.CreateBox(`acc_bow_${avatarId}`, {
-        width: 0.22,
-        height: 0.1,
-        depth: 0.06,
+        width: 0.2, height: 0.1, depth: 0.05,
       }, scene);
-      bow.position.y = 1.6;
-      bow.position.z = -0.3;
-      bow.rotation.z = Math.PI / 8;
+      bow.position.set(0, 1.42, -0.28);
+      bow.rotation.z = Math.PI / 10;
+      outline(bow);
       return bow;
     }
   }
 }
 
+// -----------------------------------------------------------------------
+// Cleanup
+// -----------------------------------------------------------------------
+
 export function disposeAvatar(avatar: Avatar): void {
   avatar.hat?.dispose();
   avatar.accessory?.dispose();
-  avatar.shoeL.dispose();
-  avatar.shoeR.dispose();
-  avatar.head.dispose();
-  avatar.body.dispose();
-  avatar.legs.dispose();
-  avatar.root.dispose();
+  avatar.root.dispose(false, true);
 }
