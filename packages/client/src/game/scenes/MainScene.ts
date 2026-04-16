@@ -131,15 +131,14 @@ export class MainScene {
 
   async create(): Promise<Scene> {
     const scene = new Scene(this.engine);
-    // Warm pastel sky — sets the cartoony base tone before the gradient clear.
-    scene.clearColor = new Color4(0.72, 0.88, 0.98, 1);
-    scene.ambientColor = new Color3(0.9, 0.92, 1);
+    // Warm pastel sky
+    scene.clearColor = new Color4(0.62, 0.82, 0.95, 1);
+    scene.ambientColor = new Color3(0.35, 0.38, 0.44); // low ambient — lights do the work
 
-    // Subtle atmospheric fog — far parcels fade into the horizon, softens
-    // the sharp geometric line where ground meets sky.
+    // Subtle atmospheric fog — far grid fades into the horizon
     scene.fogMode = Scene.FOGMODE_EXP2;
     scene.fogDensity = 0.0012;
-    scene.fogColor = new Color3(0.72, 0.88, 0.98);
+    scene.fogColor = new Color3(0.62, 0.82, 0.95);
 
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
@@ -151,39 +150,32 @@ export class MainScene {
     this.arcCamera = camera;
     this.sceneRef = scene;
 
-    // ----- Lighting: three-source cartoon lighting -----
-    // 1. Sky dome fills shadow sides with soft sky-blue bounce
-    const sky = new HemisphericLight('skyLight', new Vector3(0, 1, 0), scene);
-    sky.intensity = 0.7;
-    sky.diffuse = new Color3(1, 0.98, 0.92);    // warm top
-    sky.groundColor = new Color3(0.55, 0.55, 0.7); // cool ground bounce
+    // ----- Lighting: soft cartoon two-point rig (one hemisphere + one sun)
+    const sky = new HemisphericLight('skyLight', new Vector3(0.2, 1, 0.1), scene);
+    sky.intensity = 0.55;
+    sky.diffuse = new Color3(1, 0.97, 0.92);
+    sky.groundColor = new Color3(0.35, 0.4, 0.45);
+    sky.specular = new Color3(0, 0, 0); // no shiny highlights, pure cartoon diffuse
 
-    // 2. Key sun — warm directional light from above-right-front
     const sun = new DirectionalLight('sunLight', new Vector3(-0.5, -1, -0.3), scene);
-    sun.intensity = 1.1;
-    sun.diffuse = new Color3(1.0, 0.96, 0.85);
-    sun.position = new Vector3(400, 400, 400);
+    sun.intensity = 0.55;
+    sun.diffuse = new Color3(1.0, 0.97, 0.88);
+    sun.specular = new Color3(0, 0, 0);
 
-    // 3. Soft rim/fill from the opposite side so shadowed edges still read
-    const fill = new DirectionalLight('fillLight', new Vector3(0.6, -0.4, 0.4), scene);
-    fill.intensity = 0.35;
-    fill.diffuse = new Color3(0.75, 0.85, 1);   // cool fill for contrast
-
-    // ----- Post-processing pipeline: bloom + tonemapping for a softer look -----
+    // ----- Post-processing: light touch. Just AA + gentle bloom + contrast
+    // Keeping the pipeline cheap so older GPUs still hit 60fps.
     const pipeline = new DefaultRenderingPipeline('defaultPipeline', true, scene, [camera]);
-    pipeline.samples = 4;                         // MSAA — smooths sharp edges
-    pipeline.fxaaEnabled = true;                  // extra anti-aliasing pass
+    pipeline.samples = 2;                         // lighter MSAA
+    pipeline.fxaaEnabled = true;
     pipeline.bloomEnabled = true;
-    pipeline.bloomThreshold = 0.8;
-    pipeline.bloomWeight = 0.25;
-    pipeline.bloomKernel = 48;
+    pipeline.bloomThreshold = 0.95;               // only brightest pixels bloom
+    pipeline.bloomWeight = 0.12;                  // subtle
+    pipeline.bloomKernel = 32;
     pipeline.bloomScale = 0.5;
-    pipeline.imageProcessing.toneMappingEnabled = true;
-    pipeline.imageProcessing.exposure = 1.1;
-    pipeline.imageProcessing.contrast = 1.05;
-    pipeline.imageProcessing.vignetteEnabled = true;
-    pipeline.imageProcessing.vignetteWeight = 0.6;
-    pipeline.imageProcessing.vignetteStretch = 0.1;
+    pipeline.imageProcessing.toneMappingEnabled = false; // avoid saturation crush
+    pipeline.imageProcessing.contrast = 1.03;
+    pipeline.imageProcessing.exposure = 1.0;
+    pipeline.imageProcessing.vignetteEnabled = false;
 
     // ---- Uniform parcel grid (replaces legacy districts, river, bay, boulevards) ----
     this.spawnBuildingsAndSetupParcels(scene);
