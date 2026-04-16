@@ -4,6 +4,7 @@ import {
   Mesh,
   Vector3,
   Color3,
+  Color4,
   StandardMaterial,
   TransformNode,
 } from '@babylonjs/core';
@@ -14,6 +15,16 @@ function hexToColor3(hex: string): Color3 {
   const clean = hex.replace('#', '');
   const n = parseInt(clean, 16);
   return new Color3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+}
+
+function addToonOutline(mesh: Mesh): void {
+  mesh.renderOutline = true;
+  mesh.outlineWidth = 0.015;
+  mesh.outlineColor = Color3.Black();
+}
+
+function makeMatte(mat: StandardMaterial): void {
+  mat.specularColor = Color3.Black();
 }
 
 /**
@@ -67,37 +78,56 @@ export function buildAvatar(
   legs.parent = root;
   legs.position.y = 0.5;
   const legsMat = new StandardMaterial(`legsMat_${id}`, scene);
+  makeMatte(legsMat);
   legs.material = legsMat;
+  addToonOutline(legs);
 
-  // Body / shirt — upper capsule
+  // Body / shirt — upper capsule (slightly larger for cartoony proportions)
   const body = MeshBuilder.CreateCapsule(`body_${id}`, {
-    height: 0.9,
-    radius: 0.3,
-    tessellation: 12,
+    height: 0.95,
+    radius: 0.32,
+    tessellation: 14,
     subdivisions: 1,
   }, scene);
   body.parent = root;
   body.position.y = 1.3;
   const bodyMat = new StandardMaterial(`bodyMat_${id}`, scene);
+  makeMatte(bodyMat);
   body.material = bodyMat;
+  addToonOutline(body);
 
-  // Head sphere
-  const head = MeshBuilder.CreateSphere(`head_${id}`, { diameter: 0.4, segments: 10 }, scene);
+  // Head sphere (bigger for cartoon feel)
+  const head = MeshBuilder.CreateSphere(`head_${id}`, { diameter: 0.52, segments: 14 }, scene);
   head.parent = root;
-  head.position.y = 1.85;
+  head.position.y = 1.9;
   const headMat = new StandardMaterial(`headMat_${id}`, scene);
+  makeMatte(headMat);
   head.material = headMat;
+  addToonOutline(head);
 
-  // Shoes — two boxes
+  // Shoes — rounded boxes
   const shoesMat = new StandardMaterial(`shoesMat_${id}`, scene);
-  const shoeL = MeshBuilder.CreateBox(`shoeL_${id}`, { width: 0.18, height: 0.12, depth: 0.3 }, scene);
+  makeMatte(shoesMat);
+  const shoeL = MeshBuilder.CreateCapsule(`shoeL_${id}`, {
+    height: 0.16,
+    radius: 0.1,
+    tessellation: 8,
+    subdivisions: 1,
+  }, scene);
   shoeL.parent = root;
-  shoeL.position.set(-0.15, 0.06, 0.03);
+  shoeL.position.set(-0.15, 0.08, 0.03);
   shoeL.material = shoesMat;
-  const shoeR = MeshBuilder.CreateBox(`shoeR_${id}`, { width: 0.18, height: 0.12, depth: 0.3 }, scene);
+  addToonOutline(shoeL);
+  const shoeR = MeshBuilder.CreateCapsule(`shoeR_${id}`, {
+    height: 0.16,
+    radius: 0.1,
+    tessellation: 8,
+    subdivisions: 1,
+  }, scene);
   shoeR.parent = root;
-  shoeR.position.set(0.15, 0.06, 0.03);
+  shoeR.position.set(0.15, 0.08, 0.03);
   shoeR.material = shoesMat;
+  addToonOutline(shoeR);
 
   const hatMat = new StandardMaterial(`hatMat_${id}`, scene);
   const accessoryMat = new StandardMaterial(`accMat_${id}`, scene);

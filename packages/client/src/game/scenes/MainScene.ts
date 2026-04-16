@@ -177,7 +177,7 @@ export class MainScene {
     pipeline.imageProcessing.exposure = 1.0;
     pipeline.imageProcessing.vignetteEnabled = false;
 
-    // ---- Uniform parcel grid (replaces legacy districts, river, bay, boulevards) ----
+    // ---- Uniform parcel grid (async — loads Kenney .glb models) ----
     this.spawnBuildingsAndSetupParcels(scene);
 
     // ---- Day/Night Cycle ----
@@ -253,15 +253,13 @@ export class MainScene {
 
   // ---------- Parcel system ----------
 
-  private spawnBuildingsAndSetupParcels(scene: Scene): void {
-    // Build a lookup map from world position to parcel ID
+  private async spawnBuildingsAndSetupParcels(scene: Scene): Promise<void> {
     for (const p of ALL_PARCELS) {
       this.parcelByDef.set(`${p.x},${p.z}`, p.id);
     }
 
-    const meshes = spawnBuildings(scene);
+    const meshes = await spawnBuildings(scene);
 
-    // Register each parcel ground tile for pointer picking
     for (const mesh of meshes) {
       if (mesh.name.startsWith('lot_') && mesh.metadata?.parcelId !== undefined) {
         const parcelId = mesh.metadata.parcelId as number;
@@ -271,7 +269,6 @@ export class MainScene {
           label: null,
         });
 
-        // Set up click action on each parcel ground tile
         mesh.actionManager = new ActionManager(scene);
         mesh.actionManager.registerAction(
           new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {

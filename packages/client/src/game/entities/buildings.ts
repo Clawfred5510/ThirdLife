@@ -2,120 +2,223 @@ import {
   Scene,
   MeshBuilder,
   Color3,
+  Color4,
   StandardMaterial,
   AbstractMesh,
+  SceneLoader,
+  TransformNode,
+  Vector3,
+  InstancedMesh,
 } from '@babylonjs/core';
+import '@babylonjs/loaders/glTF';
 
 // ---------------------------------------------------------------------------
-// Parcel grid — uniform 50×50 grid replacing legacy districts/landmarks
+// Parcel grid configuration
 // ---------------------------------------------------------------------------
 
-/** Definition for a single parcel on the grid. */
 export interface ParcelDef {
-  /** Unique numeric ID: `gx * GRID_SIZE + gy`. */
   id: number;
-  /** Grid column index (0 = west, GRID_SIZE-1 = east). */
   grid_x: number;
-  /** Grid row index (0 = south, GRID_SIZE-1 = north). */
   grid_y: number;
-  /** World-space centre X of the parcel. */
   x: number;
-  /** World-space centre Z of the parcel. */
   z: number;
 }
 
-// --- Grid configuration -----------------------------------------------------
-
-/** Number of parcels along each axis. */
 export const GRID_COLS = 50;
-
-/** Number of parcels along each axis. */
 export const GRID_ROWS = 50;
-
-/** Size of each parcel cell (metres). */
 const CELL_SIZE = 40;
-
-/** Width of roads between parcels (metres). */
 const ROAD_WIDTH = 8;
-
-/**
- * Total grid footprint:
- *   total = COLS * CELL_SIZE + (COLS - 1) * ROAD_WIDTH
- *        = 50 * 40 + 49 * 8 = 2000 + 392 = 2392
- *
- * Parcels are centred around (0, 0) in world space.
- */
 const GRID_TOTAL_W = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * ROAD_WIDTH;
 const GRID_TOTAL_H = GRID_ROWS * CELL_SIZE + (GRID_ROWS - 1) * ROAD_WIDTH;
-
-// The stride from one cell origin to the next (cell + road)
 const STRIDE = CELL_SIZE + ROAD_WIDTH;
 
 // ---------------------------------------------------------------------------
 // Grid generation
 // ---------------------------------------------------------------------------
 
-/** Generate the full parcel grid. */
 export function generateParcelGrid(): ParcelDef[] {
   const parcels: ParcelDef[] = [];
-
   for (let gy = 0; gy < GRID_ROWS; gy++) {
     for (let gx = 0; gx < GRID_COLS; gx++) {
       const x = gx * STRIDE - GRID_TOTAL_W / 2 + CELL_SIZE / 2;
       const z = gy * STRIDE - GRID_TOTAL_H / 2 + CELL_SIZE / 2;
-
-      parcels.push({
-        id: gx * GRID_COLS + gy,
-        grid_x: gx,
-        grid_y: gy,
-        x,
-        z,
-      });
+      parcels.push({ id: gx * GRID_COLS + gy, grid_x: gx, grid_y: gy, x, z });
     }
   }
-
   return parcels;
 }
 
-/** Pre-computed grid of 2,500 parcels. */
 export const ALL_PARCELS = generateParcelGrid();
+
+// ---------------------------------------------------------------------------
+// Toon-friendly material helpers
+// ---------------------------------------------------------------------------
+
+function toonMat(scene: Scene, name: string, color: Color3): StandardMaterial {
+  const m = new StandardMaterial(name, scene);
+  m.diffuseColor = color;
+  m.specularColor = Color3.Black();
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Kenney building model cache (loaded once, instanced per claimed parcel)
+// ---------------------------------------------------------------------------
+
+export const BUILDING_VARIANTS = [
+  'building-small-a',
+  'building-small-b',
+  'building-small-c',
+  'building-small-d',
+  'building-garage',
+] as const;
+
+const buildingTemplates = new Map<string, TransformNode>();
+
+export async function preloadBuildingModels(scene: Scene): Promise<void> {
+  for (const name of BUILDING_VARIANTS) {
+    try {
+      const result = await SceneLoader.ImportMeshAsync(
+        '',
+        '/assets/models/buildings/',
+        `${name}.glb`,
+        scene,
+      );
+      const root = new TransformNode(`tpl_${name}`, scene);
+      for (const mesh of result.meshes) {
+        if (mesh !== result.meshes[0]) {
+          mesh.parent = root;
+          mesh.renderOutline = true;
+          mesh.outlineWidth = 0.015;
+          mesh.outlineColor = Color3.Black();
+          (mesh as any).isPickable = false;
+        }
+      }
+      result.meshes[0].dispose();
+      root.setEnabled(false);
+      buildingTemplates.set(name, root);
+    } catch {
+      // Asset missing — fall back to procedural boxes
+    }
+  }
+}
+
+export function instantiateBuilding(
+  scene: Scene,
+  variantName: string,
+  position: Vector3,
+  scale: number = 1,
+): TransformNode | null {
+  const tpl = buildingTemplates.get(variantName);
+  if (!tpl) return null;
+  const inst = tpl.instantiateHierarchy(null, undefined, (source, clone) => {
+    clone.name = source.name + '_inst';
+  });
+  if (!inst) return null;
+  inst.setEnabled(true);
+  inst.position = position;
+  inst.scaling.setAll(scale);
+  return inst;
+}
+
+// ---------------------------------------------------------------------------
+// Tree props — preloaded + instanced
+// ---------------------------------------------------------------------------
+
+let treeTemplate: AbstractMesh | null = null;
+
+async function preloadTreeModel(scene: Scene): Promise<void> {
+  try {
+    const result = await SceneLoader.ImportMeshAsync(
+      '',
+      '/assets/models/environment/',
+      'grass-trees.glb',
+      scene,
+    );
+    if (result.meshes.length > 1) {
+      treeTemplate = result.meshes[1];
+      treeTemplate.setEnabled(false);
+      treeTemplate.isPickable = false;
+      result.meshes[0].dispose();
+    }
+  } catch {
+    // fallback handled below
+  }
+}
+
+function scatterTrees(scene: Scene): void {
+  const seed = (n: number) => ((n * 16807 + 1) % 2147483647) / 2147483647;
+  let s = 42;
+  const next = () => { s = (s * 16807 + 1) % 2147483647; return s / 2147483647; };
+
+  // Place trees on a fraction of parcels' edges (along roads)
+  const count = 400;
+  for (let i = 0; i < count; i++) {
+    const px = next() * GRID_TOTAL_W - GRID_TOTAL_W / 2;
+    const pz = next() * GRID_TOTAL_H - GRID_TOTAL_H / 2;
+    const scale = 3 + next() * 4;
+    const rotY = next() * Math.PI * 2;
+
+    if (treeTemplate && treeTemplate instanceof AbstractMesh) {
+      const inst = (treeTemplate as any).createInstance?.(`tree_${i}`);
+      if (inst) {
+        inst.position.set(px, 0, pz);
+        inst.scaling.setAll(scale);
+        inst.rotation.y = rotY;
+        inst.isPickable = false;
+        continue;
+      }
+    }
+    // Fallback: procedural cone + sphere tree
+    const trunk = MeshBuilder.CreateCylinder(`trunk_${i}`, {
+      height: 1.5 * scale * 0.3,
+      diameterTop: 0.15 * scale * 0.3,
+      diameterBottom: 0.25 * scale * 0.3,
+      tessellation: 8,
+    }, scene);
+    trunk.position.set(px, 1.5 * scale * 0.15, pz);
+    trunk.material = toonMat(scene, `trunkMat_${i}`, new Color3(0.45, 0.3, 0.18));
+    trunk.isPickable = false;
+
+    const canopy = MeshBuilder.CreateSphere(`canopy_${i}`, {
+      diameter: 1.8 * scale * 0.3,
+      segments: 8,
+    }, scene);
+    canopy.parent = trunk;
+    canopy.position.y = 1.2 * scale * 0.15;
+    canopy.material = toonMat(scene, `canopyMat_${i}`, new Color3(0.35, 0.65, 0.3));
+    canopy.isPickable = false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API — spawn grid into scene
 // ---------------------------------------------------------------------------
 
-/**
- * Spawn the uniform parcel grid into the given Babylon scene.
- *
- * Replaces the old district/landmark system with a flat ground plane,
- * grid roads, and empty parcel slots.
- *
- * @returns An array of every mesh created.
- */
-export function spawnBuildings(scene: Scene): AbstractMesh[] {
+export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
   const meshes: AbstractMesh[] = [];
 
-  // ---- Base ground plane — soft meadow green, slightly recessed ----
+  // ---- Preload Kenney models ----
+  await Promise.all([
+    preloadBuildingModels(scene),
+    preloadTreeModel(scene),
+  ]);
+
+  // ---- Base ground ----
   const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 200;
   const ground = MeshBuilder.CreateGround('gridGround', {
     width: groundSize,
     height: groundSize,
     subdivisions: 8,
   }, scene);
-  const groundMat = new StandardMaterial('gridGroundMat', scene);
-  groundMat.diffuseColor = new Color3(0.55, 0.78, 0.48);  // fresher pastel grass
-  groundMat.specularColor = new Color3(0.02, 0.02, 0.02); // very low spec = matte cartoon
-  ground.material = groundMat;
+  ground.material = toonMat(scene, 'groundMat', new Color3(0.5, 0.75, 0.42));
   ground.position.y = -0.5;
   ground.receiveShadows = true;
   meshes.push(ground);
 
-  // ---- Roads — asphalt grey, matte ----
-  const roadMat = new StandardMaterial('gridRoadMat', scene);
-  roadMat.diffuseColor = new Color3(0.32, 0.34, 0.38);
-  roadMat.specularColor = new Color3(0.02, 0.02, 0.02);
+  // ---- Roads ----
+  const roadMat = toonMat(scene, 'roadMat', new Color3(0.32, 0.34, 0.38));
 
-  // Horizontal roads
   for (let gy = 0; gy <= GRID_ROWS; gy++) {
     const z = gy * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_H / 2;
     const road = MeshBuilder.CreateGround(`roadH_${gy}`, {
@@ -127,7 +230,6 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // Vertical roads
   for (let gx = 0; gx <= GRID_COLS; gx++) {
     const x = gx * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_W / 2;
     const road = MeshBuilder.CreateGround(`roadV_${gx}`, {
@@ -139,38 +241,44 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // ---- Parcel lots — soft sand-coloured circular pads ----
-  // Each lot is an inscribed disc so the grid reads like cartoon
-  // stepping-stones with visible road channels between them — no sharp
-  // corners, no overlap into roads.
-  const lotMat = new StandardMaterial('lotMat', scene);
-  lotMat.diffuseColor = new Color3(0.82, 0.76, 0.6);
-  lotMat.specularColor = new Color3(0.03, 0.03, 0.03);
-
-  // Disc radius: fits inside the cell with margin of road visible.
-  const LOT_RADIUS = (CELL_SIZE - ROAD_WIDTH) * 0.5 + 1.2;
+  // ---- Square parcels with gentle rounded-corner look ----
+  // CreateGround gives a flat square — we add a subtle border ring using
+  // a slightly recessed larger square underneath in a darker shade.
+  const lotMat = toonMat(scene, 'lotMat', new Color3(0.78, 0.82, 0.65));
+  const lotBorderMat = toonMat(scene, 'lotBorderMat', new Color3(0.55, 0.62, 0.45));
 
   for (const parcel of ALL_PARCELS) {
-    const lot = MeshBuilder.CreateDisc(`lot_${parcel.id}`, {
-      radius: LOT_RADIUS,
-      tessellation: 24,
+    // Outer border (slightly bigger, darker)
+    const border = MeshBuilder.CreateGround(`border_${parcel.id}`, {
+      width: CELL_SIZE - 1,
+      height: CELL_SIZE - 1,
     }, scene);
-    lot.rotation.x = Math.PI / 2; // lay flat
+    border.position.set(parcel.x, 0.08, parcel.z);
+    border.material = lotBorderMat;
+    border.isPickable = false;
+
+    // Inner lot pad (pickable)
+    const lot = MeshBuilder.CreateGround(`lot_${parcel.id}`, {
+      width: CELL_SIZE - 4,
+      height: CELL_SIZE - 4,
+    }, scene);
     lot.position.set(parcel.x, 0.1, parcel.z);
-    lot.material = lotMat; // all 2,500 share one material = one shader bind
+    lot.material = lotMat;
     lot.isPickable = true;
     lot.metadata = { parcelId: parcel.id };
     meshes.push(lot);
   }
 
+  // ---- Scatter tree props ----
+  scatterTrees(scene);
+
   return meshes;
 }
 
 // ---------------------------------------------------------------------------
-// Legacy compatibility re-exports (consumers may still reference these)
+// Legacy re-exports
 // ---------------------------------------------------------------------------
 
-/** @deprecated Use ParcelDef instead. Kept for backward compatibility. */
 export interface BuildingDef {
   name: string;
   x: number;
@@ -178,10 +286,8 @@ export interface BuildingDef {
   width: number;
   depth: number;
   height: number;
-  color: [number, number, number];
+  color: string;
   district: string;
   purchasable: boolean;
 }
-
-/** @deprecated Use ALL_PARCELS instead. */
 export const ALL_BUILDINGS: BuildingDef[] = [];
