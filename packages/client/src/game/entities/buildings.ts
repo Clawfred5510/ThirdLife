@@ -121,75 +121,7 @@ export function instantiateBuilding(
   return inst;
 }
 
-// ---------------------------------------------------------------------------
-// Tree props — preloaded + instanced
-// ---------------------------------------------------------------------------
-
-let treeTemplate: AbstractMesh | null = null;
-
-async function preloadTreeModel(scene: Scene): Promise<void> {
-  try {
-    const result = await SceneLoader.ImportMeshAsync(
-      '',
-      '/assets/models/environment/',
-      'grass-trees.glb',
-      scene,
-    );
-    if (result.meshes.length > 1) {
-      treeTemplate = result.meshes[1];
-      treeTemplate.setEnabled(false);
-      treeTemplate.isPickable = false;
-      result.meshes[0].dispose();
-    }
-  } catch {
-    // fallback handled below
-  }
-}
-
-function scatterTrees(scene: Scene): void {
-  const seed = (n: number) => ((n * 16807 + 1) % 2147483647) / 2147483647;
-  let s = 42;
-  const next = () => { s = (s * 16807 + 1) % 2147483647; return s / 2147483647; };
-
-  // Place trees on a fraction of parcels' edges (along roads)
-  const count = 400;
-  for (let i = 0; i < count; i++) {
-    const px = next() * GRID_TOTAL_W - GRID_TOTAL_W / 2;
-    const pz = next() * GRID_TOTAL_H - GRID_TOTAL_H / 2;
-    const scale = 3 + next() * 4;
-    const rotY = next() * Math.PI * 2;
-
-    if (treeTemplate && treeTemplate instanceof AbstractMesh) {
-      const inst = (treeTemplate as any).createInstance?.(`tree_${i}`);
-      if (inst) {
-        inst.position.set(px, 0, pz);
-        inst.scaling.setAll(scale);
-        inst.rotation.y = rotY;
-        inst.isPickable = false;
-        continue;
-      }
-    }
-    // Fallback: procedural cone + sphere tree
-    const trunk = MeshBuilder.CreateCylinder(`trunk_${i}`, {
-      height: 1.5 * scale * 0.3,
-      diameterTop: 0.15 * scale * 0.3,
-      diameterBottom: 0.25 * scale * 0.3,
-      tessellation: 8,
-    }, scene);
-    trunk.position.set(px, 1.5 * scale * 0.15, pz);
-    trunk.material = toonMat(scene, `trunkMat_${i}`, new Color3(0.45, 0.3, 0.18));
-    trunk.isPickable = false;
-
-    const canopy = MeshBuilder.CreateSphere(`canopy_${i}`, {
-      diameter: 1.8 * scale * 0.3,
-      segments: 8,
-    }, scene);
-    canopy.parent = trunk;
-    canopy.position.y = 1.2 * scale * 0.15;
-    canopy.material = toonMat(scene, `canopyMat_${i}`, new Color3(0.35, 0.65, 0.3));
-    canopy.isPickable = false;
-  }
-}
+// Trees removed per owner request.
 
 // ---------------------------------------------------------------------------
 // Public API — spawn grid into scene
@@ -198,11 +130,8 @@ function scatterTrees(scene: Scene): void {
 export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
   const meshes: AbstractMesh[] = [];
 
-  // ---- Preload Kenney models ----
-  await Promise.all([
-    preloadBuildingModels(scene),
-    preloadTreeModel(scene),
-  ]);
+  // ---- Preload Kenney building models ----
+  await preloadBuildingModels(scene);
 
   // ---- Base ground ----
   const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 200;
@@ -268,9 +197,6 @@ export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
     lot.metadata = { parcelId: parcel.id };
     meshes.push(lot);
   }
-
-  // ---- Scatter tree props ----
-  scatterTrees(scene);
 
   return meshes;
 }

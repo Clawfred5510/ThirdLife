@@ -33,7 +33,7 @@ import {
 } from '../../network/Client';
 import { PlayerInput, TICK_RATE, PLAYER_SPEED, SPRINT_MULTIPLIER, features, ParcelData } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
-import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
+import { spawnBuildings, ALL_PARCELS, ParcelDef, BUILDING_VARIANTS, instantiateBuilding } from '../entities/buildings';
 import { spawnNPCs } from '../entities/npcs';
 import { selectParcel } from '../../ui/components/ParcelPanel';
 
@@ -337,26 +337,42 @@ export class MainScene {
     const scene = this.sceneRef!;
 
     if (!renderData.box) {
-      // Create new business "building" — a soft rounded cuboid so it reads
-      // cartoony rather than sharp-edged. We approximate a rounded box with
-      // Babylon's capsule (vertical, square-ish) plus a flat top tile so
-      // labels anchor cleanly.
+      // Try to place a Kenney building model; pick variant deterministically
+      // from parcel ID so every parcel always gets the same building.
       const height = data.height ?? 4;
-      const h = Math.max(0.5, height);
-      const box = MeshBuilder.CreateBox(`bizBox_${def.id}`, {
-        width: 13,
-        height: h,
-        depth: 13,
-      }, scene);
-      box.enableEdgesRendering(0.999);
-      box.edgesWidth = 2.0;
-      box.edgesColor = new Color4(0, 0, 0, 0.4);
-      box.position.set(def.x, h / 2, def.z);
+      const variantIdx = def.id % BUILDING_VARIANTS.length;
+      const variantName = BUILDING_VARIANTS[variantIdx];
+      const scale = Math.max(2, height * 0.7);
+      const modelNode = instantiateBuilding(
+        scene,
+        variantName,
+        new Vector3(def.x, 0, def.z),
+        scale,
+      );
 
-      const mat = new StandardMaterial(`bizMat_${def.id}`, scene);
-      mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
-      mat.specularColor = new Color3(0.05, 0.05, 0.05); // matte cartoon finish
-      box.material = mat;
+      // Either use a child mesh from the .glb or fall back to a procedural box
+      let box: AbstractMesh;
+      if (modelNode) {
+        // Use the first renderable child as the "anchor" mesh for labels/picking
+        const children = modelNode.getChildMeshes(false);
+        box = children[0] ?? MeshBuilder.CreateBox(`bizBox_${def.id}`, { size: 1 }, scene);
+        box.isPickable = true;
+        for (const child of children) {
+          child.isPickable = true;
+          child.metadata = { parcelId: def.id };
+        }
+      } else {
+        const h = Math.max(0.5, height);
+        box = MeshBuilder.CreateBox(`bizBox_${def.id}`, { width: 13, height: h, depth: 13 }, scene);
+        box.renderOutline = true;
+        box.outlineWidth = 0.015;
+        box.outlineColor = Color3.Black();
+        box.position.set(def.x, h / 2, def.z);
+        const mat = new StandardMaterial(`bizMat_${def.id}`, scene);
+        mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
+        mat.specularColor = Color3.Black();
+        box.material = mat;
+      }
 
       box.isPickable = true;
       box.metadata = {
