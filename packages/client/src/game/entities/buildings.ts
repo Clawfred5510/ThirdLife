@@ -95,24 +95,27 @@ export const ALL_PARCELS = generateParcelGrid();
 export function spawnBuildings(scene: Scene): AbstractMesh[] {
   const meshes: AbstractMesh[] = [];
 
-  // ---- Base ground plane (grass/earth) ----
-  const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 100;
+  // ---- Base ground plane — soft meadow green, slightly recessed ----
+  const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 200;
   const ground = MeshBuilder.CreateGround('gridGround', {
     width: groundSize,
     height: groundSize,
-    subdivisions: 4,
+    subdivisions: 8,
   }, scene);
   const groundMat = new StandardMaterial('gridGroundMat', scene);
-  groundMat.diffuseColor = new Color3(0.3, 0.42, 0.25);
+  groundMat.diffuseColor = new Color3(0.55, 0.78, 0.48);  // fresher pastel grass
+  groundMat.specularColor = new Color3(0.02, 0.02, 0.02); // very low spec = matte cartoon
   ground.material = groundMat;
-  ground.position.y = -0.5; // recess base plane to eliminate z-fighting with roads/lots above
+  ground.position.y = -0.5;
+  ground.receiveShadows = true;
   meshes.push(ground);
 
-  // ---- Grid roads ----
+  // ---- Roads — asphalt grey, matte ----
   const roadMat = new StandardMaterial('gridRoadMat', scene);
-  roadMat.diffuseColor = new Color3(0.25, 0.25, 0.25);
+  roadMat.diffuseColor = new Color3(0.32, 0.34, 0.38);
+  roadMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
-  // Horizontal roads (one between each row, plus borders)
+  // Horizontal roads
   for (let gy = 0; gy <= GRID_ROWS; gy++) {
     const z = gy * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_H / 2;
     const road = MeshBuilder.CreateGround(`roadH_${gy}`, {
@@ -124,7 +127,7 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // Vertical roads (one between each column, plus borders)
+  // Vertical roads
   for (let gx = 0; gx <= GRID_COLS; gx++) {
     const x = gx * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_W / 2;
     const road = MeshBuilder.CreateGround(`roadV_${gx}`, {
@@ -136,20 +139,45 @@ export function spawnBuildings(scene: Scene): AbstractMesh[] {
     meshes.push(road);
   }
 
-  // ---- Parcel lot markers (flat pads for every parcel) ----
+  // ---- Parcel lot markers — soft sand-coloured pads ----
+  // Each parcel gets a square pad (pickable click target) plus a shared
+  // circular "rim" instance underneath that pokes out slightly at the
+  // corners, giving every lot a soft rounded silhouette without
+  // creating thousands of unique materials.
   const lotMat = new StandardMaterial('lotMat', scene);
-  lotMat.diffuseColor = new Color3(0.45, 0.48, 0.42);
+  lotMat.diffuseColor = new Color3(0.78, 0.72, 0.56); // warm sand/limestone
+  lotMat.specularColor = new Color3(0.03, 0.03, 0.03);
+
+  const rimMat = new StandardMaterial('lotRimMat', scene);
+  rimMat.diffuseColor = new Color3(0.62, 0.56, 0.42);
+  rimMat.specularColor = new Color3(0.02, 0.02, 0.02);
+
+  // Build a single rim mesh and use createInstance for every parcel —
+  // thousands of instances share geometry + material = cheap.
+  const rimTemplate = MeshBuilder.CreateDisc('lotRimTpl', {
+    radius: (CELL_SIZE - 2) * 0.68,
+    tessellation: 24,
+  }, scene);
+  rimTemplate.rotation.x = Math.PI / 2;
+  rimTemplate.material = rimMat;
+  rimTemplate.isPickable = false;
+  rimTemplate.isVisible = false; // template itself hidden; instances render
 
   for (const parcel of ALL_PARCELS) {
     const lot = MeshBuilder.CreateGround(`lot_${parcel.id}`, {
-      width: CELL_SIZE - 1,
-      height: CELL_SIZE - 1,
+      width: CELL_SIZE - 2,
+      height: CELL_SIZE - 2,
     }, scene);
     lot.position.set(parcel.x, 0.1, parcel.z);
     lot.material = lotMat;
     lot.isPickable = true;
     lot.metadata = { parcelId: parcel.id };
     meshes.push(lot);
+
+    const rim = rimTemplate.createInstance(`rim_${parcel.id}`);
+    rim.position.set(parcel.x, 0.09, parcel.z);
+    rim.rotation.x = Math.PI / 2;
+    rim.isPickable = false;
   }
 
   return meshes;

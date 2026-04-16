@@ -4,6 +4,7 @@ import {
   ArcRotateCamera,
   FollowCamera,
   HemisphericLight,
+  DirectionalLight,
   MeshBuilder,
   Vector3,
   Color3,
@@ -14,6 +15,9 @@ import {
   TransformNode,
   ActionManager,
   ExecuteCodeAction,
+  DefaultRenderingPipeline,
+  CubeTexture,
+  Texture,
 } from '@babylonjs/core';
 import { Avatar, buildAvatar, applyAppearance, disposeAvatar } from '../entities/avatar';
 import { DEFAULT_APPEARANCE } from '@gamestu/shared';
@@ -127,7 +131,15 @@ export class MainScene {
 
   async create(): Promise<Scene> {
     const scene = new Scene(this.engine);
-    scene.clearColor = new Color4(0.53, 0.81, 0.92, 1);
+    // Warm pastel sky — sets the cartoony base tone before the gradient clear.
+    scene.clearColor = new Color4(0.72, 0.88, 0.98, 1);
+    scene.ambientColor = new Color3(0.9, 0.92, 1);
+
+    // Subtle atmospheric fog — far parcels fade into the horizon, softens
+    // the sharp geometric line where ground meets sky.
+    scene.fogMode = Scene.FOGMODE_EXP2;
+    scene.fogDensity = 0.0012;
+    scene.fogColor = new Color3(0.72, 0.88, 0.98);
 
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
@@ -139,9 +151,39 @@ export class MainScene {
     this.arcCamera = camera;
     this.sceneRef = scene;
 
-    // Lighting
-    const light = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
-    light.intensity = 0.9;
+    // ----- Lighting: three-source cartoon lighting -----
+    // 1. Sky dome fills shadow sides with soft sky-blue bounce
+    const sky = new HemisphericLight('skyLight', new Vector3(0, 1, 0), scene);
+    sky.intensity = 0.7;
+    sky.diffuse = new Color3(1, 0.98, 0.92);    // warm top
+    sky.groundColor = new Color3(0.55, 0.55, 0.7); // cool ground bounce
+
+    // 2. Key sun — warm directional light from above-right-front
+    const sun = new DirectionalLight('sunLight', new Vector3(-0.5, -1, -0.3), scene);
+    sun.intensity = 1.1;
+    sun.diffuse = new Color3(1.0, 0.96, 0.85);
+    sun.position = new Vector3(400, 400, 400);
+
+    // 3. Soft rim/fill from the opposite side so shadowed edges still read
+    const fill = new DirectionalLight('fillLight', new Vector3(0.6, -0.4, 0.4), scene);
+    fill.intensity = 0.35;
+    fill.diffuse = new Color3(0.75, 0.85, 1);   // cool fill for contrast
+
+    // ----- Post-processing pipeline: bloom + tonemapping for a softer look -----
+    const pipeline = new DefaultRenderingPipeline('defaultPipeline', true, scene, [camera]);
+    pipeline.samples = 4;                         // MSAA — smooths sharp edges
+    pipeline.fxaaEnabled = true;                  // extra anti-aliasing pass
+    pipeline.bloomEnabled = true;
+    pipeline.bloomThreshold = 0.8;
+    pipeline.bloomWeight = 0.25;
+    pipeline.bloomKernel = 48;
+    pipeline.bloomScale = 0.5;
+    pipeline.imageProcessing.toneMappingEnabled = true;
+    pipeline.imageProcessing.exposure = 1.1;
+    pipeline.imageProcessing.contrast = 1.05;
+    pipeline.imageProcessing.vignetteEnabled = true;
+    pipeline.imageProcessing.vignetteWeight = 0.6;
+    pipeline.imageProcessing.vignetteStretch = 0.1;
 
     // ---- Uniform parcel grid (replaces legacy districts, river, bay, boulevards) ----
     this.spawnBuildingsAndSetupParcels(scene);
@@ -306,17 +348,25 @@ export class MainScene {
     const scene = this.sceneRef!;
 
     if (!renderData.box) {
-      // Create new business box
+      // Create new business "building" — a soft rounded cuboid so it reads
+      // cartoony rather than sharp-edged. We approximate a rounded box with
+      // Babylon's capsule (vertical, square-ish) plus a flat top tile so
+      // labels anchor cleanly.
       const height = data.height ?? 4;
+      const h = Math.max(0.5, height);
       const box = MeshBuilder.CreateBox(`bizBox_${def.id}`, {
-        width: 14,
-        height: Math.max(0.5, height),
-        depth: 14,
+        width: 13,
+        height: h,
+        depth: 13,
       }, scene);
-      box.position.set(def.x, Math.max(0.5, height) / 2, def.z);
+      box.enableEdgesRendering(0.999);
+      box.edgesWidth = 2.0;
+      box.edgesColor = new Color4(0, 0, 0, 0.4);
+      box.position.set(def.x, h / 2, def.z);
 
       const mat = new StandardMaterial(`bizMat_${def.id}`, scene);
       mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
+      mat.specularColor = new Color3(0.05, 0.05, 0.05); // matte cartoon finish
       box.material = mat;
 
       box.isPickable = true;
