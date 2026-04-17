@@ -68,6 +68,12 @@ interface DBBackend {
   getAllPlayers(): PlayerRow[];
   deletePlayer(id: string): boolean;
   savePlayerAppearance(id: string, appearanceJson: string): void;
+  getPlayerResources(id: string): { food: number; materials: number; energy: number; luxury: number };
+  updatePlayerResources(id: string, resources: { food: number; materials: number; energy: number; luxury: number }): void;
+  setBuildingType(parcelId: number, buildingType: string): void;
+  getPlayerParcels(playerId: string): ParcelRow[];
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void;
+  getEvents(limit?: number): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }>;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -129,9 +135,30 @@ class SQLiteDatabase implements DBBackend {
     // Appearance JSON (hat/shirt/pants/shoes/accessory + colors)
     try {
       this.db.exec(`ALTER TABLE players ADD COLUMN appearance TEXT`);
-    } catch (_) {
-      // Column already exists — ignore
+    } catch (_) { /* exists */ }
+
+    // Resource columns
+    for (const res of ['food', 'materials', 'energy', 'luxury']) {
+      try {
+        this.db.exec(`ALTER TABLE players ADD COLUMN ${res} REAL DEFAULT 0`);
+      } catch (_) { /* exists */ }
     }
+
+    // Building type on parcels (apartment, house, shop, farm, etc.)
+    try {
+      this.db.exec(`ALTER TABLE parcels ADD COLUMN building_type TEXT`);
+    } catch (_) { /* exists */ }
+
+    // Events log
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        player_id TEXT,
+        data TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }
@@ -304,6 +331,33 @@ class SQLiteDatabase implements DBBackend {
 
   savePlayerAppearance(id: string, appearanceJson: string): void {
     this.db.prepare('UPDATE players SET appearance = ? WHERE id = ?').run(appearanceJson, id);
+  }
+
+  getPlayerResources(id: string): { food: number; materials: number; energy: number; luxury: number } {
+    const row = this.db.prepare('SELECT food, materials, energy, luxury FROM players WHERE id = ?').get(id) as
+      { food: number; materials: number; energy: number; luxury: number } | undefined;
+    return row ?? { food: 0, materials: 0, energy: 0, luxury: 0 };
+  }
+
+  updatePlayerResources(id: string, r: { food: number; materials: number; energy: number; luxury: number }): void {
+    this.db.prepare('UPDATE players SET food = ?, materials = ?, energy = ?, luxury = ? WHERE id = ?')
+      .run(r.food, r.materials, r.energy, r.luxury, id);
+  }
+
+  setBuildingType(parcelId: number, buildingType: string): void {
+    this.db.prepare('UPDATE parcels SET building_type = ? WHERE id = ?').run(buildingType, parcelId);
+  }
+
+  getPlayerParcels(playerId: string): ParcelRow[] {
+    return this.db.prepare('SELECT * FROM parcels WHERE owner_id = ?').all(playerId) as ParcelRow[];
+  }
+
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void {
+    this.db.prepare('INSERT INTO events (type, player_id, data) VALUES (?, ?, ?)').run(type, playerId, JSON.stringify(data));
+  }
+
+  getEvents(limit: number = 50): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }> {
+    return this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit) as any[];
   }
 }
 
@@ -485,6 +539,35 @@ class MemoryDB implements DBBackend {
     const p = this.players.get(id);
     if (p) p.appearance = appearanceJson;
   }
+
+  getPlayerResources(id: string) {
+    const p = this.players.get(id);
+    return { food: (p as any)?.food ?? 0, materials: (p as any)?.materials ?? 0, energy: (p as any)?.energy ?? 0, luxury: (p as any)?.luxury ?? 0 };
+  }
+
+  updatePlayerResources(id: string, r: { food: number; materials: number; energy: number; luxury: number }): void {
+    const p = this.players.get(id) as any;
+    if (p) { p.food = r.food; p.materials = r.materials; p.energy = r.energy; p.luxury = r.luxury; }
+  }
+
+  setBuildingType(parcelId: number, buildingType: string): void {
+    const p = this.parcels.get(parcelId);
+    if (p) (p as any).building_type = buildingType;
+  }
+
+  getPlayerParcels(playerId: string): ParcelRow[] {
+    return Array.from(this.parcels.values()).filter(p => p.owner_id === playerId);
+  }
+
+  private events: Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }> = [];
+  private eventId = 0;
+
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void {
+    this.events.push({ id: ++this.eventId, type, player_id: playerId, data: JSON.stringify(data), created_at: new Date().toISOString() });
+    if (this.events.length > 500) this.events.shift();
+  }
+
+  getEvents(limit: number = 50) { return this.events.slice(-limit).reverse(); }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -591,3 +674,10 @@ export function deletePlayer(id: string): boolean {
 export function savePlayerAppearance(id: string, appearanceJson: string): void {
   backend.savePlayerAppearance(id, appearanceJson);
 }
+
+export function getPlayerResources(id: string) { return backend.getPlayerResources(id); }
+export function updatePlayerResources(id: string, r: { food: number; materials: number; energy: number; luxury: number }) { backend.updatePlayerResources(id, r); }
+export function setBuildingType(parcelId: number, buildingType: string) { backend.setBuildingType(parcelId, buildingType); }
+export function getPlayerParcels(playerId: string) { return backend.getPlayerParcels(playerId); }
+export function addEvent(type: string, playerId: string | null, data: Record<string, unknown>) { backend.addEvent(type, playerId, data); }
+export function getEvents(limit?: number) { return backend.getEvents(limit); }

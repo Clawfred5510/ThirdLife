@@ -8,6 +8,7 @@ import { PropertyPanel } from './components/PropertyPanel';
 import { ParcelPanel } from './components/ParcelPanel';
 import { GameMenu } from './components/GameMenu';
 import { CharacterCreator } from './components/CharacterCreator';
+import { ResourceBar } from './components/ResourceBar';
 import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
 
@@ -23,6 +24,7 @@ export const App: React.FC = () => {
   return (
     <>
       <HUD />
+      <ResourceBar />
       <Wallet />
       <ChatPanel />
       <Toast />

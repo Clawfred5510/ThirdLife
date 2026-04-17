@@ -104,4 +104,22 @@ export enum MessageType {
   PLAYER_STATE = 'player_state',
   PLAYER_UPDATE = 'player_update',
   UPDATE_APPEARANCE = 'update_appearance',
+  BUILD_STRUCTURE = 'build_structure',
+  WORK = 'work',
+  WORK_RESULT = 'work_result',
+  TRADE = 'trade',
+  TRADE_RESULT = 'trade_result',
+  RESOURCE_UPDATE = 'resource_update',
+  MARKET_PRICES = 'market_prices',
+  EXPLORE = 'explore',
+  EVENTS = 'events',
+  EVENT = 'event',
+  LEADERBOARD = 'leaderboard',
+}
+
+export interface PlayerResources {
+  food: number;
+  materials: number;
+  energy: number;
+  luxury: number;
 }

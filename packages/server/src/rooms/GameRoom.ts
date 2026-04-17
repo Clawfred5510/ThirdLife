@@ -11,6 +11,13 @@ import {
   features,
   Appearance,
   DEFAULT_APPEARANCE,
+  BUILDINGS,
+  BuildingType,
+  INCOME_TICK_MS,
+  BASE_MARKET_PRICES,
+  ResourceType,
+  RESOURCE_TYPES,
+  EXPLORE_COST,
 } from '@gamestu/shared';
 import {
   getOrCreatePlayer,
@@ -24,6 +31,12 @@ import {
   updateBusiness as updateBusinessInDb,
   getAllParcels,
   savePlayerAppearance,
+  getPlayerResources,
+  updatePlayerResources,
+  setBuildingType,
+  getPlayerParcels,
+  addEvent,
+  getEvents,
 } from '../db';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
@@ -207,6 +220,142 @@ export class GameRoom extends Room<GameState> {
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
+    // ---- BUILD_STRUCTURE: place a typed building on an owned parcel ----
+    this.onMessage(MessageType.BUILD_STRUCTURE, (client: Client, data: { parcelId: number; buildingType: string }) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.parcelId !== 'number' || typeof data.buildingType !== 'string') return;
+      const spec = BUILDINGS[data.buildingType as BuildingType];
+      if (!spec) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Unknown building type' }); return; }
+      if (player.credits < spec.cost) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Insufficient credits', cost: spec.cost }); return; }
+
+      const parcels = getPlayerParcels(client.sessionId);
+      const parcel = parcels.find(p => p.id === data.parcelId);
+      if (!parcel) { client.send(MessageType.BUILD_STRUCTURE, { error: 'You do not own this parcel' }); return; }
+
+      player.credits -= spec.cost;
+      updatePlayerCredits(client.sessionId, player.credits);
+      setBuildingType(data.parcelId, data.buildingType);
+      updateBusinessInDb(data.parcelId, client.sessionId, { type: data.buildingType, name: spec.label });
+
+      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      this.broadcast(MessageType.PARCEL_UPDATE, {
+        id: data.parcelId,
+        owner_id: client.sessionId,
+        business_name: spec.label,
+        business_type: data.buildingType,
+      });
+      addEvent('build', client.sessionId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost });
+      console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
+    });
+
+    // ---- WORK: produce resources from owned buildings ----
+    this.onMessage(MessageType.WORK, (client: Client) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+
+      const parcels = getPlayerParcels(client.sessionId);
+      const resources = getPlayerResources(client.sessionId);
+      let creditsEarned = 0;
+      const produced: Record<string, number> = {};
+
+      for (const parcel of parcels) {
+        const bt = (parcel as any).building_type as string | null;
+        if (!bt) continue;
+        const spec = BUILDINGS[bt as BuildingType];
+        if (!spec) continue;
+
+        if (spec.produces && spec.amount) {
+          const key = spec.produces as keyof typeof resources;
+          resources[key] = (resources[key] || 0) + spec.amount;
+          produced[key] = (produced[key] || 0) + spec.amount;
+        }
+        if (spec.income > 0) {
+          creditsEarned += spec.income;
+        }
+      }
+
+      if (creditsEarned > 0) {
+        player.credits += creditsEarned;
+        updatePlayerCredits(client.sessionId, player.credits);
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      }
+      updatePlayerResources(client.sessionId, resources);
+      client.send(MessageType.WORK_RESULT, { produced, creditsEarned, resources });
+      client.send(MessageType.RESOURCE_UPDATE, resources);
+      addEvent('work', client.sessionId, { produced, creditsEarned });
+    });
+
+    // ---- TRADE: sell resources at market prices ----
+    this.onMessage(MessageType.TRADE, (client: Client, data: { resource: string; quantity: number }) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.resource !== 'string' || typeof data.quantity !== 'number' || data.quantity <= 0) return;
+      if (!RESOURCE_TYPES.includes(data.resource as ResourceType)) { client.send(MessageType.TRADE_RESULT, { error: 'Invalid resource' }); return; }
+
+      const resources = getPlayerResources(client.sessionId);
+      const key = data.resource as keyof typeof resources;
+      if (resources[key] < data.quantity) { client.send(MessageType.TRADE_RESULT, { error: 'Insufficient resource' }); return; }
+
+      const price = BASE_MARKET_PRICES[data.resource as ResourceType];
+      const earnings = Math.floor(price * data.quantity);
+      resources[key] -= data.quantity;
+      player.credits += earnings;
+      updatePlayerCredits(client.sessionId, player.credits);
+      updatePlayerResources(client.sessionId, resources);
+
+      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      client.send(MessageType.RESOURCE_UPDATE, resources);
+      client.send(MessageType.TRADE_RESULT, { sold: data.resource, quantity: data.quantity, earned: earnings });
+      addEvent('trade', client.sessionId, { resource: data.resource, quantity: data.quantity, earned: earnings });
+    });
+
+    // ---- MARKET_PRICES: return current prices ----
+    this.onMessage(MessageType.MARKET_PRICES, (client: Client) => {
+      client.send(MessageType.MARKET_PRICES, BASE_MARKET_PRICES);
+    });
+
+    // ---- EXPLORE: move to random unclaimed parcel ----
+    this.onMessage(MessageType.EXPLORE, (client: Client) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      if (player.credits < EXPLORE_COST) { client.send(MessageType.EXPLORE, { error: 'Insufficient credits' }); return; }
+
+      const allParcels = getAllParcels();
+      const unclaimed = allParcels.filter(p => !p.owner_id);
+      if (unclaimed.length === 0) { client.send(MessageType.EXPLORE, { error: 'No unclaimed parcels' }); return; }
+
+      const target = unclaimed[Math.floor(Math.random() * unclaimed.length)];
+      player.credits -= EXPLORE_COST;
+      updatePlayerCredits(client.sessionId, player.credits);
+      player.x = target.grid_x * 48 - 1200 + 20; // approx world coords
+      player.z = target.grid_y * 48 - 1200 + 20;
+
+      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      client.send(MessageType.EXPLORE, { parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y } });
+      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
+      addEvent('explore', client.sessionId, { parcel: target.id });
+    });
+
+    // ---- EVENTS: return recent events ----
+    this.onMessage(MessageType.EVENTS, (client: Client) => {
+      client.send(MessageType.EVENTS, { events: getEvents(50) });
+    });
+
+    // ---- LEADERBOARD: return player rankings ----
+    this.onMessage(MessageType.LEADERBOARD, (client: Client) => {
+      const allPlayers = Array.from(this.players.values());
+      const board = allPlayers.map(p => {
+        const parcels = getPlayerParcels(p.id);
+        return {
+          id: p.id, name: p.name, credits: p.credits,
+          parcels: parcels.length,
+          buildings: parcels.filter(pp => (pp as any).building_type).length,
+        };
+      }).sort((a, b) => b.credits - a.credits);
+      client.send(MessageType.LEADERBOARD, { leaderboard: board });
+    });
+
     if (features.JOBS) {
       this.onMessage(MessageType.JOB_BOARD, (client: Client) => {
         client.send(MessageType.JOB_BOARD, { jobs: getJobBoard() });
@@ -278,8 +427,9 @@ export class GameRoom extends Room<GameState> {
     // Tell everyone else about the new player
     this.broadcast(MessageType.PLAYER_JOIN, this.snapshotPlayer(player), { except: client });
 
-    // Initial credits UI sync
+    // Initial credits + resources UI sync
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+    client.send(MessageType.RESOURCE_UPDATE, getPlayerResources(client.sessionId));
 
     // Parcel snapshot
     const snapshot = getAllParcels().map((p) => ({

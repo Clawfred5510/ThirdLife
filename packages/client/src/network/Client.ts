@@ -224,6 +224,19 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onParcelUpdateListeners) cb(msg);
   });
 
+  // Resource updates — dispatch via CustomEvent so any UI component can listen
+  room.onMessage(MessageType.RESOURCE_UPDATE, (msg: unknown) => {
+    window.dispatchEvent(new CustomEvent('resource-update', { detail: msg }));
+  });
+
+  room.onMessage(MessageType.WORK_RESULT, (msg: unknown) => {
+    window.dispatchEvent(new CustomEvent('work-result', { detail: msg }));
+  });
+
+  room.onMessage(MessageType.TRADE_RESULT, (msg: unknown) => {
+    window.dispatchEvent(new CustomEvent('trade-result', { detail: msg }));
+  });
+
   console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);
   return room;
 }
@@ -287,6 +300,34 @@ export function sendClaimParcel(parcelId: number): void {
 
 export function sendUpdateBusiness(parcelId: number, data: { name?: string; type?: string; color?: string; height?: number }): void {
   room?.send(MessageType.UPDATE_BUSINESS, { parcelId, ...data });
+}
+
+export function sendBuildStructure(parcelId: number, buildingType: string): void {
+  room?.send(MessageType.BUILD_STRUCTURE, { parcelId, buildingType });
+}
+
+export function sendWork(): void {
+  room?.send(MessageType.WORK, {});
+}
+
+export function sendTrade(resource: string, quantity: number): void {
+  room?.send(MessageType.TRADE, { resource, quantity });
+}
+
+export function sendExplore(): void {
+  room?.send(MessageType.EXPLORE, {});
+}
+
+export function requestMarketPrices(): void {
+  room?.send(MessageType.MARKET_PRICES, {});
+}
+
+export function requestEvents(): void {
+  room?.send(MessageType.EVENTS, {});
+}
+
+export function requestLeaderboard(): void {
+  room?.send(MessageType.LEADERBOARD, {});
 }
 
 export function disconnect(): void {
