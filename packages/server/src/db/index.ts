@@ -74,6 +74,8 @@ interface DBBackend {
   getPlayerParcels(playerId: string): ParcelRow[];
   addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void;
   getEvents(limit?: number): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }>;
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void;
+  getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -156,6 +158,18 @@ class SQLiteDatabase implements DBBackend {
         type TEXT NOT NULL,
         player_id TEXT,
         data TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+
+    // API agents (registered via REST)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        personality TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        api_key TEXT NOT NULL UNIQUE,
         created_at TEXT DEFAULT (datetime('now'))
       );
     `);
@@ -358,6 +372,17 @@ class SQLiteDatabase implements DBBackend {
 
   getEvents(limit: number = 50): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }> {
     return this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit) as any[];
+  }
+
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
+    this.db.prepare('INSERT INTO agents (id, name, personality, strategy, api_key) VALUES (?, ?, ?, ?, ?)').run(id, name, personality, strategy, apiKey);
+    // Also create a player record so the agent can interact with the game
+    this.db.prepare(`INSERT OR IGNORE INTO players (id, name, credits) VALUES (?, ?, 50)`).run(id, name);
+  }
+
+  getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
+    const row = this.db.prepare('SELECT id, name FROM agents WHERE api_key = ?').get(apiKey) as { id: string; name: string } | undefined;
+    return row ?? null;
   }
 }
 
@@ -568,6 +593,17 @@ class MemoryDB implements DBBackend {
   }
 
   getEvents(limit: number = 50) { return this.events.slice(-limit).reverse(); }
+
+  private agents = new Map<string, { id: string; name: string; apiKey: string }>();
+
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
+    this.agents.set(apiKey, { id, name, apiKey });
+    this.players.set(id, { id, name, credits: 50, reputation: 0, x: 400, y: 0, z: -200, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
+  }
+
+  getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
+    return this.agents.get(apiKey) ?? null;
+  }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -681,3 +717,5 @@ export function setBuildingType(parcelId: number, buildingType: string) { backen
 export function getPlayerParcels(playerId: string) { return backend.getPlayerParcels(playerId); }
 export function addEvent(type: string, playerId: string | null, data: Record<string, unknown>) { backend.addEvent(type, playerId, data); }
 export function getEvents(limit?: number) { return backend.getEvents(limit); }
+export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string) { backend.registerAgent(id, name, personality, strategy, apiKey); }
+export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }

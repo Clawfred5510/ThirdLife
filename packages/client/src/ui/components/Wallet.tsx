@@ -26,7 +26,7 @@ export const Wallet: React.FC = () => {
         gap: 6,
       }}
     >
-      <span style={{ opacity: 0.8 }}>CR</span>
+      <span style={{ opacity: 0.8 }}>$AMETA</span>
       <span style={{ color: '#facc15', fontWeight: 'bold', fontSize: 16 }}>
         {credits.toLocaleString()}
       </span>
