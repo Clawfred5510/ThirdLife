@@ -95,7 +95,7 @@ class SQLiteDatabase implements DBBackend {
       CREATE TABLE IF NOT EXISTS players (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        credits INTEGER DEFAULT 500,
+        credits INTEGER DEFAULT 50,
         reputation INTEGER DEFAULT 0,
         x REAL DEFAULT 400,
         y REAL DEFAULT 0,
@@ -201,10 +201,28 @@ class SQLiteDatabase implements DBBackend {
     if (row) {
       this.stmtUpdateLogin.run(id);
       row.last_login = new Date().toISOString();
+      // TEST_BALANCE: override credits on every login for testing
+      const testBal = process.env.TEST_BALANCE;
+      if (testBal) {
+        const bal = parseInt(testBal, 10);
+        if (!isNaN(bal)) {
+          this.stmtUpdateCredits.run(bal, id);
+          row.credits = bal;
+        }
+      }
       return row;
     }
     this.stmtInsertPlayer.run(id, name);
     row = this.stmtGetPlayer.get(id) as PlayerRow;
+    // Apply TEST_BALANCE to new players too
+    const testBal = process.env.TEST_BALANCE;
+    if (testBal) {
+      const bal = parseInt(testBal, 10);
+      if (!isNaN(bal) && row) {
+        this.stmtUpdateCredits.run(bal, id);
+        row.credits = bal;
+      }
+    }
     return row;
   }
 
