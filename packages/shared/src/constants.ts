@@ -8,10 +8,10 @@ export const SPRINT_MULTIPLIER = 2;
 export const DEFAULT_SERVER_PORT = 2567;
 export const GAME_NAME = 'ThirdLife';
 export const WORLD_HALF = WORLD_SIZE / 2; // 1200
-export const CLAIM_COST = 100;
-export const LAND_COST = 150000;
+export const CLAIM_COST = 150;
+export const LAND_COST = 150;
 export const STARTING_BALANCE = 500;
-export const EXPLORE_COST = 69;
+export const EXPLORE_COST = 5;
 export const GRID_COLS = 50;
 export const GRID_ROWS = 50;
 
@@ -34,16 +34,16 @@ export interface BuildingSpec {
 }
 
 export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
-  apartment: { type: 'apartment', cost: 50000,  income: 5,   label: 'Apartment' },
-  house:     { type: 'house',     cost: 75000,  income: 7,   label: 'House' },
-  shop:      { type: 'shop',      cost: 100000, income: 0, produces: 'luxury',    amount: 0.5,  label: 'Shop' },
-  farm:      { type: 'farm',      cost: 150000, income: 0, produces: 'food',      amount: 1.25, label: 'Farm' },
-  market:    { type: 'market',    cost: 200000, income: 20,  label: 'Market' },
-  office:    { type: 'office',    cost: 250000, income: 15,  label: 'Office' },
-  mine:      { type: 'mine',      cost: 300000, income: 0, produces: 'materials', amount: 0.75, label: 'Mine' },
-  hall:      { type: 'hall',      cost: 400000, income: 40,  label: 'Hall' },
-  factory:   { type: 'factory',   cost: 500000, income: 0, produces: 'energy',    amount: 1.0,  label: 'Factory' },
-  bank:      { type: 'bank',      cost: 2000000, income: 200, label: 'Bank' },
+  apartment: { type: 'apartment', cost: 50,   income: 5,   label: 'Apartment' },
+  house:     { type: 'house',     cost: 75,   income: 7,   label: 'House' },
+  shop:      { type: 'shop',      cost: 100,  income: 0, produces: 'luxury',    amount: 0.5,  label: 'Shop' },
+  farm:      { type: 'farm',      cost: 150,  income: 0, produces: 'food',      amount: 1.25, label: 'Farm' },
+  market:    { type: 'market',    cost: 200,  income: 20,  label: 'Market' },
+  office:    { type: 'office',    cost: 250,  income: 15,  label: 'Office' },
+  mine:      { type: 'mine',      cost: 300,  income: 0, produces: 'materials', amount: 0.75, label: 'Mine' },
+  hall:      { type: 'hall',      cost: 400,  income: 40,  label: 'Hall' },
+  factory:   { type: 'factory',   cost: 500,  income: 0, produces: 'energy',    amount: 1.0,  label: 'Factory' },
+  bank:      { type: 'bank',      cost: 2000, income: 200, label: 'Bank' },
 };
 
 export const BUILDING_LIST: BuildingSpec[] = Object.values(BUILDINGS);
@@ -51,10 +51,10 @@ export const RESOURCE_TYPES: ResourceType[] = ['food', 'materials', 'energy', 'l
 
 // Base market prices (credits per unit of resource)
 export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
-  food: 500,
-  materials: 800,
-  energy: 1000,
-  luxury: 2000,
+  food: 50,
+  materials: 80,
+  energy: 100,
+  luxury: 200,
 };
 
 export const INCOME_TICK_MS = 60000; // passive income every 60s
