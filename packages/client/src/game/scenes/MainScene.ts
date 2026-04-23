@@ -16,7 +16,12 @@ import {
   ActionManager,
   ExecuteCodeAction,
   DefaultRenderingPipeline,
+  CubeTexture,
+  ImageProcessingConfiguration,
+  CascadedShadowGenerator,
+  SceneLoader,
 } from '@babylonjs/core';
+import '@babylonjs/loaders/glTF';
 import { Avatar, buildAvatar, applyAppearance, disposeAvatar, animateAvatar } from '../entities/avatar';
 import { DEFAULT_APPEARANCE } from '@gamestu/shared';
 import { AdvancedDynamicTexture, Rectangle, TextBlock } from '@babylonjs/gui';
@@ -52,10 +57,16 @@ import { selectParcel } from '../../ui/components/ParcelPanel';
 
 /** Module-level reference to the active DayNightCycle for external access. */
 let activeDayNight: DayNightCycle | null = null;
+/** Cascaded shadow generator — entity code registers meshes as casters. */
+let activeShadowGenerator: CascadedShadowGenerator | null = null;
 
-/** Get the active day/night cycle system (if the scene has been created). */
 export function getDayNightCycle(): DayNightCycle | null {
   return activeDayNight;
+}
+
+/** Returns the scene's cascaded shadow generator, or null before scene create. */
+export function getShadowGenerator(): CascadedShadowGenerator | null {
+  return activeShadowGenerator;
 }
 
 /** Convert a hex color string (e.g. '#3366cc') to a Babylon Color3. */
@@ -156,32 +167,66 @@ export class MainScene {
     this.arcCamera = camera;
     this.sceneRef = scene;
 
-    // ----- Lighting: soft cartoon two-point rig (one hemisphere + one sun)
-    const sky = new HemisphericLight('skyLight', new Vector3(0.2, 1, 0.1), scene);
-    sky.intensity = 0.55;
-    sky.diffuse = new Color3(1, 0.97, 0.92);
-    sky.groundColor = new Color3(0.35, 0.4, 0.45);
-    sky.specular = new Color3(0, 0, 0); // no shiny highlights, pure cartoon diffuse
+    // ----- Lighting: HDR environment + one shadow-casting sun
+    // HDR/IBL gives soft omnidirectional fill across the whole world so
+    // every mesh picks up believable ambient light without per-scene tuning.
+    // A single directional sun casts the hero shadows.
+    const envTex = CubeTexture.CreateFromPrefilteredData('/assets/env/environment.env', scene);
+    envTex.gammaSpace = false;
+    scene.environmentTexture = envTex;
+    scene.environmentIntensity = 0.8;
+
+    // Skybox rendered FROM the env texture so the sky visually matches the
+    // lighting that's baked in. Without this, scene.clearColor shows through
+    // and ACES tone mapping washes it out.
+    const skybox = scene.createDefaultSkybox(envTex, true, 5000, 0.3);
+    if (skybox) skybox.isPickable = false;
+
+    // Hemisphere fill is now minimal — env texture does the ambient work,
+    // hemi just lifts the StandardMaterial meshes (ground/roads) a touch.
+    const hemi = new HemisphericLight('hemiFill', new Vector3(0.2, 1, 0.1), scene);
+    hemi.intensity = 0.25;
+    hemi.diffuse = new Color3(1, 0.97, 0.92);
+    hemi.groundColor = new Color3(0.35, 0.4, 0.45);
+    hemi.specular = new Color3(0, 0, 0);
 
     const sun = new DirectionalLight('sunLight', new Vector3(-0.5, -1, -0.3), scene);
-    sun.intensity = 0.55;
+    sun.intensity = 1.4;
     sun.diffuse = new Color3(1.0, 0.97, 0.88);
-    sun.specular = new Color3(0, 0, 0);
+    sun.specular = new Color3(0.2, 0.19, 0.16);
+    sun.shadowEnabled = true;
+    sun.shadowMinZ = 1;
+    sun.shadowMaxZ = 500;
 
-    // ----- Post-processing: light touch. Just AA + gentle bloom + contrast
-    // Keeping the pipeline cheap so older GPUs still hit 60fps.
+    // Cascaded shadow generator: better quality than a single frustum when
+    // the same light has to shadow both nearby avatars AND far buildings.
+    const shadowGen = new CascadedShadowGenerator(2048, sun);
+    shadowGen.useContactHardeningShadow = true;
+    shadowGen.contactHardeningLightSizeUVRatio = 0.06;
+    shadowGen.stabilizeCascades = true;
+    shadowGen.lambda = 0.8;
+    shadowGen.cascadeBlendPercentage = 0.15;
+    shadowGen.shadowMaxZ = 500;
+    shadowGen.transparencyShadow = true;
+    shadowGen.bias = 0.002;
+    activeShadowGenerator = shadowGen;
+
+    // ----- Post-processing pipeline: ACES tone mapping + bloom + FXAA
     const pipeline = new DefaultRenderingPipeline('defaultPipeline', true, scene, [camera]);
-    pipeline.samples = 2;                         // lighter MSAA
+    pipeline.samples = 2;
     pipeline.fxaaEnabled = true;
     pipeline.bloomEnabled = true;
-    pipeline.bloomThreshold = 0.95;               // only brightest pixels bloom
-    pipeline.bloomWeight = 0.12;                  // subtle
-    pipeline.bloomKernel = 32;
+    pipeline.bloomThreshold = 0.85;
+    pipeline.bloomWeight = 0.22;
+    pipeline.bloomKernel = 48;
     pipeline.bloomScale = 0.5;
-    pipeline.imageProcessing.toneMappingEnabled = false; // avoid saturation crush
-    pipeline.imageProcessing.contrast = 1.03;
+    pipeline.imageProcessing.toneMappingEnabled = true;
+    pipeline.imageProcessing.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+    pipeline.imageProcessing.contrast = 1.05;
     pipeline.imageProcessing.exposure = 1.0;
-    pipeline.imageProcessing.vignetteEnabled = false;
+    pipeline.imageProcessing.vignetteEnabled = true;
+    pipeline.imageProcessing.vignetteWeight = 0.6;
+    pipeline.imageProcessing.vignetteStretch = 0.5;
 
     // ---- Uniform parcel grid (async — loads Kenney .glb models) ----
     this.spawnBuildingsAndSetupParcels(scene);
@@ -199,6 +244,9 @@ export class MainScene {
     if (features.NPCS) {
       spawnNPCs(scene, this.labelUI);
     }
+
+    // ---- Clouds ----
+    this.spawnClouds(scene);
 
     // ---- Network listeners ----
 
@@ -234,17 +282,63 @@ export class MainScene {
     // ---- Per-frame update ----
 
     scene.onBeforeRenderObservable.add(() => {
+      const dt = this.engine.getDeltaTime() / 1000;
       this.sendPlayerInput();
       this.applyLocalPrediction();
       this.interpolateRemotePlayers();
       this.animateAllAvatars();
       this.trackPlayerWithCamera();
+      this.driftClouds(dt);
       if (this.dayNight) {
-        this.dayNight.update(this.engine.getDeltaTime() / 1000);
+        this.dayNight.update(dt);
       }
     });
 
     return scene;
+  }
+
+  /** Cloud drift state updated each frame. */
+  private cloudInstances: Array<{ node: TransformNode; speed: number }> = [];
+
+  private async spawnClouds(scene: Scene): Promise<void> {
+    try {
+      const result = await SceneLoader.ImportMeshAsync(
+        '',
+        '/assets/models/environment/',
+        'cloud.glb',
+        scene,
+      );
+      const root = new TransformNode('cloudTemplate', scene);
+      for (const mesh of result.meshes) {
+        if (mesh !== result.meshes[0]) {
+          mesh.parent = root;
+          mesh.isPickable = false;
+        }
+      }
+      result.meshes[0].dispose();
+      root.setEnabled(false);
+
+      // 16 instances drifting at y=140..180 across the sky. Slow, pastel.
+      const COUNT = 16;
+      for (let i = 0; i < COUNT; i++) {
+        const inst = root.instantiateHierarchy(null, undefined, (src, clone) => {
+          clone.name = src.name + '_cloud_' + i;
+        });
+        if (!inst) continue;
+        inst.setEnabled(true);
+        const angle = (i / COUNT) * Math.PI * 2;
+        const radius = 600 + Math.random() * 700;
+        inst.position.set(
+          Math.cos(angle) * radius,
+          140 + Math.random() * 40,
+          Math.sin(angle) * radius,
+        );
+        inst.scaling.setAll(18 + Math.random() * 18);
+        this.cloudInstances.push({ node: inst, speed: 0.6 + Math.random() * 0.8 });
+      }
+    } catch {
+      // cloud.glb not present — skip
+    }
   }
 
   /**
@@ -271,6 +365,9 @@ export class MainScene {
     const meshes = await spawnBuildings(scene);
 
     for (const mesh of meshes) {
+      // Everything flat receives shadows so avatars cast onto the ground.
+      mesh.receiveShadows = true;
+
       if (mesh.name.startsWith('lot_') && mesh.metadata?.parcelId !== undefined) {
         const parcelId = mesh.metadata.parcelId as number;
         this.parcelRenders.set(parcelId, {
@@ -363,13 +460,14 @@ export class MainScene {
       // Either use a child mesh from the .glb or fall back to a procedural box
       let box: AbstractMesh;
       if (modelNode) {
-        // Use the first renderable child as the "anchor" mesh for labels/picking
         const children = modelNode.getChildMeshes(false);
         box = children[0] ?? MeshBuilder.CreateBox(`bizBox_${def.id}`, { size: 1 }, scene);
         box.isPickable = true;
         for (const child of children) {
           child.isPickable = true;
           child.metadata = { parcelId: def.id };
+          // Buildings cast shadows onto the ground
+          activeShadowGenerator?.addShadowCaster(child);
         }
       } else {
         const h = Math.max(0.5, height);
@@ -382,6 +480,7 @@ export class MainScene {
         mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
         mat.specularColor = Color3.Black();
         box.material = mat;
+        activeShadowGenerator?.addShadowCaster(box);
       }
 
       box.isPickable = true;
@@ -514,6 +613,18 @@ export class MainScene {
     const avatar = buildAvatar(scene, sessionId, appearance);
     avatar.root.position.set(player.x, 0, player.z);
     avatar.root.rotation.y = player.rotation ?? 0;
+
+    // Register every avatar mesh as a shadow caster.
+    if (activeShadowGenerator) {
+      const casters: Array<AbstractMesh | null | undefined> = [
+        avatar.head, avatar.body, avatar.legs, avatar.legMeshL, avatar.legMeshR,
+        avatar.shoeL, avatar.shoeR, avatar.armLowerL, avatar.armLowerR,
+        avatar.handL, avatar.handR, avatar.hat, avatar.accessory,
+      ];
+      for (const m of casters) {
+        if (m) activeShadowGenerator.addShadowCaster(m);
+      }
+    }
 
     // Camera + label anchor on the shirt mesh (torso-height) for a nice eye-level target.
     const mesh = avatar.body as AbstractMesh;
@@ -789,6 +900,14 @@ export class MainScene {
       remote.prevZ = pos.z;
       animateAvatar(remote.avatar, velocity, dt, time);
     });
+  }
+
+  private driftClouds(dt: number): void {
+    for (const c of this.cloudInstances) {
+      c.node.position.x += c.speed * dt;
+      // wrap to -1500 when they drift off +1500
+      if (c.node.position.x > 1500) c.node.position.x = -1500;
+    }
   }
 
   private trackPlayerWithCamera(): void {
