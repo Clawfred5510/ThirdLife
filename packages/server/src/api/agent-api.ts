@@ -1,14 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
 import {
-  getOrCreatePlayer,
   getAllParcels,
   getAllPlayers,
   getPlayerResources,
-  updatePlayerResources,
   getPlayerCredits,
   updatePlayerCredits,
-  claimParcel,
   getPlayerParcels,
   setBuildingType,
   updateBusiness,
@@ -16,6 +13,10 @@ import {
   getEvents,
   registerAgent,
   getAgentByApiKey,
+  transferCredits,
+  tradeSellResources,
+  workProduce,
+  buyLand,
 } from '../db';
 import {
   BUILDINGS,
@@ -43,17 +44,68 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
+// ── Failed-auth logging + bruteforce observability ──────────────────────
+
+function logAuthFailure(req: Request, reason: 'missing_header' | 'invalid_key', apiKeyHint: string | null): void {
+  const ip = (req.ip || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+  const ua = (req.headers['user-agent'] ?? '').toString().slice(0, 120);
+  const path = req.path;
+  // eslint-disable-next-line no-console
+  console.warn(`[auth-fail] ip=${ip} path=${path} reason=${reason} key_hint=${apiKeyHint ?? '-'} ua="${ua}"`);
+  addEvent('auth_failure', null, { ip, path, reason, key_hint: apiKeyHint, ua });
+}
+
+// ── Rate limiter: token bucket keyed by API key (auth'd) or IP (anon) ───
+// 60 req/min sustained with burst of 30. In-process, single-node only — if
+// we ever horizontally scale, swap for Redis-backed bucket.
+const RATE_CAPACITY = 30;
+const RATE_REFILL_PER_MS = 60 / 60_000; // 60 tokens per 60s
+interface Bucket { tokens: number; lastRefill: number; }
+const buckets = new Map<string, Bucket>();
+
+function consumeToken(key: string): boolean {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b) {
+    b = { tokens: RATE_CAPACITY, lastRefill: now };
+    buckets.set(key, b);
+  } else {
+    const elapsed = now - b.lastRefill;
+    b.tokens = Math.min(RATE_CAPACITY, b.tokens + elapsed * RATE_REFILL_PER_MS);
+    b.lastRefill = now;
+  }
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+
+function rateLimit(req: Request, res: Response, next: NextFunction): void {
+  const agentId = (req as any).agentId as string | undefined;
+  const ip = (req.ip || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+  const key = agentId ? `agent:${agentId}` : `ip:${ip}`;
+  if (!consumeToken(key)) {
+    res.setHeader('Retry-After', '60');
+    res.status(429).json({ error: 'Rate limit exceeded. Max 60 req/min per agent.' });
+    return;
+  }
+  next();
+}
+
 // ── Auth middleware for agent actions ────────────────────────────────────
 
 function authAgent(req: Request, res: Response, next: NextFunction): void {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
+    logAuthFailure(req, 'missing_header', null);
     res.status(401).json({ error: 'Authorization header required: Bearer <api_key>' });
     return;
   }
   const apiKey = auth.slice(7);
   const agent = getAgentByApiKey(apiKey);
   if (!agent) {
+    // Log only a short prefix so full keys don't end up in logs
+    const hint = apiKey.length >= 10 ? apiKey.slice(0, 10) + '…' : '(short)';
+    logAuthFailure(req, 'invalid_key', hint);
     res.status(401).json({ error: 'Invalid API key' });
     return;
   }
@@ -210,9 +262,9 @@ router.get('/spec', (_req: Request, res: Response) => {
   });
 });
 
-// ── Action endpoints (require auth) ────────────────────────────────────
+// ── Action endpoints (require auth + rate limit) ───────────────────────
 
-router.post('/actions/explore', authAgent, (req: Request, res: Response) => {
+router.post('/actions/explore', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const credits = getPlayerCredits(agentId);
   if (credits < EXPLORE_COST) return res.status(400).json({ error: 'Insufficient balance', cost: EXPLORE_COST });
@@ -226,24 +278,22 @@ router.post('/actions/explore', authAgent, (req: Request, res: Response) => {
   res.json({ ok: true, parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y }, cost: EXPLORE_COST });
 });
 
-router.post('/actions/buy-land', authAgent, (req: Request, res: Response) => {
+router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { parcel_id, x, y } = req.body ?? {};
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
   if (pid === undefined) return res.status(400).json({ error: 'parcel_id (or x,y) required' });
 
-  const credits = getPlayerCredits(agentId);
-  if (credits < LAND_COST) return res.status(400).json({ error: 'Insufficient balance', cost: LAND_COST });
-
-  const success = claimParcel(pid, agentId);
-  if (!success) return res.status(400).json({ error: 'Parcel unavailable or already claimed' });
-
-  updatePlayerCredits(agentId, credits - LAND_COST);
+  const result = buyLand(agentId, pid);
+  if (!result.ok) {
+    const status = result.reason === 'insufficient_balance' ? 400 : 400;
+    return res.status(status).json({ error: result.reason, cost: LAND_COST });
+  }
   addEvent('buy_land', agentId, { parcel: pid, cost: LAND_COST });
-  res.json({ ok: true, parcel_id: pid, cost: LAND_COST });
+  res.json({ ok: true, parcel_id: pid, cost: LAND_COST, balance: result.credits });
 });
 
-router.post('/actions/build', authAgent, (req: Request, res: Response) => {
+router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { parcel_id, x, y, building_type } = req.body ?? {};
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
@@ -265,7 +315,7 @@ router.post('/actions/build', authAgent, (req: Request, res: Response) => {
   res.json({ ok: true, building: building_type, cost: spec.cost });
 });
 
-router.post('/actions/work', authAgent, (req: Request, res: Response) => {
+router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const parcels = getPlayerParcels(agentId);
   const resources = getPlayerResources(agentId);
@@ -285,45 +335,46 @@ router.post('/actions/work', authAgent, (req: Request, res: Response) => {
     if (spec.income > 0) creditsEarned += spec.income;
   }
 
-  if (creditsEarned > 0) updatePlayerCredits(agentId, getPlayerCredits(agentId) + creditsEarned);
-  updatePlayerResources(agentId, resources);
+  const result = workProduce(agentId, creditsEarned, resources);
   addEvent('work', agentId, { produced, creditsEarned });
-  res.json({ ok: true, produced, creditsEarned, resources });
+  res.json({ ok: true, produced, creditsEarned, resources, balance: result.credits });
 });
 
-router.post('/actions/trade', authAgent, (req: Request, res: Response) => {
+router.post('/actions/trade', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
-  const { action: tradeAction, resource, quantity, target_agent_id, amount } = req.body ?? {};
+  const { resource, quantity, target_agent_id, amount } = req.body ?? {};
 
-  // Transfer AMETA to another agent
-  if (target_agent_id && amount) {
-    const senderCredits = getPlayerCredits(agentId);
-    if (senderCredits < amount) return res.status(400).json({ error: 'Insufficient balance' });
-    updatePlayerCredits(agentId, senderCredits - amount);
-    updatePlayerCredits(target_agent_id, getPlayerCredits(target_agent_id) + amount);
+  // Transfer $AMETA to another agent (atomic, validates target exists)
+  if (target_agent_id !== undefined || amount !== undefined) {
+    if (typeof target_agent_id !== 'string' || !target_agent_id) {
+      return res.status(400).json({ error: 'target_agent_id (string) required for transfer' });
+    }
+    if (typeof amount !== 'number' || amount <= 0 || !Number.isFinite(amount)) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+    const result = transferCredits(agentId, target_agent_id, amount);
+    if (!result.ok) {
+      const status = result.reason === 'target_not_found' ? 404 : 400;
+      return res.status(status).json({ error: result.reason });
+    }
     addEvent('transfer', agentId, { to: target_agent_id, amount });
     return res.json({ ok: true, transferred: amount, to: target_agent_id });
   }
 
-  // Sell resources
+  // Sell resources (atomic debit+credit)
   if (!resource || !quantity) return res.status(400).json({ error: 'resource and quantity required (or target_agent_id + amount for transfer)' });
   if (!RESOURCE_TYPES.includes(resource as ResourceType)) return res.status(400).json({ error: 'Invalid resource', valid: RESOURCE_TYPES });
   if (typeof quantity !== 'number' || quantity <= 0) return res.status(400).json({ error: 'quantity must be positive' });
 
-  const resources = getPlayerResources(agentId);
-  const key = resource as keyof typeof resources;
-  if (resources[key] < quantity) return res.status(400).json({ error: 'Insufficient resource' });
-
   const price = BASE_MARKET_PRICES[resource as ResourceType];
   const earnings = Math.floor(price * quantity);
-  resources[key] -= quantity;
-  updatePlayerResources(agentId, resources);
-  updatePlayerCredits(agentId, getPlayerCredits(agentId) + earnings);
+  const result = tradeSellResources(agentId, resource as ResourceType, quantity, earnings);
+  if (!result.ok) return res.status(400).json({ error: result.reason });
   addEvent('trade', agentId, { resource, quantity, earned: earnings });
-  res.json({ ok: true, sold: resource, quantity, earned: earnings, resources });
+  res.json({ ok: true, sold: resource, quantity, earned: earnings, resources: result.resources, balance: result.credits });
 });
 
-router.post('/actions/chat', authAgent, (req: Request, res: Response) => {
+router.post('/actions/chat', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { target_agent_id, message } = req.body ?? {};
   if (!target_agent_id || !message) return res.status(400).json({ error: 'target_agent_id and message required' });

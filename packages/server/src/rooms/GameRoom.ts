@@ -25,7 +25,6 @@ import {
   purchaseProperty,
   getPlayerCredits as getPlayerCreditsFromDb,
   updatePlayerCredits,
-  getPlayerTotalRevenue,
   seedParcels,
   claimParcel,
   updateBusiness as updateBusinessInDb,
@@ -530,12 +529,21 @@ export class GameRoom extends Room<GameState> {
       });
     }
 
-    // ---- Passive revenue tick (every 60 seconds) ----
+    // ---- Passive revenue tick ----
+    // Sum income across owned parcels' building types. The legacy `properties`
+    // table is unused; all income flows from parcels + building_type.
     this.lastRevenueTick += deltaTime;
-    if (this.lastRevenueTick >= 60000) {
+    if (this.lastRevenueTick >= INCOME_TICK_MS) {
       this.lastRevenueTick = 0;
       this.players.forEach((player, sessionId) => {
-        const revenue = getPlayerTotalRevenue(sessionId);
+        const parcels = getPlayerParcels(sessionId);
+        let revenue = 0;
+        for (const p of parcels) {
+          const bt = (p as any).building_type as string | null;
+          if (!bt) continue;
+          const spec = BUILDINGS[bt as BuildingType];
+          if (spec?.income) revenue += spec.income;
+        }
         if (revenue > 0) {
           const newCredits = player.credits + revenue;
           updatePlayerCredits(sessionId, newCredits);

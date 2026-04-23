@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
+import { LAND_COST } from '@gamestu/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,20 @@ interface DBBackend {
   getEvents(limit?: number): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }>;
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void;
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
+  playerExists(id: string): boolean;
+  transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
+  tradeSellResources(
+    id: string,
+    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    quantity: number,
+    earnings: number,
+  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } };
+  workProduce(
+    id: string,
+    creditsEarned: number,
+    newResources: { food: number; materials: number; energy: number; luxury: number },
+  ): { credits: number };
+  buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number };
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -304,10 +319,80 @@ class SQLiteDatabase implements DBBackend {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel || parcel.owner_id !== null) return false;
       const credits = this.getPlayerCredits(playerId);
-      if (credits < 100) return false;
-      this.stmtUpdateCredits.run(credits - 100, playerId);
+      if (credits < LAND_COST) return false;
+      this.stmtUpdateCredits.run(credits - LAND_COST, playerId);
       const result = this.stmtClaimParcel.run(playerId, parcelId);
       return result.changes > 0;
+    });
+    return txn();
+  }
+
+  playerExists(id: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM players WHERE id = ?').get(id) as { '1': number } | undefined;
+    return !!row;
+  }
+
+  transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string } {
+    const txn = this.db.transaction(() => {
+      if (amount <= 0 || !Number.isFinite(amount)) return { ok: false, reason: 'invalid_amount' };
+      if (fromId === toId) return { ok: false, reason: 'self_transfer' };
+      if (!this.playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+      const fromCredits = this.getPlayerCredits(fromId);
+      if (fromCredits < amount) return { ok: false, reason: 'insufficient_balance' };
+      const toCredits = this.getPlayerCredits(toId);
+      this.stmtUpdateCredits.run(fromCredits - amount, fromId);
+      this.stmtUpdateCredits.run(toCredits + amount, toId);
+      return { ok: true };
+    });
+    return txn();
+  }
+
+  tradeSellResources(
+    id: string,
+    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    quantity: number,
+    earnings: number,
+  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
+    const txn = this.db.transaction(() => {
+      if (quantity <= 0) return { ok: false, reason: 'invalid_quantity' };
+      const resources = this.getPlayerResources(id);
+      if (resources[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
+      resources[resource] -= quantity;
+      const creditsBefore = this.getPlayerCredits(id);
+      const creditsAfter = creditsBefore + earnings;
+      this.updatePlayerResources(id, resources);
+      this.stmtUpdateCredits.run(creditsAfter, id);
+      return { ok: true, credits: creditsAfter, resources };
+    });
+    return txn();
+  }
+
+  workProduce(
+    id: string,
+    creditsEarned: number,
+    newResources: { food: number; materials: number; energy: number; luxury: number },
+  ): { credits: number } {
+    const txn = this.db.transaction(() => {
+      const creditsBefore = this.getPlayerCredits(id);
+      const creditsAfter = creditsBefore + creditsEarned;
+      if (creditsEarned !== 0) this.stmtUpdateCredits.run(creditsAfter, id);
+      this.updatePlayerResources(id, newResources);
+      return { credits: creditsAfter };
+    });
+    return txn();
+  }
+
+  buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number } {
+    const txn = this.db.transaction(() => {
+      const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
+      if (!parcel) return { ok: false, reason: 'parcel_not_found' };
+      if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+      const credits = this.getPlayerCredits(id);
+      if (credits < LAND_COST) return { ok: false, reason: 'insufficient_balance' };
+      this.stmtUpdateCredits.run(credits - LAND_COST, id);
+      const result = this.stmtClaimParcel.run(id, parcelId);
+      if (result.changes === 0) return { ok: false, reason: 'claim_race' };
+      return { ok: true, credits: credits - LAND_COST };
     });
     return txn();
   }
@@ -526,11 +611,65 @@ class MemoryDB implements DBBackend {
     const parcel = this.parcels.get(parcelId);
     if (!parcel || parcel.owner_id !== null) return false;
     const credits = this.getPlayerCredits(playerId);
-    if (credits < 100) return false;
-    this.updatePlayerCredits(playerId, credits - 100);
+    if (credits < LAND_COST) return false;
+    this.updatePlayerCredits(playerId, credits - LAND_COST);
     parcel.owner_id = playerId;
     parcel.claimed_at = new Date().toISOString();
     return true;
+  }
+
+  playerExists(id: string): boolean {
+    return this.players.has(id);
+  }
+
+  transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string } {
+    if (amount <= 0 || !Number.isFinite(amount)) return { ok: false, reason: 'invalid_amount' };
+    if (fromId === toId) return { ok: false, reason: 'self_transfer' };
+    if (!this.playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+    const fromCredits = this.getPlayerCredits(fromId);
+    if (fromCredits < amount) return { ok: false, reason: 'insufficient_balance' };
+    this.updatePlayerCredits(fromId, fromCredits - amount);
+    this.updatePlayerCredits(toId, this.getPlayerCredits(toId) + amount);
+    return { ok: true };
+  }
+
+  tradeSellResources(
+    id: string,
+    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    quantity: number,
+    earnings: number,
+  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
+    if (quantity <= 0) return { ok: false, reason: 'invalid_quantity' };
+    const resources = this.getPlayerResources(id);
+    if (resources[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
+    resources[resource] -= quantity;
+    const creditsAfter = this.getPlayerCredits(id) + earnings;
+    this.updatePlayerResources(id, resources);
+    this.updatePlayerCredits(id, creditsAfter);
+    return { ok: true, credits: creditsAfter, resources };
+  }
+
+  workProduce(
+    id: string,
+    creditsEarned: number,
+    newResources: { food: number; materials: number; energy: number; luxury: number },
+  ): { credits: number } {
+    const creditsAfter = this.getPlayerCredits(id) + creditsEarned;
+    if (creditsEarned !== 0) this.updatePlayerCredits(id, creditsAfter);
+    this.updatePlayerResources(id, newResources);
+    return { credits: creditsAfter };
+  }
+
+  buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number } {
+    const parcel = this.parcels.get(parcelId);
+    if (!parcel) return { ok: false, reason: 'parcel_not_found' };
+    if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+    const credits = this.getPlayerCredits(id);
+    if (credits < LAND_COST) return { ok: false, reason: 'insufficient_balance' };
+    this.updatePlayerCredits(id, credits - LAND_COST);
+    parcel.owner_id = id;
+    parcel.claimed_at = new Date().toISOString();
+    return { ok: true, credits: credits - LAND_COST };
   }
 
   updateBusiness(parcelId: number, playerId: string, data: BusinessUpdate): boolean {
@@ -737,3 +876,17 @@ export function addEvent(type: string, playerId: string | null, data: Record<str
 export function getEvents(limit?: number) { return backend.getEvents(limit); }
 export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string) { backend.registerAgent(id, name, personality, strategy, apiKey); }
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
+export function playerExists(id: string) { return backend.playerExists(id); }
+export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
+export function tradeSellResources(
+  id: string,
+  resource: 'food' | 'materials' | 'energy' | 'luxury',
+  quantity: number,
+  earnings: number,
+) { return backend.tradeSellResources(id, resource, quantity, earnings); }
+export function workProduce(
+  id: string,
+  creditsEarned: number,
+  newResources: { food: number; materials: number; energy: number; luxury: number },
+) { return backend.workProduce(id, creditsEarned, newResources); }
+export function buyLand(id: string, parcelId: number) { return backend.buyLand(id, parcelId); }
