@@ -1,4 +1,5 @@
 import React from 'react';
+import { focusRingStyle } from './theme';
 import { HUD } from './components/HUD';
 import { ChatPanel } from './components/ChatPanel';
 import { Toast } from './components/Toast';
@@ -22,6 +23,7 @@ const TutorialOverlay = React.lazy(() =>
 export const App: React.FC = () => {
   return (
     <>
+      <style>{focusRingStyle}</style>
       <HUD />
       <ResourceBar />
       <Wallet />

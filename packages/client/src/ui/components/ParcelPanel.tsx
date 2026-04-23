@@ -53,6 +53,19 @@ export const ParcelPanel: React.FC = () => {
     return unsub;
   }, []);
 
+  // Escape closes the panel
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedParcelData) {
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        selectParcel(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const parcel = selectedParcelData;
 
   // When selection changes, populate edit fields from parcel data
@@ -140,13 +153,30 @@ export const ParcelPanel: React.FC = () => {
   };
 
   return (
-    <div style={panelStyle}>
+    <div
+      style={panelStyle}
+      role="dialog"
+      aria-label={`Parcel ${parcel.id} details`}
+      aria-modal="false"
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <span style={{ fontSize: 14, fontWeight: 'bold' }}>
           Parcel #{parcel.id}
         </span>
-        <span style={{ fontSize: 11, opacity: 0.6 }}>
-          ({parcel.grid_x}, {parcel.grid_y})
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>
+            ({parcel.grid_x}, {parcel.grid_y})
+          </span>
+          <button
+            onClick={() => selectParcel(null)}
+            aria-label="Close parcel details (Escape)"
+            style={{
+              background: 'transparent', border: 'none', color: '#e0e0e0',
+              fontSize: 16, cursor: 'pointer', padding: '0 4px', lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
         </span>
       </div>
 

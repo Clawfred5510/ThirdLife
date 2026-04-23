@@ -125,6 +125,20 @@ export const CharacterCreator: React.FC = () => {
     return () => window.removeEventListener('open-character-creator', h);
   }, []);
 
+  // Escape closes the creator when open.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
   const update = useCallback((partial: Partial<Appearance>) => {
     setAppearance((prev) => {
       const next = { ...prev, ...partial };
@@ -135,18 +149,35 @@ export const CharacterCreator: React.FC = () => {
 
   if (!open) {
     return (
-      <button style={S.openBtn} onClick={() => setOpen(true)} title="Customize character">
-        👕 Character
+      <button
+        style={S.openBtn}
+        onClick={() => setOpen(true)}
+        title="Customize character"
+        aria-label="Open character customizer"
+      >
+        <span aria-hidden="true">👕</span> Character
       </button>
     );
   }
 
   return (
-    <div style={S.overlay} onClick={() => setOpen(false)}>
+    <div
+      style={S.overlay}
+      onClick={() => setOpen(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Character Creator"
+    >
       <div style={S.panel} onClick={(e) => e.stopPropagation()}>
         <div style={S.header}>
           <h2 style={S.title}>Character Creator</h2>
-          <button style={S.close} onClick={() => setOpen(false)}>×</button>
+          <button
+            style={S.close}
+            onClick={() => setOpen(false)}
+            aria-label="Close character creator"
+          >
+            ×
+          </button>
         </div>
 
         {/* Live 3D preview — drag to spin */}

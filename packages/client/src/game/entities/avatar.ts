@@ -295,12 +295,35 @@ export function applyAppearance(
 // Procedural walk / idle animation — call once per frame
 // -----------------------------------------------------------------------
 
+/** Cached accessibility preference: re-read occasionally in case it changes. */
+let prefersReducedMotion = false;
+let lastRMCheck = 0;
+function checkReducedMotion(time: number): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  if (time - lastRMCheck > 2) {
+    prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    lastRMCheck = time;
+  }
+  return prefersReducedMotion;
+}
+
 export function animateAvatar(
   avatar: Avatar,
   velocity: number,  // magnitude of horizontal movement speed (world units/s)
   dt: number,        // seconds since last frame
   time: number,      // running clock (performance.now() / 1000)
 ): void {
+  // Respect prefers-reduced-motion: pin limbs at rest, no bob
+  if (checkReducedMotion(time)) {
+    avatar.legPivotL.rotation.x = 0;
+    avatar.legPivotR.rotation.x = 0;
+    avatar.armUpperL.rotation.x = 0;
+    avatar.armUpperR.rotation.x = 0;
+    avatar.body.position.y = 1.1;
+    avatar.head.position.y = 1.68;
+    return;
+  }
+
   const isWalking = velocity > AVATAR_WALK_SPEED_THRESHOLD;
 
   if (isWalking) {
@@ -323,7 +346,6 @@ export function animateAvatar(
     avatar.body.position.y = 1.1 + bob;
     avatar.head.position.y = 1.68 + bob * 0.5;
 
-    // Smoothly return limbs to rest
     avatar.legPivotL.rotation.x *= 0.85;
     avatar.legPivotR.rotation.x *= 0.85;
     avatar.armUpperL.rotation.x *= 0.85;
