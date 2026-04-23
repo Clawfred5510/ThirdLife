@@ -73,3 +73,40 @@ export const BUS_STOPS = [
   { name: 'Waterfront Marina', x: 700, z: -750 },
   { name: 'Entertainment Stage', x: -500, z: -250 },
 ];
+
+// ── Rendering / camera constants (client-only, kept in shared for testability)
+
+/** Exponential squared fog density across the world plane. */
+export const FOG_DENSITY = 0.0012;
+
+/** Warm pastel sky base color (r,g,b in 0..1). Day/night cycle overrides. */
+export const SKY_COLOR = { r: 0.62, g: 0.82, b: 0.95 };
+
+/** Camera zoom limits in world units, initial ArcRotate + follow-cam. */
+export const CAMERA_INITIAL_MIN_ZOOM = 5;
+export const CAMERA_INITIAL_MAX_ZOOM = 100;
+export const CAMERA_FOLLOW_MIN_ZOOM = 4;
+export const CAMERA_FOLLOW_MAX_ZOOM = 40;
+
+/** Full day/night cycle duration in seconds. */
+export const DAY_CYCLE_SECONDS = 600;
+
+/** Network interpolation LERP factor for remote players (0..1). */
+export const REMOTE_PLAYER_LERP = 0.2;
+
+// ── Avatar animation constants ──────────────────────────────────────────
+
+/** World units/s below which the avatar shows the idle animation, not walk. */
+export const AVATAR_WALK_SPEED_THRESHOLD = 0.5;
+/** Walk cycle frequency (steps per second). */
+export const AVATAR_WALK_FREQ = 8;
+/** Peak leg swing in radians during walk cycle. */
+export const AVATAR_WALK_LEG_SWING = 0.4;
+/** Peak arm swing in radians during walk cycle. */
+export const AVATAR_WALK_ARM_SWING = 0.35;
+/** Body vertical bob amplitude while walking (world units). */
+export const AVATAR_WALK_BOB = 0.04;
+/** Body vertical bob amplitude while idling (world units). */
+export const AVATAR_IDLE_BOB = 0.012;
+/** Idle breathing frequency (cycles per second). */
+export const AVATAR_IDLE_FREQ = 1.5;

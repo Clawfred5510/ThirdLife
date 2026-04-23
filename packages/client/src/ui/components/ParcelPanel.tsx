@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { ParcelData, CLAIM_COST } from '@gamestu/shared';
+import { ParcelData, CLAIM_COST, CURRENCY_NAME } from '@gamestu/shared';
 import {
   sendClaimParcel,
   sendUpdateBusiness,
@@ -154,13 +154,13 @@ export const ParcelPanel: React.FC = () => {
         <>
           <div style={{ marginBottom: 8, opacity: 0.7 }}>Unclaimed parcel</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>Claim for <strong style={{ color: '#facc15' }}>{CLAIM_COST} CR</strong></span>
+            <span>Claim for <strong style={{ color: '#facc15' }}>{CLAIM_COST.toLocaleString()} ${CURRENCY_NAME}</strong></span>
             <button style={buttonStyle} onClick={handleClaim}>
               Claim
             </button>
           </div>
           <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>
-            Your balance: {credits} CR
+            Your balance: {credits.toLocaleString()} ${CURRENCY_NAME}
           </div>
         </>
       )}

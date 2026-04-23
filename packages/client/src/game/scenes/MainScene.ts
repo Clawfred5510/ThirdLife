@@ -29,7 +29,22 @@ import {
   PlayerSnapshot,
   onParcelUpdate,
 } from '../../network/Client';
-import { PlayerInput, TICK_RATE, PLAYER_SPEED, SPRINT_MULTIPLIER, features, ParcelData } from '@gamestu/shared';
+import {
+  PlayerInput,
+  TICK_RATE,
+  PLAYER_SPEED,
+  SPRINT_MULTIPLIER,
+  features,
+  ParcelData,
+  FOG_DENSITY,
+  SKY_COLOR,
+  CAMERA_INITIAL_MIN_ZOOM,
+  CAMERA_INITIAL_MAX_ZOOM,
+  CAMERA_FOLLOW_MIN_ZOOM,
+  CAMERA_FOLLOW_MAX_ZOOM,
+  DAY_CYCLE_SECONDS,
+  REMOTE_PLAYER_LERP,
+} from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings, ALL_PARCELS, ParcelDef, BUILDING_VARIANTS, instantiateBuilding } from '../entities/buildings';
 import { spawnNPCs } from '../entities/npcs';
@@ -66,9 +81,6 @@ interface RemotePlayer {
   prevX: number;
   prevZ: number;
 }
-
-/** How quickly remote meshes interpolate toward their target (0-1, applied per-frame). */
-const LERP_FACTOR = 0.2;
 
 /** Per-parcel rendering data. */
 interface ParcelRenderData {
@@ -127,22 +139,20 @@ export class MainScene {
 
   async create(): Promise<Scene> {
     const scene = new Scene(this.engine);
-    // Warm pastel sky
-    scene.clearColor = new Color4(0.62, 0.82, 0.95, 1);
-    scene.ambientColor = new Color3(0.35, 0.38, 0.44); // low ambient — lights do the work
+    scene.clearColor = new Color4(SKY_COLOR.r, SKY_COLOR.g, SKY_COLOR.b, 1);
+    scene.ambientColor = new Color3(0.35, 0.38, 0.44);
 
-    // Subtle atmospheric fog — far grid fades into the horizon
     scene.fogMode = Scene.FOGMODE_EXP2;
-    scene.fogDensity = 0.0012;
-    scene.fogColor = new Color3(0.62, 0.82, 0.95);
+    scene.fogDensity = FOG_DENSITY;
+    scene.fogColor = new Color3(SKY_COLOR.r, SKY_COLOR.g, SKY_COLOR.b);
 
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
     camera.attachControl(this.canvas, true);
     scene.activeCamera = camera;
     camera.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
-    camera.lowerRadiusLimit = 5;
-    camera.upperRadiusLimit = 100;
+    camera.lowerRadiusLimit = CAMERA_INITIAL_MIN_ZOOM;
+    camera.upperRadiusLimit = CAMERA_INITIAL_MAX_ZOOM;
     this.arcCamera = camera;
     this.sceneRef = scene;
 
@@ -178,7 +188,7 @@ export class MainScene {
 
     // ---- Day/Night Cycle ----
     if (features.DAY_NIGHT) {
-      this.dayNight = new DayNightCycle(scene, { cycleDurationSeconds: 600 });
+      this.dayNight = new DayNightCycle(scene, { cycleDurationSeconds: DAY_CYCLE_SECONDS });
       activeDayNight = this.dayNight;
     }
 
@@ -559,8 +569,8 @@ export class MainScene {
       );
       cam.attachControl(this.canvas, true);
       cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
-      cam.lowerRadiusLimit = 4;
-      cam.upperRadiusLimit = 40;
+      cam.lowerRadiusLimit = CAMERA_FOLLOW_MIN_ZOOM;
+      cam.upperRadiusLimit = CAMERA_FOLLOW_MAX_ZOOM;
       cam.lowerBetaLimit = 0.2;         // don't flip over the top
       cam.upperBetaLimit = Math.PI / 2.05; // don't go below horizontal
       cam.wheelPrecision = 8;
@@ -696,15 +706,15 @@ export class MainScene {
       if (sessionId === localId) return;
 
       const pos = remote.root.position;
-      pos.x += (remote.targetX - pos.x) * LERP_FACTOR;
-      pos.y += (remote.targetY - pos.y) * LERP_FACTOR;
-      pos.z += (remote.targetZ - pos.z) * LERP_FACTOR;
+      pos.x += (remote.targetX - pos.x) * REMOTE_PLAYER_LERP;
+      pos.y += (remote.targetY - pos.y) * REMOTE_PLAYER_LERP;
+      pos.z += (remote.targetZ - pos.z) * REMOTE_PLAYER_LERP;
 
       // Yaw interpolation, shortest-arc aware
       let dYaw = remote.targetRotation - remote.root.rotation.y;
       while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
       while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-      remote.root.rotation.y += dYaw * LERP_FACTOR;
+      remote.root.rotation.y += dYaw * REMOTE_PLAYER_LERP;
 
       // Root is at feet — clamp to ground.
       if (pos.y < 0) pos.y = 0;

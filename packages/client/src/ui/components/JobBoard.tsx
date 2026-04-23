@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { CURRENCY_NAME } from '@gamestu/shared';
 import { sendJobStart, sendJobBoard, onJobUpdate, onJobComplete } from '../../network/Client';
 
 interface JobDef {
@@ -13,25 +14,25 @@ const JOBS: JobDef[] = [
     type: 'delivery',
     name: 'Delivery Driver',
     description: 'Pick up packages and deliver them across the city before time runs out.',
-    payRange: '50 - 120 CR',
+    payRange: '50 - 120 $AMETA',
   },
   {
     type: 'security',
     name: 'Security Patrol',
     description: 'Walk a patrol route through the district and check in at each waypoint.',
-    payRange: '80 - 150 CR',
+    payRange: '80 - 150 $AMETA',
   },
   {
     type: 'construction',
     name: 'Construction Work',
     description: 'Visit construction sites and complete building tasks for contractors.',
-    payRange: '100 - 200 CR',
+    payRange: '100 - 200 $AMETA',
   },
   {
     type: 'fishing',
     name: 'Commercial Fishing',
     description: 'Head to the waterfront and catch fish to sell at the market.',
-    payRange: '30 - 180 CR',
+    payRange: '30 - 180 $AMETA',
   },
 ];
 
@@ -77,7 +78,7 @@ export const JobBoard: React.FC = () => {
     });
     const unsubComplete = onJobComplete((result) => {
       setActiveJob(null);
-      setCompletionMsg(`Job complete! Earned ${result.reward} CR`);
+      setCompletionMsg(`Job complete! Earned ${result.reward} $${CURRENCY_NAME}`);
       setTimeout(() => setCompletionMsg(null), 4000);
     });
     return () => {

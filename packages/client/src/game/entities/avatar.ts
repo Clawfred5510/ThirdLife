@@ -9,7 +9,16 @@ import {
   TransformNode,
 } from '@babylonjs/core';
 import type { Appearance } from '@gamestu/shared';
-import { DEFAULT_APPEARANCE } from '@gamestu/shared';
+import {
+  DEFAULT_APPEARANCE,
+  AVATAR_WALK_SPEED_THRESHOLD,
+  AVATAR_WALK_FREQ,
+  AVATAR_WALK_LEG_SWING,
+  AVATAR_WALK_ARM_SWING,
+  AVATAR_WALK_BOB,
+  AVATAR_IDLE_BOB,
+  AVATAR_IDLE_FREQ,
+} from '@gamestu/shared';
 
 function hexToColor3(hex: string): Color3 {
   const clean = hex.replace('#', '');
@@ -286,44 +295,30 @@ export function applyAppearance(
 // Procedural walk / idle animation — call once per frame
 // -----------------------------------------------------------------------
 
-const WALK_SPEED_THRESHOLD = 0.5; // world units/s below which we idle
-const WALK_FREQ = 8;              // steps per second
-const WALK_LEG_SWING = 0.4;       // radians peak leg swing
-const WALK_ARM_SWING = 0.35;
-const WALK_BOB = 0.04;            // body vertical bob amplitude
-const IDLE_BOB = 0.012;           // gentle idle breathing bob
-const IDLE_FREQ = 1.5;
-
 export function animateAvatar(
   avatar: Avatar,
   velocity: number,  // magnitude of horizontal movement speed (world units/s)
   dt: number,        // seconds since last frame
   time: number,      // running clock (performance.now() / 1000)
 ): void {
-  const isWalking = velocity > WALK_SPEED_THRESHOLD;
+  const isWalking = velocity > AVATAR_WALK_SPEED_THRESHOLD;
 
   if (isWalking) {
-    const t = time * WALK_FREQ;
-    const legAngle = Math.sin(t * Math.PI) * WALK_LEG_SWING;
-    const armAngle = Math.sin(t * Math.PI) * WALK_ARM_SWING;
+    const t = time * AVATAR_WALK_FREQ;
+    const legAngle = Math.sin(t * Math.PI) * AVATAR_WALK_LEG_SWING;
+    const armAngle = Math.sin(t * Math.PI) * AVATAR_WALK_ARM_SWING;
 
-    // Legs swing opposite to each other
     avatar.legPivotL.rotation.x = legAngle;
     avatar.legPivotR.rotation.x = -legAngle;
 
-    // Arms swing opposite to legs
     avatar.armUpperL.rotation.x = -armAngle;
     avatar.armUpperR.rotation.x = armAngle;
 
-    // Body bobs up/down at 2x step frequency
-    avatar.body.position.y = 1.1 + Math.abs(Math.sin(t * Math.PI * 2)) * WALK_BOB;
-
-    // Head slight counter-bob
-    avatar.head.position.y = 1.68 - Math.abs(Math.sin(t * Math.PI * 2)) * WALK_BOB * 0.3;
+    avatar.body.position.y = 1.1 + Math.abs(Math.sin(t * Math.PI * 2)) * AVATAR_WALK_BOB;
+    avatar.head.position.y = 1.68 - Math.abs(Math.sin(t * Math.PI * 2)) * AVATAR_WALK_BOB * 0.3;
   } else {
-    // Idle: gentle breathing bob
-    const t = time * IDLE_FREQ;
-    const bob = Math.sin(t * Math.PI * 2) * IDLE_BOB;
+    const t = time * AVATAR_IDLE_FREQ;
+    const bob = Math.sin(t * Math.PI * 2) * AVATAR_IDLE_BOB;
 
     avatar.body.position.y = 1.1 + bob;
     avatar.head.position.y = 1.68 + bob * 0.5;
