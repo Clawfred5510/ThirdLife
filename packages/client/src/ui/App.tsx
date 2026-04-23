@@ -4,7 +4,6 @@ import { ChatPanel } from './components/ChatPanel';
 import { Toast } from './components/Toast';
 import { Minimap } from './components/Minimap';
 import { Wallet } from './components/Wallet';
-import { PropertyPanel } from './components/PropertyPanel';
 import { ParcelPanel } from './components/ParcelPanel';
 import { GameMenu } from './components/GameMenu';
 import { CharacterCreator } from './components/CharacterCreator';
@@ -29,7 +28,6 @@ export const App: React.FC = () => {
       <ChatPanel />
       <Toast />
       <Minimap />
-      <PropertyPanel />
       <ParcelPanel />
       <GameMenu />
       <CharacterCreator />

@@ -18,15 +18,6 @@ export interface PlayerRow {
   appearance: string | null;
 }
 
-export interface PropertyRow {
-  id: number;
-  building_name: string;
-  district: string;
-  owner_id: string | null;
-  price: number;
-  revenue_rate: number;
-}
-
 export interface ParcelRow {
   id: number;
   grid_x: number;
@@ -53,11 +44,6 @@ interface DBBackend {
   savePlayerPosition(id: string, x: number, y: number, z: number): void;
   updatePlayerCredits(id: string, credits: number): void;
   getPlayerCredits(id: string): number;
-  getProperties(): PropertyRow[];
-  purchaseProperty(propertyId: number, playerId: string): boolean;
-  getPlayerProperties(playerId: string): PropertyRow[];
-  seedProperties(buildings: Array<{ name: string; district: string; price: number; revenue_rate: number }>): void;
-  getPlayerTotalRevenue(playerId: string): number;
   isTutorialDone(playerId: string): boolean;
   markTutorialDone(playerId: string): void;
   seedParcels(): void;
@@ -196,13 +182,6 @@ class SQLiteDatabase implements DBBackend {
   private get stmtSavePosition() { return this.db.prepare('UPDATE players SET x = ?, y = ?, z = ? WHERE id = ?'); }
   private get stmtUpdateCredits() { return this.db.prepare('UPDATE players SET credits = ? WHERE id = ?'); }
   private get stmtGetCredits() { return this.db.prepare('SELECT credits FROM players WHERE id = ?'); }
-  private get stmtGetProperties() { return this.db.prepare('SELECT * FROM properties'); }
-  private get stmtGetProperty() { return this.db.prepare('SELECT * FROM properties WHERE id = ?'); }
-  private get stmtSetPropertyOwner() { return this.db.prepare('UPDATE properties SET owner_id = ? WHERE id = ?'); }
-  private get stmtGetPlayerProperties() { return this.db.prepare('SELECT * FROM properties WHERE owner_id = ?'); }
-  private get stmtCountProperties() { return this.db.prepare('SELECT COUNT(*) AS cnt FROM properties'); }
-  private get stmtInsertProperty() { return this.db.prepare('INSERT INTO properties (building_name, district, price, revenue_rate) VALUES (?, ?, ?, ?)'); }
-  private get stmtGetPlayerTotalRevenue() { return this.db.prepare('SELECT COALESCE(SUM(revenue_rate), 0) AS total FROM properties WHERE owner_id = ?'); }
   private get stmtIsTutorialDone() { return this.db.prepare('SELECT tutorial_done FROM players WHERE id = ?'); }
   private get stmtMarkTutorialDone() { return this.db.prepare('UPDATE players SET tutorial_done = 1 WHERE id = ?'); }
   private get stmtCountParcels() { return this.db.prepare('SELECT COUNT(*) AS cnt FROM parcels'); }
@@ -252,43 +231,6 @@ class SQLiteDatabase implements DBBackend {
   getPlayerCredits(id: string): number {
     const row = this.stmtGetCredits.get(id) as { credits: number } | undefined;
     return row?.credits ?? 0;
-  }
-
-  getProperties(): PropertyRow[] {
-    return this.stmtGetProperties.all() as PropertyRow[];
-  }
-
-  purchaseProperty(propertyId: number, playerId: string): boolean {
-    const txn = this.db.transaction(() => {
-      const property = this.stmtGetProperty.get(propertyId) as PropertyRow | undefined;
-      if (!property || property.owner_id !== null) return false;
-      const credits = this.getPlayerCredits(playerId);
-      if (credits < property.price) return false;
-      this.stmtUpdateCredits.run(credits - property.price, playerId);
-      this.stmtSetPropertyOwner.run(playerId, propertyId);
-      return true;
-    });
-    return txn();
-  }
-
-  getPlayerProperties(playerId: string): PropertyRow[] {
-    return this.stmtGetPlayerProperties.all(playerId) as PropertyRow[];
-  }
-
-  seedProperties(buildings: Array<{ name: string; district: string; price: number; revenue_rate: number }>): void {
-    const { cnt } = this.stmtCountProperties.get() as { cnt: number };
-    if (cnt > 0) return;
-    const insertMany = this.db.transaction(() => {
-      for (const b of buildings) {
-        this.stmtInsertProperty.run(b.name, b.district, b.price, b.revenue_rate);
-      }
-    });
-    insertMany();
-  }
-
-  getPlayerTotalRevenue(playerId: string): number {
-    const row = this.stmtGetPlayerTotalRevenue.get(playerId) as { total: number };
-    return row.total;
   }
 
   isTutorialDone(playerId: string): boolean {
@@ -493,9 +435,7 @@ class SQLiteDatabase implements DBBackend {
 
 class MemoryDB implements DBBackend {
   private players = new Map<string, PlayerRow>();
-  private properties = new Map<number, PropertyRow>();
   private parcels = new Map<number, ParcelRow>();
-  private nextPropertyId = 1;
 
   constructor() {
     console.log('[db] Using in-memory Map fallback (better-sqlite3 unavailable)');
@@ -535,47 +475,6 @@ class MemoryDB implements DBBackend {
 
   getPlayerCredits(id: string): number {
     return this.players.get(id)?.credits ?? 0;
-  }
-
-  getProperties(): PropertyRow[] {
-    return Array.from(this.properties.values());
-  }
-
-  purchaseProperty(propertyId: number, playerId: string): boolean {
-    const property = this.properties.get(propertyId);
-    if (!property || property.owner_id !== null) return false;
-    const credits = this.getPlayerCredits(playerId);
-    if (credits < property.price) return false;
-    this.updatePlayerCredits(playerId, credits - property.price);
-    property.owner_id = playerId;
-    return true;
-  }
-
-  getPlayerProperties(playerId: string): PropertyRow[] {
-    return Array.from(this.properties.values()).filter(p => p.owner_id === playerId);
-  }
-
-  seedProperties(buildings: Array<{ name: string; district: string; price: number; revenue_rate: number }>): void {
-    if (this.properties.size > 0) return;
-    for (const b of buildings) {
-      this.properties.set(this.nextPropertyId, {
-        id: this.nextPropertyId,
-        building_name: b.name,
-        district: b.district,
-        owner_id: null,
-        price: b.price,
-        revenue_rate: b.revenue_rate,
-      });
-      this.nextPropertyId++;
-    }
-  }
-
-  getPlayerTotalRevenue(playerId: string): number {
-    let total = 0;
-    for (const p of this.properties.values()) {
-      if (p.owner_id === playerId) total += p.revenue_rate;
-    }
-    return total;
   }
 
   isTutorialDone(playerId: string): boolean {
@@ -800,28 +699,6 @@ export function updatePlayerCredits(id: string, credits: number): void {
 
 export function getPlayerCredits(id: string): number {
   return backend.getPlayerCredits(id);
-}
-
-export function getProperties(): PropertyRow[] {
-  return backend.getProperties();
-}
-
-export function purchaseProperty(propertyId: number, playerId: string): boolean {
-  return backend.purchaseProperty(propertyId, playerId);
-}
-
-export function getPlayerProperties(playerId: string): PropertyRow[] {
-  return backend.getPlayerProperties(playerId);
-}
-
-export function seedProperties(
-  buildings: Array<{ name: string; district: string; price: number; revenue_rate: number }>,
-): void {
-  backend.seedProperties(buildings);
-}
-
-export function getPlayerTotalRevenue(playerId: string): number {
-  return backend.getPlayerTotalRevenue(playerId);
 }
 
 export function isTutorialDone(playerId: string): boolean {

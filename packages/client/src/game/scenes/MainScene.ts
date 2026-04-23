@@ -16,8 +16,6 @@ import {
   ActionManager,
   ExecuteCodeAction,
   DefaultRenderingPipeline,
-  CubeTexture,
-  Texture,
 } from '@babylonjs/core';
 import { Avatar, buildAvatar, applyAppearance, disposeAvatar, animateAvatar } from '../entities/avatar';
 import { DEFAULT_APPEARANCE } from '@gamestu/shared';
@@ -216,19 +214,8 @@ export class MainScene {
       this.handleParcelUpdate(update.id, update);
     });
 
-    // Expose offline spawn method for when server is unavailable
-    (this as any)._offlinePlayerSpawn = (localId: string) => {
-      this.localPlayerId = localId;
-      this.addRemotePlayer(localId, {
-        id: localId,
-        name: 'You (Offline)',
-        x: 0,
-        y: 0,
-        z: 0,
-        rotation: 0,
-        color: '#3366cc',
-      }, scene);
-    };
+    // Cache scene ref for the public spawnOfflinePlayer() method.
+    this.sceneRef = scene;
 
     // ---- Keyboard input ----
 
@@ -248,6 +235,20 @@ export class MainScene {
     });
 
     return scene;
+  }
+
+  /**
+   * Spawn a local-only player when the server is unreachable. Called by
+   * Game.start() from its connect() error path so the world is still playable.
+   */
+  spawnOfflinePlayer(localId: string): void {
+    if (!this.sceneRef) return;
+    this.localPlayerId = localId;
+    this.addRemotePlayer(
+      localId,
+      { id: localId, name: 'You (Offline)', x: 0, y: 0, z: 0, rotation: 0, color: '#3366cc' },
+      this.sceneRef,
+    );
   }
 
   // ---------- Parcel system ----------

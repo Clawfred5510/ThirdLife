@@ -38,7 +38,6 @@ export type PlayerRemoveCallback = (sessionId: string) => void;
 export type PlayerChangeCallback = (sessionId: string, player: PlayerSnapshot) => void;
 export type ChatCallback = (message: ChatMessage) => void;
 export type CreditsUpdateCallback = (credits: number) => void;
-export type PropertyUpdateCallback = (update: { propertyId: number; ownerId: string; ownerName: string }) => void;
 export type JobUpdateCallback = (update: { jobType: string; objective: string; timeRemaining: number; progress: string }) => void;
 export type JobCompleteCallback = (result: { jobType: string; reward: number }) => void;
 export type TutorialCallback = (message: string) => void;
@@ -50,7 +49,6 @@ const onPlayerRemoveListeners: PlayerRemoveCallback[] = [];
 const onPlayerChangeListeners: PlayerChangeCallback[] = [];
 const onChatListeners: ChatCallback[] = [];
 const onCreditsUpdateListeners: CreditsUpdateCallback[] = [];
-const onPropertyUpdateListeners: PropertyUpdateCallback[] = [];
 const onJobUpdateListeners: JobUpdateCallback[] = [];
 const onJobCompleteListeners: JobCompleteCallback[] = [];
 const onTutorialListeners: TutorialCallback[] = [];
@@ -90,13 +88,6 @@ export function onCreditsUpdate(cb: CreditsUpdateCallback): () => void {
   return () => {
     const i = onCreditsUpdateListeners.indexOf(cb);
     if (i !== -1) onCreditsUpdateListeners.splice(i, 1);
-  };
-}
-export function onPropertyUpdate(cb: PropertyUpdateCallback): () => void {
-  onPropertyUpdateListeners.push(cb);
-  return () => {
-    const i = onPropertyUpdateListeners.indexOf(cb);
-    if (i !== -1) onPropertyUpdateListeners.splice(i, 1);
   };
 }
 export function onJobUpdate(cb: JobUpdateCallback): () => void {
@@ -200,10 +191,6 @@ export async function connect(playerName: string): Promise<Room> {
     for (const cb of onCreditsUpdateListeners) cb(msg.credits);
   });
 
-  room.onMessage(MessageType.PROPERTY_UPDATE, (msg: { propertyId: number; ownerId: string; ownerName: string }) => {
-    for (const cb of onPropertyUpdateListeners) cb(msg);
-  });
-
   room.onMessage(MessageType.JOB_UPDATE, (msg: { jobType: string; objective: string; timeRemaining: number; progress: string }) => {
     for (const cb of onJobUpdateListeners) cb(msg);
   });
@@ -255,10 +242,6 @@ export function sendInput(input: PlayerInput): void {
 
 export function sendChat(text: string): void {
   room?.send(MessageType.CHAT, { text });
-}
-
-export function sendBuyProperty(propertyId: number): void {
-  room?.send(MessageType.BUY_PROPERTY, { propertyId });
 }
 
 export function sendPlayerColor(color: string): void {

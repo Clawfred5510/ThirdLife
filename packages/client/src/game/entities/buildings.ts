@@ -201,19 +201,3 @@ export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
   return meshes;
 }
 
-// ---------------------------------------------------------------------------
-// Legacy re-exports
-// ---------------------------------------------------------------------------
-
-export interface BuildingDef {
-  name: string;
-  x: number;
-  z: number;
-  width: number;
-  depth: number;
-  height: number;
-  color: string;
-  district: string;
-  purchasable: boolean;
-}
-export const ALL_BUILDINGS: BuildingDef[] = [];

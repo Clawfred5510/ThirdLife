@@ -1,7 +1,6 @@
 /**
  * HTTP-layer hotfix verification — rate limit + auth failure logging.
- * Boots an Express app with agent-api mounted, hits it with supertest-style
- * in-process HTTP calls using node-fetch against a listening server.
+ * Uses dynamic require AFTER setting env vars (ESM imports hoist).
  */
 import * as path from 'path';
 import * as fs from 'fs';
@@ -13,8 +12,11 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-http-'));
 process.env.DATABASE_PATH = path.join(tmp, 'test.db');
 delete process.env.TEST_BALANCE;
 
-import agentApi from '../api/agent-api';
-import { addEvent, getEvents, seedParcels } from '../db';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const agentApi = require('../api/agent-api').default as express.Router;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const db = require('../db') as typeof import('../db');
+const { getEvents, seedParcels } = db;
 
 seedParcels();
 

@@ -22,7 +22,6 @@ import {
 import {
   getOrCreatePlayer,
   savePlayerPosition,
-  purchaseProperty,
   getPlayerCredits as getPlayerCreditsFromDb,
   updatePlayerCredits,
   seedParcels,
@@ -108,25 +107,6 @@ export class GameRoom extends Room<GameState> {
         senderName,
         text,
       });
-    });
-
-    this.onMessage(MessageType.BUY_PROPERTY, (client: Client, data: { propertyId: number }) => {
-      const player = this.players.get(client.sessionId);
-      if (!player) return;
-      if (typeof data.propertyId !== 'number') return;
-
-      const success = purchaseProperty(data.propertyId, client.sessionId);
-      if (success) {
-        player.credits = getPlayerCreditsFromDb(client.sessionId);
-        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-        this.broadcast(MessageType.PROPERTY_UPDATE, {
-          propertyId: data.propertyId,
-          ownerId: client.sessionId,
-          ownerName: player.name,
-        });
-      } else {
-        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits, error: 'Purchase failed' });
-      }
     });
 
     this.onMessage(MessageType.PLAYER_COLOR, (client: Client, data: { color: string }) => {

@@ -1,18 +1,22 @@
 /**
  * Hotfix verification — run with: npx tsx src/__tests__/hotfix-2026-04-23.test.ts
  * Uses a fresh temp SQLite DB each run (no mocks — per repo memory rule).
+ *
+ * We use a dynamic `require` AFTER setting env vars because ESM `import`
+ * statements hoist before any top-level code runs.
  */
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { LAND_COST, INCOME_TICK_MS } from '@gamestu/shared';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-hotfix-'));
 process.env.DATABASE_PATH = path.join(tmp, 'test.db');
-// Disable the TEST_BALANCE env so tests run with deterministic starting credits
 delete process.env.TEST_BALANCE;
 
-// Must come AFTER env vars set
-import {
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const db = require('../db') as typeof import('../db');
+const {
   getOrCreatePlayer,
   updatePlayerCredits,
   getPlayerCredits,
@@ -27,8 +31,7 @@ import {
   registerAgent,
   updatePlayerResources,
   getPlayerResources,
-} from '../db';
-import { LAND_COST, INCOME_TICK_MS } from '@gamestu/shared';
+} = db;
 
 let passed = 0;
 let failed = 0;
