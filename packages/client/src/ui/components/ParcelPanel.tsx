@@ -6,6 +6,7 @@ import {
   onCreditsUpdate,
   getSessionId,
 } from '../../network/Client';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 // ── Module-level selection state ────────────────────────────────────────────
 // MainScene calls these functions when a parcel is clicked.
@@ -53,20 +54,9 @@ export const ParcelPanel: React.FC = () => {
     return unsub;
   }, []);
 
-  // Escape closes the panel
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selectedParcelData) {
-        const tag = (e.target as HTMLElement | null)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        selectParcel(null);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
   const parcel = selectedParcelData;
+
+  useEscapeKey(() => selectParcel(null), !!parcel);
 
   // When selection changes, populate edit fields from parcel data
   useEffect(() => {
@@ -163,7 +153,7 @@ export const ParcelPanel: React.FC = () => {
         <span style={{ fontSize: 14, fontWeight: 'bold' }}>
           Parcel #{parcel.id}
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 11, opacity: 0.6 }}>
             ({parcel.grid_x}, {parcel.grid_y})
           </span>
@@ -177,7 +167,7 @@ export const ParcelPanel: React.FC = () => {
           >
             ×
           </button>
-        </span>
+        </div>
       </div>
 
       {!parcel.owner_id && (

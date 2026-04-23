@@ -295,17 +295,13 @@ export function applyAppearance(
 // Procedural walk / idle animation — call once per frame
 // -----------------------------------------------------------------------
 
-/** Cached accessibility preference: re-read occasionally in case it changes. */
-let prefersReducedMotion = false;
-let lastRMCheck = 0;
-function checkReducedMotion(time: number): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  if (time - lastRMCheck > 2) {
-    prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    lastRMCheck = time;
-  }
-  return prefersReducedMotion;
-}
+/**
+ * Cached MediaQueryList — `matches` is a fast property read on the
+ * cached object, no need for a per-call throttle.
+ */
+const reducedMotionMQ = typeof window !== 'undefined' && window.matchMedia
+  ? window.matchMedia('(prefers-reduced-motion: reduce)')
+  : null;
 
 export function animateAvatar(
   avatar: Avatar,
@@ -313,8 +309,7 @@ export function animateAvatar(
   dt: number,        // seconds since last frame
   time: number,      // running clock (performance.now() / 1000)
 ): void {
-  // Respect prefers-reduced-motion: pin limbs at rest, no bob
-  if (checkReducedMotion(time)) {
+  if (reducedMotionMQ?.matches) {
     avatar.legPivotL.rotation.x = 0;
     avatar.legPivotR.rotation.x = 0;
     avatar.armUpperL.rotation.x = 0;

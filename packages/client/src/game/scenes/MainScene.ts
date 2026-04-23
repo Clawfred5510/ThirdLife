@@ -143,6 +143,8 @@ export class MainScene {
   /** Lookup from world position to parcel ID. */
   private parcelByDef = new Map<string, number>();
 
+  private cloudInstances: Array<{ node: TransformNode; speed: number }> = [];
+
   constructor(
     private engine: Engine,
     private canvas: HTMLCanvasElement,
@@ -272,9 +274,6 @@ export class MainScene {
       this.handleParcelUpdate(update.id, update);
     });
 
-    // Cache scene ref for the public spawnOfflinePlayer() method.
-    this.sceneRef = scene;
-
     // ---- Keyboard input ----
 
     this.setupKeyboardInput();
@@ -297,9 +296,6 @@ export class MainScene {
     return scene;
   }
 
-  /** Cloud drift state updated each frame. */
-  private cloudInstances: Array<{ node: TransformNode; speed: number }> = [];
-
   private async spawnClouds(scene: Scene): Promise<void> {
     try {
       const result = await SceneLoader.ImportMeshAsync(
@@ -318,7 +314,6 @@ export class MainScene {
       result.meshes[0].dispose();
       root.setEnabled(false);
 
-      // 16 instances drifting at y=140..180 across the sky. Slow, pastel.
       const COUNT = 16;
       for (let i = 0; i < COUNT; i++) {
         const inst = root.instantiateHierarchy(null, undefined, (src, clone) => {
@@ -466,7 +461,6 @@ export class MainScene {
         for (const child of children) {
           child.isPickable = true;
           child.metadata = { parcelId: def.id };
-          // Buildings cast shadows onto the ground
           activeShadowGenerator?.addShadowCaster(child);
         }
       } else {

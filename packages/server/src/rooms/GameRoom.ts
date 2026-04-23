@@ -33,6 +33,7 @@ import {
   updatePlayerResources,
   setBuildingType,
   getPlayerParcels,
+  getOwnedBuiltParcels,
   addEvent,
   getEvents,
 } from '../db';
@@ -510,29 +511,26 @@ export class GameRoom extends Room<GameState> {
     }
 
     // ---- Passive revenue tick ----
-    // Sum income across owned parcels' building types. The legacy `properties`
-    // table is unused; all income flows from parcels + building_type.
+    // One SELECT for the whole world, bucket by owner — avoids N queries
+    // per tick. The legacy `properties` table is unused; income flows
+    // entirely from parcels + building_type.
     this.lastRevenueTick += deltaTime;
     if (this.lastRevenueTick >= INCOME_TICK_MS) {
       this.lastRevenueTick = 0;
+      const incomeByOwner = new Map<string, number>();
+      for (const row of getOwnedBuiltParcels()) {
+        const spec = BUILDINGS[row.building_type as BuildingType];
+        if (!spec?.income) continue;
+        incomeByOwner.set(row.owner_id, (incomeByOwner.get(row.owner_id) ?? 0) + spec.income);
+      }
       this.players.forEach((player, sessionId) => {
-        const parcels = getPlayerParcels(sessionId);
-        let revenue = 0;
-        for (const p of parcels) {
-          const bt = (p as any).building_type as string | null;
-          if (!bt) continue;
-          const spec = BUILDINGS[bt as BuildingType];
-          if (spec?.income) revenue += spec.income;
-        }
-        if (revenue > 0) {
-          const newCredits = player.credits + revenue;
-          updatePlayerCredits(sessionId, newCredits);
-          player.credits = newCredits;
-          const client = this.clients.find((c) => c.sessionId === sessionId);
-          if (client) {
-            client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-          }
-        }
+        const revenue = incomeByOwner.get(sessionId) ?? 0;
+        if (revenue <= 0) return;
+        const newCredits = player.credits + revenue;
+        updatePlayerCredits(sessionId, newCredits);
+        player.credits = newCredits;
+        const client = this.clients.find((c) => c.sessionId === sessionId);
+        if (client) client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       });
     }
 

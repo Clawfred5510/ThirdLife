@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
 import { LAND_COST } from '@gamestu/shared';
+import type { ResourceType } from '@gamestu/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ interface DBBackend {
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   tradeSellResources(
     id: string,
-    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    resource: ResourceType,
     quantity: number,
     earnings: number,
   ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } };
@@ -77,6 +78,8 @@ interface DBBackend {
     newResources: { food: number; materials: number; energy: number; luxury: number },
   ): { credits: number };
   buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number };
+  /** All owned parcels with a building set — single scan for the income tick. */
+  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }>;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -162,6 +165,9 @@ class SQLiteDatabase implements DBBackend {
         created_at TEXT DEFAULT (datetime('now'))
       );
     `);
+
+    // Speed up the passive income tick which scans owner_id per income tick.
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_parcels_owner ON parcels(owner_id)');
 
     // API agents (registered via REST)
     this.db.exec(`
@@ -291,7 +297,7 @@ class SQLiteDatabase implements DBBackend {
 
   tradeSellResources(
     id: string,
-    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    resource: ResourceType,
     quantity: number,
     earnings: number,
   ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
@@ -337,6 +343,13 @@ class SQLiteDatabase implements DBBackend {
       return { ok: true, credits: credits - LAND_COST };
     });
     return txn();
+  }
+
+  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
+    return this.db
+      .prepare(`SELECT owner_id, building_type FROM parcels
+                WHERE owner_id IS NOT NULL AND building_type IS NOT NULL`)
+      .all() as Array<{ owner_id: string; building_type: string }>;
   }
 
   updateBusiness(parcelId: number, playerId: string, data: BusinessUpdate): boolean {
@@ -534,7 +547,7 @@ class MemoryDB implements DBBackend {
 
   tradeSellResources(
     id: string,
-    resource: 'food' | 'materials' | 'energy' | 'luxury',
+    resource: ResourceType,
     quantity: number,
     earnings: number,
   ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
@@ -569,6 +582,15 @@ class MemoryDB implements DBBackend {
     parcel.owner_id = id;
     parcel.claimed_at = new Date().toISOString();
     return { ok: true, credits: credits - LAND_COST };
+  }
+
+  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
+    const out: Array<{ owner_id: string; building_type: string }> = [];
+    for (const p of this.parcels.values()) {
+      const bt = (p as any).building_type as string | null;
+      if (p.owner_id && bt) out.push({ owner_id: p.owner_id, building_type: bt });
+    }
+    return out;
   }
 
   updateBusiness(parcelId: number, playerId: string, data: BusinessUpdate): boolean {
@@ -757,7 +779,7 @@ export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function tradeSellResources(
   id: string,
-  resource: 'food' | 'materials' | 'energy' | 'luxury',
+  resource: ResourceType,
   quantity: number,
   earnings: number,
 ) { return backend.tradeSellResources(id, resource, quantity, earnings); }
@@ -767,3 +789,4 @@ export function workProduce(
   newResources: { food: number; materials: number; energy: number; luxury: number },
 ) { return backend.workProduce(id, creditsEarned, newResources); }
 export function buyLand(id: string, parcelId: number) { return backend.buyLand(id, parcelId); }
+export function getOwnedBuiltParcels() { return backend.getOwnedBuiltParcels(); }

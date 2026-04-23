@@ -60,6 +60,7 @@ function logAuthFailure(req: Request, reason: 'missing_header' | 'invalid_key', 
 // we ever horizontally scale, swap for Redis-backed bucket.
 const RATE_CAPACITY = 30;
 const RATE_REFILL_PER_MS = 60 / 60_000; // 60 tokens per 60s
+const BUCKET_TTL_MS = 10 * 60_000;       // evict idle keys after 10 min
 interface Bucket { tokens: number; lastRefill: number; }
 const buckets = new Map<string, Bucket>();
 
@@ -78,6 +79,15 @@ function consumeToken(key: string): boolean {
   b.tokens -= 1;
   return true;
 }
+
+// Periodic eviction so the buckets Map doesn't grow unbounded under
+// scanner/bot traffic on a long-running prod instance.
+setInterval(() => {
+  const cutoff = Date.now() - BUCKET_TTL_MS;
+  for (const [key, b] of buckets) {
+    if (b.lastRefill < cutoff) buckets.delete(key);
+  }
+}, BUCKET_TTL_MS).unref();
 
 function rateLimit(req: Request, res: Response, next: NextFunction): void {
   const agentId = (req as any).agentId as string | undefined;
@@ -286,7 +296,9 @@ router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Respo
 
   const result = buyLand(agentId, pid);
   if (!result.ok) {
-    const status = result.reason === 'insufficient_balance' ? 400 : 400;
+    const status = result.reason === 'parcel_not_found' ? 404
+      : result.reason === 'already_claimed' ? 409
+      : 400;
     return res.status(status).json({ error: result.reason, cost: LAND_COST });
   }
   addEvent('buy_land', agentId, { parcel: pid, cost: LAND_COST });

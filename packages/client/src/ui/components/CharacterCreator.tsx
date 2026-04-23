@@ -17,6 +17,7 @@ import {
 } from '../../network/Client';
 import { Engine, Scene, ArcRotateCamera, HemisphericLight, Vector3, Color4, Color3 } from '@babylonjs/core';
 import { buildAvatar, applyAppearance, disposeAvatar, Avatar } from '../../game/entities/avatar';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 const PRESET_COLORS = [
   '#f4d9c6', '#eac39e', '#c4916d', '#8a5a3b', '#523524',
@@ -125,19 +126,7 @@ export const CharacterCreator: React.FC = () => {
     return () => window.removeEventListener('open-character-creator', h);
   }, []);
 
-  // Escape closes the creator when open.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        const tag = (e.target as HTMLElement | null)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        setOpen(false);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
+  useEscapeKey(() => setOpen(false), open);
 
   const update = useCallback((partial: Partial<Appearance>) => {
     setAppearance((prev) => {
