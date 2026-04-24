@@ -18,6 +18,8 @@ import {
   ImageProcessingConfiguration,
   CascadedShadowGenerator,
   SceneLoader,
+  SSAO2RenderingPipeline,
+  GlowLayer,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 import { Avatar, buildAvatar, applyAppearance, disposeAvatar, animateAvatar } from '../entities/avatar';
@@ -58,6 +60,8 @@ import { selectParcel } from '../../ui/components/ParcelPanel';
 let activeDayNight: DayNightCycle | null = null;
 /** Cascaded shadow generator — entity code registers meshes as casters. */
 let activeShadowGenerator: CascadedShadowGenerator | null = null;
+/** Glow layer — entity code can opt-in emissive meshes (windows, signs). */
+let activeGlowLayer: GlowLayer | null = null;
 
 export function getDayNightCycle(): DayNightCycle | null {
   return activeDayNight;
@@ -66,6 +70,11 @@ export function getDayNightCycle(): DayNightCycle | null {
 /** Returns the scene's cascaded shadow generator, or null before scene create. */
 export function getShadowGenerator(): CascadedShadowGenerator | null {
   return activeShadowGenerator;
+}
+
+/** Returns the scene's glow layer for opting in emissive meshes. */
+export function getGlowLayer(): GlowLayer | null {
+  return activeGlowLayer;
 }
 
 /** Per-player rendering data kept on the client. */
@@ -185,12 +194,14 @@ export class MainScene {
     const skybox = scene.createDefaultSkybox(envTex, true, 5000, 0.3);
     if (skybox) skybox.isPickable = false;
 
-    // Hemisphere fill is now minimal — env texture does the ambient work,
-    // hemi just lifts the StandardMaterial meshes (ground/roads) a touch.
+    // Hemisphere fill is minimal — env texture does the ambient work.
+    // Per technical-artist spec: warm groundColor for the bounce from below
+    // (cool grey was over-cooling the under-eaves), intensity 0.08 because
+    // the HDR env is already double-lifting otherwise.
     const hemi = new HemisphericLight('hemiFill', new Vector3(0.2, 1, 0.1), scene);
-    hemi.intensity = 0.25;
+    hemi.intensity = 0.08;
     hemi.diffuse = new Color3(1, 0.97, 0.92);
-    hemi.groundColor = new Color3(0.35, 0.4, 0.45);
+    hemi.groundColor = Color3.FromHexString('#6A5840');
     hemi.specular = new Color3(0, 0, 0);
 
     const sun = new DirectionalLight('sunLight', new Vector3(-0.5, -1, -0.3), scene);
@@ -215,21 +226,46 @@ export class MainScene {
     activeShadowGenerator = shadowGen;
 
     // ----- Post-processing pipeline: ACES tone mapping + bloom + FXAA
+    // Per technical-artist spec: bloom threshold 0.92 (was 0.85, fired on
+    // sunlit walls); exposure 1.05 (warm pop without clipping).
     const pipeline = new DefaultRenderingPipeline('defaultPipeline', true, scene, [camera]);
     pipeline.samples = 2;
     pipeline.fxaaEnabled = true;
     pipeline.bloomEnabled = true;
-    pipeline.bloomThreshold = 0.85;
+    pipeline.bloomThreshold = 0.92;
     pipeline.bloomWeight = 0.22;
     pipeline.bloomKernel = 48;
     pipeline.bloomScale = 0.5;
     pipeline.imageProcessing.toneMappingEnabled = true;
     pipeline.imageProcessing.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
     pipeline.imageProcessing.contrast = 1.05;
-    pipeline.imageProcessing.exposure = 1.0;
+    pipeline.imageProcessing.exposure = 1.05;
     pipeline.imageProcessing.vignetteEnabled = true;
     pipeline.imageProcessing.vignetteWeight = 0.6;
     pipeline.imageProcessing.vignetteStretch = 0.5;
+
+    // ----- SSAO2: contact shadows in crevices + under eaves. Single
+    // biggest quality multiplier per the technical-artist spec. Runs as
+    // its own pipeline alongside DefaultRenderingPipeline.
+    const ssao = new SSAO2RenderingPipeline('ssao', scene, {
+      ssaoRatio: 0.5,           // half-res for perf on integrated GPUs
+      blurRatio: 1,
+    }, [camera]);
+    ssao.radius = 0.8;
+    ssao.totalStrength = 1.1;
+    ssao.expensiveBlur = false;
+    ssao.samples = 8;
+    ssao.maxZ = 80;
+    ssao.minZAspect = 0.5;
+    ssao.bilateralSamples = 6;
+    ssao.bilateralSoften = 0.4;
+
+    // ----- GlowLayer scoped to emissive glass / signs. Without this the
+    // emissiveColor on PBR materials just brightens the surface — the
+    // glow halo only appears with a layer in the post-stack.
+    const glow = new GlowLayer('glow', scene, { mainTextureRatio: 0.5, blurKernelSize: 24 });
+    glow.intensity = 0.45;
+    activeGlowLayer = glow;
 
     // ---- Uniform parcel grid (loads Kenney .glb models) ----
     // Await so parcelRenders is populated before any code that depends on
