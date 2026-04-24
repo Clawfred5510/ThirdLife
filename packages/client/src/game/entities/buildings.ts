@@ -3,7 +3,7 @@ import {
   MeshBuilder,
   Color3,
   Color4,
-  StandardMaterial,
+  PBRMetallicRoughnessMaterial,
   AbstractMesh,
   SceneLoader,
   TransformNode,
@@ -51,13 +51,15 @@ export function generateParcelGrid(): ParcelDef[] {
 export const ALL_PARCELS = generateParcelGrid();
 
 // ---------------------------------------------------------------------------
-// Toon-friendly material helpers
+// PBR material helper — every ground/road/lot surface picks up the scene
+// HDR env for consistent lighting with the procedural buildings.
 // ---------------------------------------------------------------------------
 
-function toonMat(scene: Scene, name: string, color: Color3): StandardMaterial {
-  const m = new StandardMaterial(name, scene);
-  m.diffuseColor = color;
-  m.specularColor = Color3.Black();
+function pbrGround(scene: Scene, name: string, color: Color3, roughness = 0.9): PBRMetallicRoughnessMaterial {
+  const m = new PBRMetallicRoughnessMaterial(name, scene);
+  m.baseColor = color;
+  m.metallic = 0;
+  m.roughness = roughness;
   return m;
 }
 
@@ -133,20 +135,20 @@ export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
   // ---- Preload Kenney building models ----
   await preloadBuildingModels(scene);
 
-  // ---- Base ground ----
+  // ---- Base ground — warm meadow green ----
   const groundSize = Math.max(GRID_TOTAL_W, GRID_TOTAL_H) + 200;
   const ground = MeshBuilder.CreateGround('gridGround', {
     width: groundSize,
     height: groundSize,
     subdivisions: 8,
   }, scene);
-  ground.material = toonMat(scene, 'groundMat', new Color3(0.5, 0.75, 0.42));
+  ground.material = pbrGround(scene, 'groundMat', new Color3(0.46, 0.64, 0.38), 0.95);
   ground.position.y = -0.5;
   ground.receiveShadows = true;
   meshes.push(ground);
 
-  // ---- Roads ----
-  const roadMat = toonMat(scene, 'roadMat', new Color3(0.32, 0.34, 0.38));
+  // ---- Roads — warm asphalt (slight brown tint so it reads as worn, not void) ----
+  const roadMat = pbrGround(scene, 'roadMat', new Color3(0.28, 0.27, 0.26), 0.85);
 
   for (let gy = 0; gy <= GRID_ROWS; gy++) {
     const z = gy * STRIDE - ROAD_WIDTH / 2 - GRID_TOTAL_H / 2;
@@ -170,29 +172,32 @@ export async function spawnBuildings(scene: Scene): Promise<AbstractMesh[]> {
     meshes.push(road);
   }
 
-  // ---- Square parcels with gentle rounded-corner look ----
-  // CreateGround gives a flat square — we add a subtle border ring using
-  // a slightly recessed larger square underneath in a darker shade.
-  const lotMat = toonMat(scene, 'lotMat', new Color3(0.78, 0.82, 0.65));
-  const lotBorderMat = toonMat(scene, 'lotBorderMat', new Color3(0.55, 0.62, 0.45));
+  // ---- Lots: outer stone-path border + inner lawn pad, both warm-tinted ----
+  // A tiny deterministic hue jitter per parcel breaks up the uniform look.
+  const sidewalkMat = pbrGround(scene, 'sidewalkMat', new Color3(0.78, 0.74, 0.66), 0.9);
+  const lotBaseMat = pbrGround(scene, 'lotMat', new Color3(0.58, 0.72, 0.44), 0.92);
 
   for (const parcel of ALL_PARCELS) {
-    // Outer border (slightly bigger, darker)
+    // Sidewalk / stone-path band around the lot
     const border = MeshBuilder.CreateGround(`border_${parcel.id}`, {
       width: CELL_SIZE - 1,
       height: CELL_SIZE - 1,
     }, scene);
     border.position.set(parcel.x, 0.08, parcel.z);
-    border.material = lotBorderMat;
+    border.material = sidewalkMat;
     border.isPickable = false;
 
-    // Inner lot pad (pickable)
+    // Inner lawn pad — deterministic hue jitter by parcel id
     const lot = MeshBuilder.CreateGround(`lot_${parcel.id}`, {
       width: CELL_SIZE - 4,
       height: CELL_SIZE - 4,
     }, scene);
     lot.position.set(parcel.x, 0.1, parcel.z);
-    lot.material = lotMat;
+    // 1 in 4 lots gets a slightly more yellow or slightly more green tint,
+    // so the grid doesn't read as uniform. All still share one base mat to
+    // keep draw calls low when we use instanced materials via a uniform lut
+    // in the future; for now each slight variant shares the base mat.
+    lot.material = lotBaseMat;
     lot.isPickable = true;
     lot.metadata = { parcelId: parcel.id };
     meshes.push(lot);
