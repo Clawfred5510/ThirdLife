@@ -7,7 +7,7 @@ import {
   AbstractMesh,
 } from '@babylonjs/core';
 import { buildFurniture } from '../buildingFurniture';
-import { BuildingSpec, BuildingOutput, buildInteriorShell, mat } from './shared';
+import { BuildingSpec, BuildingOutput, buildInteriorShell, mat, isRoofMesh } from './shared';
 
 /**
  * OFFICE composition:
@@ -211,7 +211,7 @@ export function buildOffice(
 
   const roofMeshes: AbstractMesh[] = [shell.ceiling];
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
-    if (m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -221,5 +221,6 @@ export function buildOffice(
     roofMeshes,
     centerXZ: [position.x, position.z],
     halfExtentsXZ: [towerW / 2, towerD / 2],
+    interiorHeight: wallH,
   };
 }

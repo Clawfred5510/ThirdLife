@@ -7,7 +7,7 @@ import {
   AbstractMesh,
 } from '@babylonjs/core';
 import { buildFurniture } from '../buildingFurniture';
-import { BuildingSpec, BuildingOutput, buildInteriorShell, buildMailbox, mat } from './shared';
+import { BuildingSpec, BuildingOutput, buildInteriorShell, buildMailbox, mat, isRoofMesh } from './shared';
 import { buildDome } from './roofPrimitives';
 
 /**
@@ -135,17 +135,17 @@ export function buildApartment(
   }
 
   // ── WINDOW GRID on every facade ─────────────────────────────────────
-  // 3 rows × 4 columns of windows on front + back, 3×3 on sides
+  // Each window is a thin glass plate set proud of the wall (no solid
+  // box frame behind — that was reading as dark patches). Trim sill
+  // under each for a readable windowsill accent.
   const placeWindowGrid = (
     face: 'F' | 'B' | 'L' | 'R',
     cols: number, rows: number,
   ) => {
     const isSide = face === 'L' || face === 'R';
     const faceWidth = isSide ? buildingD : buildingW;
-    const faceInset = spec.wallThickness * 0.6;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        // Skip windows that would overlap the doorway (front face, bottom row, center column)
         if (face === 'F' && r === 0 && Math.abs(c - (cols - 1) / 2) < 1) continue;
         const tu = (c + 1) / (cols + 1);
         const tv = (r + 1) / (rows + 1);
@@ -153,26 +153,32 @@ export function buildApartment(
         const offY = tv * wallH - wallH / 2;
         const winW = 1.2;
         const winH = 1.5;
-        const frame = MeshBuilder.CreateBox(`aptWinFr_${id}_${face}_${r}_${c}`, {
-          width: isSide ? faceInset : winW + 0.15,
-          height: winH + 0.15,
-          depth: isSide ? winW + 0.15 : faceInset,
-        }, scene);
-        frame.parent = body;
         const y = wallH / 2 + offY;
-        if (face === 'F') frame.position.set(offT, y, -buildingD / 2 + faceInset / 2);
-        else if (face === 'B') frame.position.set(offT, y, buildingD / 2 - faceInset / 2);
-        else if (face === 'L') frame.position.set(-buildingW / 2 + faceInset / 2, y, offT);
-        else frame.position.set(buildingW / 2 - faceInset / 2, y, offT);
-        frame.material = trimMat;
+        const proud = 0.05;
 
         const glass = MeshBuilder.CreateBox(`aptWin_${id}_${face}_${r}_${c}`, {
-          width: isSide ? faceInset * 0.55 : winW,
+          width: isSide ? 0.06 : winW,
           height: winH,
-          depth: isSide ? winW : faceInset * 0.55,
+          depth: isSide ? winW : 0.06,
         }, scene);
-        glass.parent = frame;
+        glass.parent = body;
+        if (face === 'F') glass.position.set(offT, y, -buildingD / 2 - proud);
+        else if (face === 'B') glass.position.set(offT, y, buildingD / 2 + proud);
+        else if (face === 'L') glass.position.set(-buildingW / 2 - proud, y, offT);
+        else glass.position.set(buildingW / 2 + proud, y, offT);
         glass.material = glassMat;
+
+        const sillW = isSide ? 0.12 : winW + 0.25;
+        const sillD = isSide ? winW + 0.25 : 0.12;
+        const sill = MeshBuilder.CreateBox(`aptSill_${id}_${face}_${r}_${c}`, {
+          width: sillW, height: 0.12, depth: sillD,
+        }, scene);
+        sill.parent = body;
+        if (face === 'F') sill.position.set(offT, y - winH / 2 - 0.06, -buildingD / 2 - proud);
+        else if (face === 'B') sill.position.set(offT, y - winH / 2 - 0.06, buildingD / 2 + proud);
+        else if (face === 'L') sill.position.set(-buildingW / 2 - proud, y - winH / 2 - 0.06, offT);
+        else sill.position.set(buildingW / 2 + proud, y - winH / 2 - 0.06, offT);
+        sill.material = corniceMat;
       }
     }
   };
@@ -225,7 +231,7 @@ export function buildApartment(
 
   const roofMeshes: AbstractMesh[] = [shell.ceiling];
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
-    if (m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -235,5 +241,6 @@ export function buildApartment(
     roofMeshes,
     centerXZ: [position.x, position.z],
     halfExtentsXZ: [buildingW / 2, buildingD / 2],
+    interiorHeight: wallH,
   };
 }

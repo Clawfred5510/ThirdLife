@@ -957,17 +957,18 @@ export class MainScene {
   }
 
   /**
-   * RuneScape-style roof fade: when the local player is inside a building's
-   * footprint, lerp that building's roof meshes to invisible so the player
-   * can see the interior from above. Camera zoom is NOT clamped — zooming
-   * out reveals the bird's-eye top-down view of the interior, matching
-   * RuneScape's behavior.
+   * RuneScape-style roof fade when the local player is inside a
+   * building's footprint. Roof meshes lerp to visibility=0, then get
+   * setEnabled(false) once fully faded so transparent PBR edge cases
+   * can't leak through. Wall-shrink for tall interiors is a future
+   * follow-up (needs door-lintel-safe geometry split).
    */
   private updateRoofFade(dt: number): void {
     if (!this.localPlayerRoot) return;
     const px = this.localPlayerRoot.position.x;
     const pz = this.localPlayerRoot.position.z;
     const FADE_SPEED = 6;
+
     this.parcelRenders.forEach((data) => {
       const b = data.building;
       if (!b) return;
@@ -975,12 +976,16 @@ export class MainScene {
       const [hx, hz] = b.halfExtentsXZ;
       const inside = Math.abs(px - cx) < hx && Math.abs(pz - cz) < hz;
       const target = inside ? 0 : 1;
+
       for (const m of b.roofMeshes) {
         const cur = m.visibility ?? 1;
-        if (cur === target) continue;
-        const diff = target - cur;
-        const step = Math.sign(diff) * Math.min(Math.abs(diff), FADE_SPEED * dt);
-        m.visibility = cur + step;
+        if (cur !== target) {
+          const diff = target - cur;
+          const step = Math.sign(diff) * Math.min(Math.abs(diff), FADE_SPEED * dt);
+          m.visibility = cur + step;
+        }
+        if (m.visibility <= 0.01 && m.isEnabled()) m.setEnabled(false);
+        else if (m.visibility > 0.01 && !m.isEnabled()) m.setEnabled(true);
       }
     });
   }

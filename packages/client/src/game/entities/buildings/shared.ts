@@ -48,6 +48,10 @@ export interface BuildingOutput {
   roofMeshes: AbstractMesh[];
   centerXZ: [number, number];
   halfExtentsXZ: [number, number];
+  /** Interior wall height — used by the tall-building wall-shrink effect
+   *  when the player enters. Tall (>9u) buildings shrink the upper portion
+   *  so the RuneScape-style camera doesn't look into a cavernous box. */
+  interiorHeight: number;
 }
 
 // ── Material cache (per scene) ───────────────────────────────────────────
@@ -87,8 +91,40 @@ export function mat(
   m.roughness = roughness;
   if (opts?.alpha !== undefined && opts.alpha < 1) m.alpha = opts.alpha;
   if (opts?.emissive) m.emissiveColor = opts.emissive;
+  // Roof / trim / canopy / gable meshes use custom vertex data that may
+  // be viewed from either side. Disable backface culling on those roles
+  // so slopes don't vanish from unusual angles.
+  if (/(roof|trim|canopy|eaves|gable|dome|awning|pediment|parapet|silo-cap|turret|penthouse)/i.test(role)) {
+    m.backFaceCulling = false;
+  }
   cache.set(key, m);
   return m;
+}
+
+/**
+ * Name-based classifier for "this mesh should fade with the roof when the
+ * player is inside." Per-type builders name their decor meshes by role
+ * (roof_, dome_, silo_, stack_, chimney_, etc.), so pattern-match the name
+ * instead of just the y-position (which missed low-slung elements like
+ * porch canopies).
+ */
+const ROOF_MESH_PATTERNS = [
+  /roof/i, /^gable_/, /^pyramid_/, /^sawtooth_/, /^dome_/, /^turret/i,
+  /^silo/i, /^chimney/i, /^ridge/, /^stack/i, /^smokestack/i,
+  /^cornice/i, /^parapet/, /^eaves/, /^canopy/i, /^awning/i,
+  /^hayWin/, /^spire/, /^towerBase/, /^clock/i, /^hourHand/, /^minHand/,
+  /^pediment/, /^flagpole/, /^flag_/, /^wt(Drum|Cap|DrumTop|Leg)/,
+  /^pipe_/, /^extPipe/, /^puff/, /^steam/,
+  /^hf(Leg|Cross|Wheel)/, // mine headframe
+  /^bankCornice/, /^bankLantern/, /^bankLantTop/, /^aptPar/, /^aptCornice/,
+  /^aptAC/, /^penthouse/, /^dishBase/, /^dish_/, /^officeRoof/,
+  /^bladeSign/, /^shopSign/, /^shopRoof/, /^shopAwning/,
+  /^mkCanopy/, /^mkPole/, /^mkPennant/, /^mkBulb/,
+  /^corrug/, /^stackCap/, /^officeEntry/, /^entab/,
+  /^flat/i, /^slab/i,
+];
+export function isRoofMesh(name: string): boolean {
+  return ROOF_MESH_PATTERNS.some((p) => p.test(name));
 }
 
 // ── Interior shell helper ────────────────────────────────────────────────

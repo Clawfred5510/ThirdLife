@@ -12,8 +12,7 @@ import {
   BuildingOutput,
   buildInteriorShell,
   buildFenceRun,
-  mat,
-} from './shared';
+  mat, isRoofMesh } from './shared';
 import { buildGableRoof, buildDome, finishRoof } from './roofPrimitives';
 
 /**
@@ -312,7 +311,7 @@ export function buildFarm(
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
     if (roofMeshes.includes(m)) continue;
     const y = m.getAbsolutePosition().y;
-    if (y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -321,6 +320,7 @@ export function buildFarm(
     collisionWalls,
     roofMeshes,
     centerXZ: [position.x + barnRoot.position.x, position.z + barnOffsetZ],
-    halfExtentsXZ: [barnW / 2, barnD / 2], // use the BARN footprint for the "inside" check
+    halfExtentsXZ: [barnW / 2, barnD / 2],
+    interiorHeight: wallH, // use the BARN footprint for the "inside" check
   };
 }

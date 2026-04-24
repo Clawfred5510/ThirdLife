@@ -7,7 +7,7 @@ import {
   AbstractMesh,
 } from '@babylonjs/core';
 import { buildFurniture } from '../buildingFurniture';
-import { BuildingSpec, BuildingOutput, buildInteriorShell, mat } from './shared';
+import { BuildingSpec, BuildingOutput, buildInteriorShell, mat, isRoofMesh } from './shared';
 
 /**
  * MINE composition:
@@ -233,12 +233,13 @@ export function buildMine(
   lantern.position.set(-buildingW / 2 - 1.2, 3.1, -buildingD / 2 - 0.5);
   lantern.material = lanternMat;
 
-  // ── DIRT PATCH ground in front (darker color) ───────────────────────
+  // ── DIRT PATCH ground in front (darker color) — only covers the
+  //    front yard so it doesn't z-fight with the interior floor.
   const dirt = MeshBuilder.CreateBox(`dirtPatch_${id}`, {
-    width: lotW * 0.8, height: 0.08, depth: lotD * 0.5,
+    width: lotW * 0.7, height: 0.05, depth: lotD * 0.35,
   }, scene);
   dirt.parent = root;
-  dirt.position.set(0, 0.06, -lotD * 0.1);
+  dirt.position.set(0, 0.025, -lotD * 0.28);
   dirt.material = dirtMat;
   dirt.receiveShadows = true;
 
@@ -248,7 +249,7 @@ export function buildMine(
 
   const roofMeshes: AbstractMesh[] = [shell.ceiling];
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
-    if (m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -258,5 +259,6 @@ export function buildMine(
     roofMeshes,
     centerXZ: [position.x, position.z],
     halfExtentsXZ: [buildingW / 2, buildingD / 2],
+    interiorHeight: wallH,
   };
 }

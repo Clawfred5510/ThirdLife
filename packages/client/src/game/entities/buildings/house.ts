@@ -13,8 +13,7 @@ import {
   buildInteriorShell,
   buildFenceRun,
   buildMailbox,
-  mat,
-} from './shared';
+  mat, isRoofMesh } from './shared';
 import { buildGableRoof, buildTree, finishRoof } from './roofPrimitives';
 
 /**
@@ -239,7 +238,7 @@ export function buildHouse(
   const roofMeshes: AbstractMesh[] = [shell.ceiling];
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
     const y = m.getAbsolutePosition().y;
-    if (y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -249,5 +248,6 @@ export function buildHouse(
     roofMeshes,
     centerXZ: [position.x, position.z + cottageOffsetZ],
     halfExtentsXZ: [cottageW / 2, cottageD / 2],
+    interiorHeight: wallH,
   };
 }

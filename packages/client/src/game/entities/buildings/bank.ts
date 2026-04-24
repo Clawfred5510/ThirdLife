@@ -7,7 +7,7 @@ import {
   AbstractMesh,
 } from '@babylonjs/core';
 import { buildFurniture } from '../buildingFurniture';
-import { BuildingSpec, BuildingOutput, buildInteriorShell, mat } from './shared';
+import { BuildingSpec, BuildingOutput, buildInteriorShell, mat, isRoofMesh } from './shared';
 import { buildDome, finishRoof } from './roofPrimitives';
 
 /**
@@ -212,7 +212,7 @@ export function buildBank(
 
   const roofMeshes: AbstractMesh[] = [shell.ceiling];
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
-    if (m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
+    if (isRoofMesh(m.name) || m.getAbsolutePosition().y > 2.5) roofMeshes.push(m);
   }
 
   return {
@@ -222,5 +222,6 @@ export function buildBank(
     roofMeshes,
     centerXZ: [position.x, position.z + offsetZ],
     halfExtentsXZ: [buildingW / 2, buildingD / 2],
+    interiorHeight: wallH,
   };
 }
