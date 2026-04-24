@@ -5,11 +5,9 @@ import {
   FollowCamera,
   HemisphericLight,
   DirectionalLight,
-  MeshBuilder,
   Vector3,
   Color3,
   Color4,
-  StandardMaterial,
   AbstractMesh,
   Mesh,
   TransformNode,
@@ -51,7 +49,8 @@ import {
   REMOTE_PLAYER_LERP,
 } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
-import { spawnBuildings, ALL_PARCELS, ParcelDef, BUILDING_VARIANTS, instantiateBuilding } from '../entities/buildings';
+import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
+import { buildProceduralBuilding, BUILDING_SPECS, DEFAULT_BUILDING_SPEC, BuildingOutput } from '../entities/proceduralBuilding';
 import { spawnNPCs } from '../entities/npcs';
 import { selectParcel } from '../../ui/components/ParcelPanel';
 
@@ -68,14 +67,6 @@ export function getDayNightCycle(): DayNightCycle | null {
 export function getShadowGenerator(): CascadedShadowGenerator | null {
   return activeShadowGenerator;
 }
-
-/** Convert a hex color string (e.g. '#3366cc') to a Babylon Color3. */
-const hexToColor3 = (hex: string): Color3 => {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  return new Color3(r, g, b);
-};
 
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
@@ -97,8 +88,10 @@ interface RemotePlayer {
 interface ParcelRenderData {
   /** The ground tile mesh (always present). */
   ground: AbstractMesh;
-  /** The business box mesh (only when owned). */
-  box: AbstractMesh | null;
+  /** The procedural building bundle (only when owned + built). */
+  building: BuildingOutput | null;
+  /** Anchor mesh for label/picking — derived from building.exteriorCasters[0]. */
+  anchor: AbstractMesh | null;
   /** Floating business name label (only when owned with a name). */
   label: Rectangle | null;
 }
@@ -140,6 +133,9 @@ export class MainScene {
   /** The local avatar's root TransformNode (world-space) — used by the camera tracker. */
   private localPlayerRoot: TransformNode | null = null;
 
+  /** Invisible collider mesh that uses moveWithCollisions; root shadows it. */
+  private localPlayerCollider: Mesh | null = null;
+
   /** Lookup from world position to parcel ID. */
   private parcelByDef = new Map<string, number>();
 
@@ -158,6 +154,11 @@ export class MainScene {
     scene.fogMode = Scene.FOGMODE_EXP2;
     scene.fogDensity = FOG_DENSITY;
     scene.fogColor = new Color3(SKY_COLOR.r, SKY_COLOR.g, SKY_COLOR.b);
+
+    // Collisions: building walls register checkCollisions=true; the local
+    // player's collider mesh uses moveWithCollisions to slide along them.
+    scene.collisionsEnabled = true;
+    scene.gravity = new Vector3(0, -9.8, 0);
 
     // Camera — start with ArcRotateCamera; replaced by FollowCamera once local player spawns
     const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 30, Vector3.Zero(), scene);
@@ -230,8 +231,10 @@ export class MainScene {
     pipeline.imageProcessing.vignetteWeight = 0.6;
     pipeline.imageProcessing.vignetteStretch = 0.5;
 
-    // ---- Uniform parcel grid (async — loads Kenney .glb models) ----
-    this.spawnBuildingsAndSetupParcels(scene);
+    // ---- Uniform parcel grid (loads Kenney .glb models) ----
+    // Await so parcelRenders is populated before any code that depends on
+    // it (e.g. offline-mode demo building seed) runs.
+    await this.spawnBuildingsAndSetupParcels(scene);
 
     // ---- Day/Night Cycle ----
     if (features.DAY_NIGHT) {
@@ -339,6 +342,8 @@ export class MainScene {
   /**
    * Spawn a local-only player when the server is unreachable. Called by
    * Game.start() from its connect() error path so the world is still playable.
+   * Also seeds a few demo buildings around the spawn so the offline mode
+   * shows the procedural building system instead of an empty grid.
    */
   spawnOfflinePlayer(localId: string): void {
     if (!this.sceneRef) return;
@@ -348,6 +353,36 @@ export class MainScene {
       { id: localId, name: 'You (Offline)', x: 0, y: 0, z: 0, rotation: 0, color: '#3366cc' },
       this.sceneRef,
     );
+    this.seedDemoBuildings();
+  }
+
+  /** Spawn one of every building type in a row — offline-mode preview. */
+  private seedDemoBuildings(): void {
+    const types = Object.keys(BUILDING_SPECS);
+    const startGx = 25 - Math.floor(types.length / 2);
+    types.forEach((type, i) => {
+      const target = ALL_PARCELS.find(p => p.grid_x === startGx + i && p.grid_y === 25);
+      if (!target) return;
+      this.handleParcelUpdate(target.id, {
+        id: target.id,
+        owner_id: 'offline-demo',
+        business_name: type.charAt(0).toUpperCase() + type.slice(1),
+        business_type: type,
+        color: BUILDING_SPECS[type].wallColor,
+        height: BUILDING_SPECS[type].wallHeight,
+      });
+    });
+    // Teleport the player to stand south of the demo row, looking north.
+    const view = ALL_PARCELS.find(p => p.grid_x === 25 && p.grid_y === 24);
+    const localId = this.localPlayerId;
+    if (view && localId) {
+      const remote = this.remotePlayers.get(localId);
+      if (remote) {
+        remote.root.position.set(view.x, 0, view.z);
+        remote.targetX = view.x;
+        remote.targetZ = view.z;
+      }
+    }
   }
 
   // ---------- Parcel system ----------
@@ -367,7 +402,8 @@ export class MainScene {
         const parcelId = mesh.metadata.parcelId as number;
         this.parcelRenders.set(parcelId, {
           ground: mesh,
-          box: null,
+          building: null,
+          anchor: null,
           label: null,
         });
 
@@ -400,9 +436,8 @@ export class MainScene {
       height: 4,
     };
 
-    // Check if there's a box (business) on this parcel — the box stores metadata
-    if (renderData.box) {
-      const meta = renderData.box.metadata;
+    if (renderData.anchor) {
+      const meta = renderData.anchor.metadata;
       parcelInfo.owner_id = meta?.owner_id ?? '';
       parcelInfo.business_name = meta?.business_name ?? '';
       parcelInfo.business_type = meta?.business_type ?? '';
@@ -438,160 +473,104 @@ export class MainScene {
   ): void {
     const scene = this.sceneRef!;
 
-    if (!renderData.box) {
-      // Try to place a Kenney building model; pick variant deterministically
-      // from parcel ID so every parcel always gets the same building.
-      const height = data.height ?? 4;
-      const variantIdx = def.id % BUILDING_VARIANTS.length;
-      const variantName = BUILDING_VARIANTS[variantIdx];
-      const scale = Math.max(2, height * 0.7);
-      const modelNode = instantiateBuilding(
-        scene,
-        variantName,
-        new Vector3(def.x, 0, def.z),
-        scale,
-      );
+    const desiredType = data.business_type ?? renderData.anchor?.metadata?.business_type ?? 'apartment';
+    const existingType = renderData.anchor?.metadata?.business_type as string | undefined;
+    const typeChanged = renderData.building && existingType !== desiredType;
 
-      // Either use a child mesh from the .glb or fall back to a procedural box
-      let box: AbstractMesh;
-      if (modelNode) {
-        const children = modelNode.getChildMeshes(false);
-        box = children[0] ?? MeshBuilder.CreateBox(`bizBox_${def.id}`, { size: 1 }, scene);
-        box.isPickable = true;
-        for (const child of children) {
-          child.isPickable = true;
-          child.metadata = { parcelId: def.id };
-          activeShadowGenerator?.addShadowCaster(child);
-        }
-      } else {
-        const h = Math.max(0.5, height);
-        box = MeshBuilder.CreateBox(`bizBox_${def.id}`, { width: 13, height: h, depth: 13 }, scene);
-        box.renderOutline = true;
-        box.outlineWidth = 0.015;
-        box.outlineColor = Color3.Black();
-        box.position.set(def.x, h / 2, def.z);
-        const mat = new StandardMaterial(`bizMat_${def.id}`, scene);
-        mat.diffuseColor = hexToColor3(data.color ?? '#4a90d9');
-        mat.specularColor = Color3.Black();
-        box.material = mat;
-        activeShadowGenerator?.addShadowCaster(box);
-      }
+    if (renderData.building && !typeChanged) {
+      this.updateBuildingMetaAndLabel(renderData, def, data);
+      return;
+    }
 
-      box.isPickable = true;
-      box.metadata = {
+    if (renderData.building) {
+      this.disposeBuilding(renderData);
+    }
+
+    const spec = BUILDING_SPECS[desiredType] ?? DEFAULT_BUILDING_SPEC;
+    const wallColor = data.color && data.color !== '#4a90d9' ? data.color : spec.wallColor;
+    const built = buildProceduralBuilding(scene, def.id, new Vector3(def.x, 0.1, def.z), {
+      ...spec,
+      wallColor,
+    });
+    renderData.building = built;
+    renderData.anchor = built.exteriorCasters[0] ?? null;
+
+    for (const m of built.exteriorCasters) {
+      activeShadowGenerator?.addShadowCaster(m);
+      m.isPickable = true;
+      m.metadata = {
         parcelId: def.id,
         owner_id: data.owner_id ?? '',
         business_name: data.business_name ?? '',
-        business_type: data.business_type ?? '',
-        color: data.color ?? '#4a90d9',
-        height: height,
+        business_type: desiredType,
+        color: wallColor,
+        height: spec.wallHeight,
       };
-
-      // Click action on the business box too
-      box.actionManager = new ActionManager(scene);
-      box.actionManager.registerAction(
+      m.actionManager = new ActionManager(scene);
+      m.actionManager.registerAction(
         new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
           this.onParcelClicked(def.id);
         }),
       );
+    }
 
-      renderData.box = box;
+    this.updateBuildingMetaAndLabel(renderData, def, data);
+  }
 
-      // Create floating label if there's a business name
-      if (data.business_name && data.business_name.trim() !== '') {
-        const labelRect = new Rectangle(`bizLabel_${def.id}`);
-        labelRect.width = '140px';
-        labelRect.height = '28px';
-        labelRect.cornerRadius = 4;
-        labelRect.color = 'transparent';
-        labelRect.background = 'rgba(0,0,0,0.55)';
-        labelRect.thickness = 0;
+  private updateBuildingMetaAndLabel(
+    renderData: ParcelRenderData,
+    def: ParcelDef,
+    data: Partial<ParcelData>,
+  ): void {
+    if (!renderData.anchor || !renderData.building) return;
+    const merged = {
+      parcelId: def.id,
+      owner_id: data.owner_id ?? renderData.anchor.metadata?.owner_id ?? '',
+      business_name: data.business_name ?? renderData.anchor.metadata?.business_name ?? '',
+      business_type: data.business_type ?? renderData.anchor.metadata?.business_type ?? 'apartment',
+      color: data.color ?? renderData.anchor.metadata?.color ?? '#4a90d9',
+      height: data.height ?? renderData.anchor.metadata?.height ?? 4,
+    };
+    for (const m of renderData.building.exteriorCasters) m.metadata = merged;
 
-        const labelText = new TextBlock(`bizLabelText_${def.id}`, data.business_name);
-        labelText.color = 'white';
-        labelText.fontSize = 12;
-        labelText.resizeToFit = true;
-        labelRect.addControl(labelText);
+    const name = (data.business_name ?? renderData.anchor.metadata?.business_name ?? '').trim();
+    if (!name) {
+      if (renderData.label) { renderData.label.dispose(); renderData.label = null; }
+      return;
+    }
+    if (renderData.label) {
+      const tb = renderData.label.children?.[0] as TextBlock | undefined;
+      if (tb) tb.text = name;
+      return;
+    }
+    const labelRect = new Rectangle(`bizLabel_${def.id}`);
+    labelRect.width = '160px';
+    labelRect.height = '28px';
+    labelRect.cornerRadius = 4;
+    labelRect.color = 'transparent';
+    labelRect.background = 'rgba(0,0,0,0.55)';
+    labelRect.thickness = 0;
+    const labelText = new TextBlock(`bizLabelText_${def.id}`, name);
+    labelText.color = 'white';
+    labelText.fontSize = 12;
+    labelText.resizeToFit = true;
+    labelRect.addControl(labelText);
+    this.labelUI.addControl(labelRect);
+    labelRect.linkWithMesh(renderData.anchor);
+    labelRect.linkOffsetY = -180;
+    renderData.label = labelRect;
+  }
 
-        this.labelUI.addControl(labelRect);
-        labelRect.linkWithMesh(box);
-        labelRect.linkOffsetY = -40;
-
-        renderData.label = labelRect;
-      }
-    } else {
-      // Update existing box
-      const box = renderData.box;
-      const newHeight = data.height ?? Number(box.metadata?.height ?? 4);
-      const newColor = data.color ?? box.metadata?.color ?? '#4a90d9';
-
-      // Update height
-      if (data.height !== undefined) {
-        box.scaling.y = Math.max(0.5, newHeight) / Math.max(0.5, Number(box.metadata?.height ?? 4));
-        box.position.y = Math.max(0.5, newHeight) / 2;
-      }
-
-      // Update color
-      if (data.color !== undefined) {
-        const mat = box.material as StandardMaterial;
-        if (mat) {
-          mat.diffuseColor = hexToColor3(newColor);
-        }
-      }
-
-      // Update metadata
-      box.metadata = {
-        ...box.metadata,
-        owner_id: data.owner_id ?? box.metadata?.owner_id ?? '',
-        business_name: data.business_name ?? box.metadata?.business_name ?? '',
-        business_type: data.business_type ?? box.metadata?.business_type ?? '',
-        color: newColor,
-        height: newHeight,
-      };
-
-      // Update label
-      if (data.business_name !== undefined) {
-        const name = data.business_name.trim();
-        if (name === '' && renderData.label) {
-          renderData.label.dispose();
-          renderData.label = null;
-        } else if (name !== '') {
-          if (renderData.label) {
-            // Update existing label text
-            const textBlock = renderData.label.children?.[0] as TextBlock | undefined;
-            if (textBlock) textBlock.text = name;
-          } else {
-            // Create new label
-            const labelRect = new Rectangle(`bizLabel_${def.id}`);
-            labelRect.width = '140px';
-            labelRect.height = '28px';
-            labelRect.cornerRadius = 4;
-            labelRect.color = 'transparent';
-            labelRect.background = 'rgba(0,0,0,0.55)';
-            labelRect.thickness = 0;
-
-            const labelText = new TextBlock(`bizLabelText_${def.id}`, name);
-            labelText.color = 'white';
-            labelText.fontSize = 12;
-            labelText.resizeToFit = true;
-            labelRect.addControl(labelText);
-
-            this.labelUI.addControl(labelRect);
-            labelRect.linkWithMesh(box);
-            labelRect.linkOffsetY = -40;
-
-            renderData.label = labelRect;
-          }
-        }
-      }
+  private disposeBuilding(renderData: ParcelRenderData): void {
+    if (renderData.building) {
+      renderData.building.root.dispose(false, true);
+      renderData.building = null;
+      renderData.anchor = null;
     }
   }
 
   private removeBusinessFromParcel(renderData: ParcelRenderData): void {
-    if (renderData.box) {
-      renderData.box.dispose();
-      renderData.box = null;
-    }
+    this.disposeBuilding(renderData);
     if (renderData.label) {
       renderData.label.dispose();
       renderData.label = null;
@@ -697,8 +676,23 @@ export class MainScene {
 
       this.arcCamera = cam;
       this.localPlayerRoot = avatar.root;
+      this.localPlayerCollider = this.makeLocalCollider(this.sceneRef, player.x, player.z);
       this.sceneRef.activeCamera = cam;
     }
+  }
+
+  /** Hidden ellipsoid collider for the local player. The avatar root copies
+   *  its position each frame after moveWithCollisions has slid it along walls.
+   */
+  private makeLocalCollider(scene: Scene, x: number, z: number): Mesh {
+    const c = new Mesh('localCollider', scene);
+    c.position.set(x, 1.0, z);
+    c.ellipsoid = new Vector3(0.55, 1.0, 0.55);
+    c.ellipsoidOffset = new Vector3(0, 1.0, 0);
+    c.checkCollisions = true;
+    c.isVisible = false;
+    c.isPickable = false;
+    return c;
   }
 
   private removeRemotePlayer(sessionId: string): void {
@@ -775,8 +769,21 @@ export class MainScene {
     const len = Math.hypot(mx, mz);
     if (len > 0) {
       mx /= len; mz /= len;
-      remote.root.position.x += mx * speed;
-      remote.root.position.z += mz * speed;
+      const dx = mx * speed;
+      const dz = mz * speed;
+      const collider = this.localPlayerCollider;
+      if (collider) {
+        // Sync collider to authoritative root position (in case server snap or
+        // network update moved the avatar), then apply movement with sliding.
+        collider.position.x = remote.root.position.x;
+        collider.position.z = remote.root.position.z;
+        collider.moveWithCollisions(new Vector3(dx, 0, dz));
+        remote.root.position.x = collider.position.x;
+        remote.root.position.z = collider.position.z;
+      } else {
+        remote.root.position.x += dx;
+        remote.root.position.z += dz;
+      }
     }
     remote.root.rotation.y = yaw;
 

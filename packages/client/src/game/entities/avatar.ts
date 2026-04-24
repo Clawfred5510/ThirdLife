@@ -5,7 +5,7 @@ import {
   Vector3,
   Color3,
   Color4,
-  StandardMaterial,
+  PBRMetallicRoughnessMaterial,
   TransformNode,
 } from '@babylonjs/core';
 import type { Appearance } from '@gamestu/shared';
@@ -32,9 +32,10 @@ function outline(mesh: Mesh): void {
   mesh.outlineColor = Color3.Black();
 }
 
-function matte(scene: Scene, name: string): StandardMaterial {
-  const m = new StandardMaterial(name, scene);
-  m.specularColor = Color3.Black();
+function matte(scene: Scene, name: string): PBRMetallicRoughnessMaterial {
+  const m = new PBRMetallicRoughnessMaterial(name, scene);
+  m.metallic = 0;
+  m.roughness = 0.85;
   return m;
 }
 
@@ -75,13 +76,13 @@ export interface Avatar {
   accessory: Mesh | null;
 
   // Materials
-  bodyMat: StandardMaterial;
-  legsMat: StandardMaterial;
-  headMat: StandardMaterial;
-  shoesMat: StandardMaterial;
-  hatMat: StandardMaterial;
-  accessoryMat: StandardMaterial;
-  armMat: StandardMaterial;
+  bodyMat: PBRMetallicRoughnessMaterial;
+  legsMat: PBRMetallicRoughnessMaterial;
+  headMat: PBRMetallicRoughnessMaterial;
+  shoesMat: PBRMetallicRoughnessMaterial;
+  hatMat: PBRMetallicRoughnessMaterial;
+  accessoryMat: PBRMetallicRoughnessMaterial;
+  armMat: PBRMetallicRoughnessMaterial;
 }
 
 // -----------------------------------------------------------------------
@@ -116,7 +117,8 @@ export function buildAvatar(
   const armMat = matte(scene, `armMat_${id}`);
 
   const eyeMat = matte(scene, `eyeMat_${id}`);
-  eyeMat.diffuseColor = new Color3(0.08, 0.08, 0.08);
+  eyeMat.baseColor = new Color3(0.08, 0.08, 0.08);
+  eyeMat.roughness = 0.4;
 
   // --- Legs (two separate capsules on pivots for walk animation) ---
   const legPivotL = new TransformNode(`legPivotL_${id}`, scene);
@@ -267,14 +269,14 @@ export function applyAppearance(
   avatar: Avatar,
   appearance: Appearance,
 ): void {
-  avatar.bodyMat.diffuseColor = hexToColor3(appearance.shirt_color);
-  avatar.legsMat.diffuseColor = hexToColor3(appearance.pants_color);
-  avatar.headMat.diffuseColor = hexToColor3(appearance.body_color);
-  avatar.shoesMat.diffuseColor = hexToColor3(appearance.shoes_color);
-  avatar.hatMat.diffuseColor = hexToColor3(appearance.hat_color);
-  avatar.accessoryMat.diffuseColor = hexToColor3(appearance.accessory_color);
+  avatar.bodyMat.baseColor = hexToColor3(appearance.shirt_color);
+  avatar.legsMat.baseColor = hexToColor3(appearance.pants_color);
+  avatar.headMat.baseColor = hexToColor3(appearance.body_color);
+  avatar.shoesMat.baseColor = hexToColor3(appearance.shoes_color);
+  avatar.hatMat.baseColor = hexToColor3(appearance.hat_color);
+  avatar.accessoryMat.baseColor = hexToColor3(appearance.accessory_color);
   // Arms = skin color (upper arm shows skin below short sleeves)
-  avatar.armMat.diffuseColor = hexToColor3(appearance.body_color);
+  avatar.armMat.baseColor = hexToColor3(appearance.body_color);
 
   if (avatar.hat) { avatar.hat.dispose(); avatar.hat = null; }
   if (appearance.hat_style !== 'none') {
