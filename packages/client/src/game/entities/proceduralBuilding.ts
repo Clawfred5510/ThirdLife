@@ -12,6 +12,14 @@ import {
 import { buildFurniture } from './buildingFurniture';
 import { buildFarm } from './buildings/farm';
 import { buildHouse } from './buildings/house';
+import { buildBank } from './buildings/bank';
+import { buildFactory } from './buildings/factory';
+import { buildHall } from './buildings/hall';
+import { buildMine } from './buildings/mine';
+import { buildMarket } from './buildings/market';
+import { buildShop } from './buildings/shop';
+import { buildOffice } from './buildings/office';
+import { buildApartment } from './buildings/apartment';
 
 /**
  * Procedural building generator with per-type signature silhouettes.
@@ -111,10 +119,18 @@ export function buildProceduralBuilding(
   spec: BuildingSpec,
   buildingType: string = 'apartment',
 ): BuildingOutput {
-  // Route to per-type modules where we've rebuilt them; the rest fall
-  // through to the monolithic builder below.
-  if (buildingType === 'farm') return buildFarm(scene, id, position, spec);
-  if (buildingType === 'house') return buildHouse(scene, id, position, spec);
+  // Every type now has its own module; dispatch accordingly. The
+  // monolithic fallback below is only hit for unknown building types.
+  if (buildingType === 'farm')      return buildFarm(scene, id, position, spec);
+  if (buildingType === 'house')     return buildHouse(scene, id, position, spec);
+  if (buildingType === 'bank')      return buildBank(scene, id, position, spec);
+  if (buildingType === 'factory')   return buildFactory(scene, id, position, spec);
+  if (buildingType === 'hall')      return buildHall(scene, id, position, spec);
+  if (buildingType === 'mine')      return buildMine(scene, id, position, spec);
+  if (buildingType === 'market')    return buildMarket(scene, id, position, spec);
+  if (buildingType === 'shop')      return buildShop(scene, id, position, spec);
+  if (buildingType === 'office')    return buildOffice(scene, id, position, spec);
+  if (buildingType === 'apartment') return buildApartment(scene, id, position, spec);
 
   const root = new TransformNode(`procBuilding_${id}`, scene);
   root.position.copyFrom(position);
