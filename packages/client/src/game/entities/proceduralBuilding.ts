@@ -11,6 +11,7 @@ import {
 } from '@babylonjs/core';
 import { buildFurniture } from './buildingFurniture';
 import { buildFarm } from './buildings/farm';
+import { buildHouse } from './buildings/house';
 
 /**
  * Procedural building generator with per-type signature silhouettes.
@@ -113,6 +114,7 @@ export function buildProceduralBuilding(
   // Route to per-type modules where we've rebuilt them; the rest fall
   // through to the monolithic builder below.
   if (buildingType === 'farm') return buildFarm(scene, id, position, spec);
+  if (buildingType === 'house') return buildHouse(scene, id, position, spec);
 
   const root = new TransformNode(`procBuilding_${id}`, scene);
   root.position.copyFrom(position);
