@@ -10,6 +10,7 @@ import {
   AbstractMesh,
 } from '@babylonjs/core';
 import { buildFurniture } from './buildingFurniture';
+import { buildFarm } from './buildings/farm';
 
 /**
  * Procedural building generator with per-type signature silhouettes.
@@ -109,6 +110,10 @@ export function buildProceduralBuilding(
   spec: BuildingSpec,
   buildingType: string = 'apartment',
 ): BuildingOutput {
+  // Route to per-type modules where we've rebuilt them; the rest fall
+  // through to the monolithic builder below.
+  if (buildingType === 'farm') return buildFarm(scene, id, position, spec);
+
   const root = new TransformNode(`procBuilding_${id}`, scene);
   root.position.copyFrom(position);
 
