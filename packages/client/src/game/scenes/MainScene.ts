@@ -957,25 +957,23 @@ export class MainScene {
   }
 
   /**
-   * RuneScape-style roof fade + camera pull-in: when the local player is
-   * inside a building's footprint, lerp that building's roof meshes to
-   * invisible and clamp the camera's radius so it stays inside the walls.
-   * When outside, everything restores to normal.
+   * RuneScape-style roof fade: when the local player is inside a building's
+   * footprint, lerp that building's roof meshes to invisible so the player
+   * can see the interior from above. Camera zoom is NOT clamped — zooming
+   * out reveals the bird's-eye top-down view of the interior, matching
+   * RuneScape's behavior.
    */
   private updateRoofFade(dt: number): void {
     if (!this.localPlayerRoot) return;
     const px = this.localPlayerRoot.position.x;
     const pz = this.localPlayerRoot.position.z;
     const FADE_SPEED = 6;
-
-    let insideBuilding: { hx: number; hz: number } | null = null;
     this.parcelRenders.forEach((data) => {
       const b = data.building;
       if (!b) return;
       const [cx, cz] = b.centerXZ;
       const [hx, hz] = b.halfExtentsXZ;
       const inside = Math.abs(px - cx) < hx && Math.abs(pz - cz) < hz;
-      if (inside) insideBuilding = { hx, hz };
       const target = inside ? 0 : 1;
       for (const m of b.roofMeshes) {
         const cur = m.visibility ?? 1;
@@ -985,21 +983,6 @@ export class MainScene {
         m.visibility = cur + step;
       }
     });
-
-    // Camera radius management: when inside, shrink the orbit radius so the
-    // camera stays between the interior walls instead of poking through
-    // them from outside. When outside, restore the original limits.
-    if (this.arcCamera) {
-      const inB = insideBuilding as { hx: number; hz: number } | null;
-      const interior = inB ? Math.min(inB.hx, inB.hz) - 1.5 : 0;
-      if (inB) {
-        const maxR = Math.max(2.5, interior);
-        if (this.arcCamera.radius > maxR) this.arcCamera.radius = maxR;
-        this.arcCamera.upperRadiusLimit = maxR;
-      } else {
-        this.arcCamera.upperRadiusLimit = CAMERA_FOLLOW_MAX_ZOOM;
-      }
-    }
   }
 
   private trackPlayerWithCamera(): void {
