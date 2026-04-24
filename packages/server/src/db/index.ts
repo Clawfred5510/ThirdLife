@@ -78,6 +78,16 @@ interface DBBackend {
     newResources: { food: number; materials: number; energy: number; luxury: number },
   ): { credits: number };
   buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number };
+  /** Claim a parcel AND place a building on it in one transaction — charges
+   *  LAND_COST + the building's cost atomically. Also sets the business
+   *  name/type. */
+  claimAndBuild(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+  ): { ok: boolean; reason?: string; credits?: number };
   /** All owned parcels with a building set — single scan for the income tick. */
   getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }>;
 }
@@ -345,6 +355,30 @@ class SQLiteDatabase implements DBBackend {
     return txn();
   }
 
+  claimAndBuild(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+  ): { ok: boolean; reason?: string; credits?: number } {
+    const txn = this.db.transaction(() => {
+      const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
+      if (!parcel) return { ok: false, reason: 'parcel_not_found' };
+      if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+      const total = LAND_COST + buildingCost;
+      const credits = this.getPlayerCredits(id);
+      if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+      this.stmtUpdateCredits.run(credits - total, id);
+      const claim = this.stmtClaimParcel.run(id, parcelId);
+      if (claim.changes === 0) return { ok: false, reason: 'claim_race' };
+      this.db.prepare('UPDATE parcels SET building_type = ? WHERE id = ?').run(buildingType, parcelId);
+      this.stmtUpdateBusiness.run(buildingLabel, buildingType, parcel.color, parcel.height, parcelId, id);
+      return { ok: true, credits: credits - total };
+    });
+    return txn();
+  }
+
   getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
     return this.db
       .prepare(`SELECT owner_id, building_type FROM parcels
@@ -584,6 +618,28 @@ class MemoryDB implements DBBackend {
     return { ok: true, credits: credits - LAND_COST };
   }
 
+  claimAndBuild(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+  ): { ok: boolean; reason?: string; credits?: number } {
+    const parcel = this.parcels.get(parcelId);
+    if (!parcel) return { ok: false, reason: 'parcel_not_found' };
+    if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+    const total = LAND_COST + buildingCost;
+    const credits = this.getPlayerCredits(id);
+    if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+    this.updatePlayerCredits(id, credits - total);
+    parcel.owner_id = id;
+    parcel.claimed_at = new Date().toISOString();
+    (parcel as any).building_type = buildingType;
+    parcel.business_type = buildingType;
+    parcel.business_name = buildingLabel;
+    return { ok: true, credits: credits - total };
+  }
+
   getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
     const out: Array<{ owner_id: string; building_type: string }> = [];
     for (const p of this.parcels.values()) {
@@ -789,4 +845,7 @@ export function workProduce(
   newResources: { food: number; materials: number; energy: number; luxury: number },
 ) { return backend.workProduce(id, creditsEarned, newResources); }
 export function buyLand(id: string, parcelId: number) { return backend.buyLand(id, parcelId); }
+export function claimAndBuild(
+  id: string, parcelId: number, buildingType: string, buildingCost: number, buildingLabel: string,
+) { return backend.claimAndBuild(id, parcelId, buildingType, buildingCost, buildingLabel); }
 export function getOwnedBuiltParcels() { return backend.getOwnedBuiltParcels(); }

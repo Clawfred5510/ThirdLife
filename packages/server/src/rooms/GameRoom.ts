@@ -28,7 +28,7 @@ import {
   getPlayerCredits as getPlayerCreditsFromDb,
   updatePlayerCredits,
   seedParcels,
-  claimParcel,
+  claimAndBuild,
   updateBusiness as updateBusinessInDb,
   getAllParcels,
   savePlayerAppearance,
@@ -153,24 +153,48 @@ export class GameRoom extends Room<GameState> {
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
-    this.onMessage(MessageType.CLAIM_PARCEL, (client: Client, data: { parcelId: number }) => {
+    this.onMessage(MessageType.CLAIM_PARCEL, (
+      client: Client,
+      data: { parcelId: number; building_type: string },
+    ) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
-
-      const success = claimParcel(data.parcelId, client.sessionId);
-      if (success) {
-        player.credits = getPlayerCreditsFromDb(client.sessionId);
-        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-        this.broadcast(MessageType.PARCEL_UPDATE, {
-          id: data.parcelId,
-          owner_id: client.sessionId,
-          owner_name: player.name,
-        });
-        console.log(`${player.name} claimed parcel #${data.parcelId}`);
-      } else {
-        client.send(MessageType.CLAIM_PARCEL, { error: 'Claim failed (already claimed or insufficient credits)' });
+      if (typeof data.building_type !== 'string') {
+        client.send(MessageType.CLAIM_PARCEL, { error: 'building_type is required' });
+        return;
       }
+      const spec = BUILDINGS[data.building_type as BuildingType];
+      if (!spec) {
+        client.send(MessageType.CLAIM_PARCEL, {
+          error: 'Unknown building type', valid: Object.keys(BUILDINGS),
+        });
+        return;
+      }
+
+      const result = claimAndBuild(
+        client.sessionId, data.parcelId, data.building_type, spec.cost, spec.label,
+      );
+      if (!result.ok) {
+        client.send(MessageType.CLAIM_PARCEL, {
+          error: result.reason,
+          detail: result.reason === 'insufficient_balance' ? { required: spec.cost + 150000 } : undefined,
+        });
+        return;
+      }
+      player.credits = getPlayerCreditsFromDb(client.sessionId);
+      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      this.broadcast(MessageType.PARCEL_UPDATE, {
+        id: data.parcelId,
+        owner_id: client.sessionId,
+        owner_name: player.name,
+        business_name: spec.label,
+        business_type: data.building_type,
+      });
+      addEvent('claim_and_build', client.sessionId, {
+        parcel: data.parcelId, building: data.building_type, cost: spec.cost + 150000,
+      });
+      console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + 150000} $AMETA)`);
     });
 
     this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {

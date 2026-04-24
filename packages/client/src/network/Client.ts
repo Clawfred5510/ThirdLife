@@ -277,8 +277,8 @@ export function getPlayerName(): string | null {
   return myLastName;
 }
 
-export function sendClaimParcel(parcelId: number): void {
-  room?.send(MessageType.CLAIM_PARCEL, { parcelId });
+export function sendClaimParcel(parcelId: number, buildingType: string): void {
+  room?.send(MessageType.CLAIM_PARCEL, { parcelId, building_type: buildingType });
 }
 
 export function sendUpdateBusiness(parcelId: number, data: { name?: string; type?: string; color?: string; height?: number }): void {

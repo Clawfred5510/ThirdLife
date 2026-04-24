@@ -521,10 +521,13 @@ export class MainScene {
 
     const spec = BUILDING_SPECS[desiredType] ?? DEFAULT_BUILDING_SPEC;
     const wallColor = data.color && data.color !== '#4a90d9' ? data.color : spec.wallColor;
-    const built = buildProceduralBuilding(scene, def.id, new Vector3(def.x, 0.1, def.z), {
-      ...spec,
-      wallColor,
-    });
+    const built = buildProceduralBuilding(
+      scene,
+      def.id,
+      new Vector3(def.x, 0.1, def.z),
+      { ...spec, wallColor },
+      desiredType,
+    );
     renderData.building = built;
     renderData.anchor = built.exteriorCasters[0] ?? null;
 

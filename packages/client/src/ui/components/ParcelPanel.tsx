@@ -1,5 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { ParcelData, CLAIM_COST, CURRENCY_NAME } from '@gamestu/shared';
+import {
+  ParcelData,
+  CLAIM_COST,
+  CURRENCY_NAME,
+  BUILDINGS,
+  BUILDING_LIST,
+  BuildingType,
+} from '@gamestu/shared';
 import {
   sendClaimParcel,
   sendUpdateBusiness,
@@ -35,6 +42,7 @@ export const ParcelPanel: React.FC = () => {
   const [editColor, setEditColor] = useState('#4a90d9');
   const [editHeight, setEditHeight] = useState(4);
   const [message, setMessage] = useState('');
+  const [pickedBuilding, setPickedBuilding] = useState<BuildingType>('apartment');
 
   const sessionId = getSessionId();
 
@@ -71,20 +79,20 @@ export const ParcelPanel: React.FC = () => {
 
   const handleClaim = useCallback(() => {
     if (!parcel) return;
-    sendClaimParcel(parcel.id);
-    setMessage('Claiming...');
-  }, [parcel]);
+    sendClaimParcel(parcel.id, pickedBuilding);
+    setMessage(`Claiming & building ${BUILDINGS[pickedBuilding].label}...`);
+  }, [parcel, pickedBuilding]);
 
   const handleUpdate = useCallback(() => {
     if (!parcel) return;
+    // Don't include type — it's locked after claim.
     sendUpdateBusiness(parcel.id, {
       name: editName,
-      type: editType,
       color: editColor,
       height: editHeight,
     });
     setMessage('Updating...');
-  }, [parcel, editName, editType, editColor, editHeight]);
+  }, [parcel, editName, editColor, editHeight]);
 
   if (!parcel) return null;
 
@@ -172,11 +180,69 @@ export const ParcelPanel: React.FC = () => {
 
       {!parcel.owner_id && (
         <>
-          <div style={{ marginBottom: 8, opacity: 0.7 }}>Unclaimed parcel</div>
+          <div style={{ marginBottom: 8, opacity: 0.8 }}>
+            Unclaimed parcel — <span style={{ opacity: 0.6 }}>pick what to build:</span>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Building type"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(5, 1fr)',
+              gap: 4,
+              marginBottom: 10,
+            }}
+          >
+            {BUILDING_LIST.map((b) => {
+              const total = b.cost + CLAIM_COST;
+              const affordable = credits >= total;
+              const selected = pickedBuilding === b.type;
+              return (
+                <button
+                  key={b.type}
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={`${b.label}, total ${total.toLocaleString()} $${CURRENCY_NAME}`}
+                  disabled={!affordable}
+                  onClick={() => setPickedBuilding(b.type)}
+                  style={{
+                    background: selected ? '#facc15' : (affordable ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'),
+                    color: selected ? '#1a1409' : (affordable ? '#e0e0e0' : 'rgba(224,224,224,0.4)'),
+                    border: selected ? '1px solid #facc15' : '1px solid rgba(255,255,255,0.15)',
+                    borderRadius: 4,
+                    padding: '6px 4px',
+                    fontSize: 10,
+                    fontFamily: 'monospace',
+                    cursor: affordable ? 'pointer' : 'not-allowed',
+                    textAlign: 'center',
+                    lineHeight: 1.3,
+                  }}
+                >
+                  <div style={{ fontWeight: 'bold' }}>{b.label}</div>
+                  <div style={{ opacity: 0.75, fontSize: 9 }}>{b.cost.toLocaleString()}</div>
+                </button>
+              );
+            })}
+          </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>Claim for <strong style={{ color: '#facc15' }}>{CLAIM_COST.toLocaleString()} ${CURRENCY_NAME}</strong></span>
-            <button style={buttonStyle} onClick={handleClaim}>
-              Claim
+            <span style={{ fontSize: 12 }}>
+              Total: <strong style={{ color: '#facc15' }}>
+                {(BUILDINGS[pickedBuilding].cost + CLAIM_COST).toLocaleString()} ${CURRENCY_NAME}
+              </strong>
+              <span style={{ opacity: 0.55, marginLeft: 6 }}>
+                (land {CLAIM_COST.toLocaleString()} + {BUILDINGS[pickedBuilding].label.toLowerCase()} {BUILDINGS[pickedBuilding].cost.toLocaleString()})
+              </span>
+            </span>
+            <button
+              style={{
+                ...buttonStyle,
+                opacity: credits >= (BUILDINGS[pickedBuilding].cost + CLAIM_COST) ? 1 : 0.45,
+                cursor: credits >= (BUILDINGS[pickedBuilding].cost + CLAIM_COST) ? 'pointer' : 'not-allowed',
+              }}
+              onClick={handleClaim}
+              disabled={credits < (BUILDINGS[pickedBuilding].cost + CLAIM_COST)}
+            >
+              Claim &amp; Build
             </button>
           </div>
           <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>
@@ -197,13 +263,10 @@ export const ParcelPanel: React.FC = () => {
             onChange={(e) => setEditName(e.target.value)}
             placeholder="e.g. Joe's Cafe"
           />
-          <div style={labelStyle}>Business Type</div>
-          <input
-            style={inputStyle}
-            value={editType}
-            onChange={(e) => setEditType(e.target.value)}
-            placeholder="e.g. restaurant"
-          />
+          <div style={{ ...labelStyle, opacity: 0.7 }}>
+            Building Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType}</span>
+            <span style={{ opacity: 0.5, marginLeft: 6, fontSize: 10 }}>(locked at claim time)</span>
+          </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <div style={labelStyle}>Color</div>

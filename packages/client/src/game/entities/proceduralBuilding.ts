@@ -9,6 +9,7 @@ import {
   TransformNode,
   AbstractMesh,
 } from '@babylonjs/core';
+import { buildFurniture } from './buildingFurniture';
 
 /**
  * Cartoony rounded building generator. Produces a `TransformNode` with
@@ -73,6 +74,7 @@ export function buildProceduralBuilding(
   id: string | number,
   position: Vector3,
   spec: BuildingSpec,
+  buildingType: string = 'apartment',
 ): BuildingOutput {
   const root = new TransformNode(`procBuilding_${id}`, scene);
   root.position.copyFrom(position);
@@ -371,6 +373,12 @@ export function buildProceduralBuilding(
   chimney.material = trimMat;
   chimney.receiveShadows = true;
   exteriorCasters.push(chimney);
+
+  // ──────────────────────────────────────────────────────────────────
+  // Interior furniture — primitive set per building type
+  // ──────────────────────────────────────────────────────────────────
+  const furniture = buildFurniture(scene, id, buildingType, innerHalf * 2, wallH);
+  furniture.root.parent = root;
 
   return { root, exteriorCasters, collisionWalls };
 }
