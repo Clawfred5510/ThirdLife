@@ -55,6 +55,14 @@ export interface BuildingOutput {
   root: TransformNode;
   exteriorCasters: AbstractMesh[];
   collisionWalls: AbstractMesh[];
+  /** Roof + decorative pieces that should fade when the player is inside.
+   *  The walls themselves never fade — otherwise the player wouldn't see
+   *  the interior walls around them. */
+  roofMeshes: AbstractMesh[];
+  /** World-space center and half-extents of the building footprint — used
+   *  for the interior-containment check in MainScene's per-frame fader. */
+  centerXZ: [number, number];
+  halfExtentsXZ: [number, number];
 }
 
 const hexToColor = (hex: string): Color3 => {
@@ -180,11 +188,20 @@ export function buildProceduralBuilding(
   frameTop.material = trimMat;
   frameTop.receiveShadows = true;
 
+  // Track which casters are walls so we can subtract them when collecting
+  // roof meshes (roof = everything above the wall line).
+  const wallOnlyCount = exteriorCasters.length;
+
   // ── Type-specific silhouette dispatch ─────────────────────────────────
   buildExteriorForType(scene, id, root, buildingType, spec, exteriorCasters, {
     halfW, halfD, wallH, w, d,
     wallMat, roofMat, trimMat, glassMat, winFrameMat,
   });
+
+  // Everything the per-type builder added counts as roof/decoration.
+  const roofMeshes: AbstractMesh[] = exteriorCasters.slice(wallOnlyCount);
+  // Ceiling also fades (it's part of what blocks the top-down view).
+  roofMeshes.push(ceiling);
 
   // ── Per-face windows (skip front for shop/farm/market — their facades
   // ── are dominated by display windows / barn door / open canopy)
@@ -196,7 +213,14 @@ export function buildProceduralBuilding(
   const furniture = buildFurniture(scene, id, buildingType, Math.min(innerHalfW, innerHalfD) * 2, wallH);
   furniture.root.parent = root;
 
-  return { root, exteriorCasters, collisionWalls };
+  return {
+    root,
+    exteriorCasters,
+    collisionWalls,
+    roofMeshes,
+    centerXZ: [position.x, position.z],
+    halfExtentsXZ: [halfW, halfD],
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

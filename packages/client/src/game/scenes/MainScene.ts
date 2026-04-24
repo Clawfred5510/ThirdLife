@@ -16,10 +16,8 @@ import {
   DefaultRenderingPipeline,
   CubeTexture,
   ImageProcessingConfiguration,
-  CascadedShadowGenerator,
+  ShadowGenerator,
   SceneLoader,
-  SSAO2RenderingPipeline,
-  GlowLayer,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 import { Avatar, buildAvatar, applyAppearance, disposeAvatar, animateAvatar } from '../entities/avatar';
@@ -58,23 +56,16 @@ import { selectParcel } from '../../ui/components/ParcelPanel';
 
 /** Module-level reference to the active DayNightCycle for external access. */
 let activeDayNight: DayNightCycle | null = null;
-/** Cascaded shadow generator — entity code registers meshes as casters. */
-let activeShadowGenerator: CascadedShadowGenerator | null = null;
-/** Glow layer — entity code can opt-in emissive meshes (windows, signs). */
-let activeGlowLayer: GlowLayer | null = null;
+/** Sun shadow generator — entity code registers meshes as casters. */
+let activeShadowGenerator: ShadowGenerator | null = null;
 
 export function getDayNightCycle(): DayNightCycle | null {
   return activeDayNight;
 }
 
-/** Returns the scene's cascaded shadow generator, or null before scene create. */
-export function getShadowGenerator(): CascadedShadowGenerator | null {
+/** Returns the scene's shadow generator, or null before scene create. */
+export function getShadowGenerator(): ShadowGenerator | null {
   return activeShadowGenerator;
-}
-
-/** Returns the scene's glow layer for opting in emissive meshes. */
-export function getGlowLayer(): GlowLayer | null {
-  return activeGlowLayer;
 }
 
 /** Per-player rendering data kept on the client. */
@@ -210,62 +201,35 @@ export class MainScene {
     sun.specular = new Color3(0.2, 0.19, 0.16);
     sun.shadowEnabled = true;
     sun.shadowMinZ = 1;
-    sun.shadowMaxZ = 500;
+    sun.shadowMaxZ = 200;
 
-    // Cascaded shadow generator: better quality than a single frustum when
-    // the same light has to shadow both nearby avatars AND far buildings.
-    const shadowGen = new CascadedShadowGenerator(2048, sun);
-    shadowGen.useContactHardeningShadow = true;
-    shadowGen.contactHardeningLightSizeUVRatio = 0.06;
-    shadowGen.stabilizeCascades = true;
-    shadowGen.lambda = 0.8;
-    shadowGen.cascadeBlendPercentage = 0.15;
-    shadowGen.shadowMaxZ = 500;
-    shadowGen.transparencyShadow = true;
+    // Simple shadow generator at 1024 — drops the 3-cascade contact-hardening
+    // fanciness that was tanking integrated GPUs. Player sees a clean sun
+    // shadow from the avatar + buildings, at a fraction of the frame cost.
+    const shadowGen = new ShadowGenerator(1024, sun);
+    shadowGen.usePercentageCloserFiltering = true;
+    shadowGen.filteringQuality = ShadowGenerator.QUALITY_LOW;
     shadowGen.bias = 0.002;
+    shadowGen.normalBias = 0.02;
     activeShadowGenerator = shadowGen;
 
-    // ----- Post-processing pipeline: ACES tone mapping + bloom + FXAA
-    // Per technical-artist spec: bloom threshold 0.92 (was 0.85, fired on
-    // sunlit walls); exposure 1.05 (warm pop without clipping).
+    // ----- Post-processing pipeline: ACES tone mapping + bloom + FXAA.
+    // MSAA samples dropped to 1 because FXAA already covers edge AA. Bloom
+    // kept cheap (kernel 32, scale 0.5). NO SSAO, NO GlowLayer — both were
+    // burning GPU for diminishing returns on a life-sim at-scale target.
     const pipeline = new DefaultRenderingPipeline('defaultPipeline', true, scene, [camera]);
-    pipeline.samples = 2;
+    pipeline.samples = 1;
     pipeline.fxaaEnabled = true;
     pipeline.bloomEnabled = true;
     pipeline.bloomThreshold = 0.92;
-    pipeline.bloomWeight = 0.22;
-    pipeline.bloomKernel = 48;
+    pipeline.bloomWeight = 0.18;
+    pipeline.bloomKernel = 32;
     pipeline.bloomScale = 0.5;
     pipeline.imageProcessing.toneMappingEnabled = true;
     pipeline.imageProcessing.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-    pipeline.imageProcessing.contrast = 1.05;
+    pipeline.imageProcessing.contrast = 1.02;
     pipeline.imageProcessing.exposure = 1.05;
-    pipeline.imageProcessing.vignetteEnabled = true;
-    pipeline.imageProcessing.vignetteWeight = 0.6;
-    pipeline.imageProcessing.vignetteStretch = 0.5;
-
-    // ----- SSAO2: contact shadows in crevices + under eaves. Single
-    // biggest quality multiplier per the technical-artist spec. Runs as
-    // its own pipeline alongside DefaultRenderingPipeline.
-    const ssao = new SSAO2RenderingPipeline('ssao', scene, {
-      ssaoRatio: 0.5,           // half-res for perf on integrated GPUs
-      blurRatio: 1,
-    }, [camera]);
-    ssao.radius = 0.8;
-    ssao.totalStrength = 1.1;
-    ssao.expensiveBlur = false;
-    ssao.samples = 8;
-    ssao.maxZ = 80;
-    ssao.minZAspect = 0.5;
-    ssao.bilateralSamples = 6;
-    ssao.bilateralSoften = 0.4;
-
-    // ----- GlowLayer scoped to emissive glass / signs. Without this the
-    // emissiveColor on PBR materials just brightens the surface — the
-    // glow halo only appears with a layer in the post-stack.
-    const glow = new GlowLayer('glow', scene, { mainTextureRatio: 0.5, blurKernelSize: 24 });
-    glow.intensity = 0.45;
-    activeGlowLayer = glow;
+    pipeline.imageProcessing.vignetteEnabled = false;
 
     // ---- Uniform parcel grid (loads Kenney .glb models) ----
     // Await so parcelRenders is populated before any code that depends on
@@ -327,6 +291,7 @@ export class MainScene {
       this.animateAllAvatars();
       this.trackPlayerWithCamera();
       this.driftClouds(dt);
+      this.updateRoofFade(dt);
       if (this.dayNight) {
         this.dayNight.update(dt);
       }
@@ -988,6 +953,52 @@ export class MainScene {
       c.node.position.x += c.speed * dt;
       // wrap to -1500 when they drift off +1500
       if (c.node.position.x > 1500) c.node.position.x = -1500;
+    }
+  }
+
+  /**
+   * RuneScape-style roof fade + camera pull-in: when the local player is
+   * inside a building's footprint, lerp that building's roof meshes to
+   * invisible and clamp the camera's radius so it stays inside the walls.
+   * When outside, everything restores to normal.
+   */
+  private updateRoofFade(dt: number): void {
+    if (!this.localPlayerRoot) return;
+    const px = this.localPlayerRoot.position.x;
+    const pz = this.localPlayerRoot.position.z;
+    const FADE_SPEED = 6;
+
+    let insideBuilding: { hx: number; hz: number } | null = null;
+    this.parcelRenders.forEach((data) => {
+      const b = data.building;
+      if (!b) return;
+      const [cx, cz] = b.centerXZ;
+      const [hx, hz] = b.halfExtentsXZ;
+      const inside = Math.abs(px - cx) < hx && Math.abs(pz - cz) < hz;
+      if (inside) insideBuilding = { hx, hz };
+      const target = inside ? 0 : 1;
+      for (const m of b.roofMeshes) {
+        const cur = m.visibility ?? 1;
+        if (cur === target) continue;
+        const diff = target - cur;
+        const step = Math.sign(diff) * Math.min(Math.abs(diff), FADE_SPEED * dt);
+        m.visibility = cur + step;
+      }
+    });
+
+    // Camera radius management: when inside, shrink the orbit radius so the
+    // camera stays between the interior walls instead of poking through
+    // them from outside. When outside, restore the original limits.
+    if (this.arcCamera) {
+      const inB = insideBuilding as { hx: number; hz: number } | null;
+      const interior = inB ? Math.min(inB.hx, inB.hz) - 1.5 : 0;
+      if (inB) {
+        const maxR = Math.max(2.5, interior);
+        if (this.arcCamera.radius > maxR) this.arcCamera.radius = maxR;
+        this.arcCamera.upperRadiusLimit = maxR;
+      } else {
+        this.arcCamera.upperRadiusLimit = CAMERA_FOLLOW_MAX_ZOOM;
+      }
     }
   }
 
