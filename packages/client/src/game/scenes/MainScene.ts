@@ -296,6 +296,39 @@ export class MainScene {
       }
     });
 
+    // Dev-only debug hook: lets Playwright tests read the live scene + local
+    // player state via window.__tlDebug. Tree-shaken in production via the
+    // import.meta.env.DEV gate.
+    if (import.meta.env.DEV) {
+      (window as unknown as { __tlDebug?: unknown }).__tlDebug = {
+        scene,
+        getLocalPlayer: () => {
+          const id = this.localPlayerId;
+          if (!id) return null;
+          const p = this.remotePlayers.get(id);
+          if (!p) return null;
+          return { x: p.root.position.x, y: p.root.position.y, z: p.root.position.z, id };
+        },
+        getKeys: () => ({ ...this.keys }),
+        getCamInfo: () => {
+          const c = this.arcCamera;
+          if (!c) return null;
+          return { alpha: c.alpha, beta: c.beta, radius: c.radius,
+                   targetX: c.target.x, targetZ: c.target.z };
+        },
+        getCollider: () => {
+          const c = this.localPlayerCollider;
+          if (!c) return null;
+          return {
+            x: c.position.x, y: c.position.y, z: c.position.z,
+            hasEllipsoid: !!c.ellipsoid, isEnabled: c.isEnabled(),
+            isVisible: c.isVisible,
+          };
+        },
+        predictionTick: 0,
+      };
+    }
+
     return scene;
   }
 
@@ -722,12 +755,12 @@ export class MainScene {
         }
       }
 
-      // For local player: snap ONLY on catastrophic desync — e.g. teleport
-      // via fast travel or a connection stall. Normal latency-driven drift
-      // is handled entirely by client prediction in applyLocalPrediction;
-      // snapping on small diffs caused the start/stop "sway" at faster
-      // movement speeds.
-      if (sessionId === getSessionId()) {
+      // Snap only on catastrophic desync for the local player — and only
+      // when we actually have a server session (offline mode leaves the
+      // server-target frozen at spawn, which would yank the player back
+      // after every short walk).
+      const activeSid = getSessionId();
+      if (activeSid && sessionId === activeSid) {
         const dx = player.x - remote.root.position.x;
         const dz = player.z - remote.root.position.z;
         if (dx * dx + dz * dz > 25 * 25) {
@@ -749,6 +782,10 @@ export class MainScene {
     if (!localId) return;
     const remote = this.remotePlayers.get(localId);
     if (!remote || !this.arcCamera) return;
+    if (import.meta.env.DEV) {
+      const dbg = (window as unknown as { __tlDebug?: { predictionTick: number } }).__tlDebug;
+      if (dbg) dbg.predictionTick += 1;
+    }
 
     const dt = this.engine.getDeltaTime() / 1000;
     const sprintActive = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
@@ -802,13 +839,17 @@ export class MainScene {
     // stretch to exceed 10 units. So we trust prediction until the
     // gap is clearly pathological (network stall, teleport, physics
     // anomaly).
-    const tx = remote.targetX, tz = remote.targetZ;
-    const dxRec = tx - remote.root.position.x;
-    const dzRec = tz - remote.root.position.z;
-    const distSq = dxRec * dxRec + dzRec * dzRec;
-    if (distSq > 25 * 25) {
-      remote.root.position.x = tx;
-      remote.root.position.z = tz;
+    // Reconcile only if we're connected to a server. In offline mode the
+    // server target is frozen at spawn, so the snap would yank the player
+    // back every time they walked more than 25 units.
+    if (getSessionId()) {
+      const tx = remote.targetX, tz = remote.targetZ;
+      const dxRec = tx - remote.root.position.x;
+      const dzRec = tz - remote.root.position.z;
+      if (dxRec * dxRec + dzRec * dzRec > 25 * 25) {
+        remote.root.position.x = tx;
+        remote.root.position.z = tz;
+      }
     }
   }
 

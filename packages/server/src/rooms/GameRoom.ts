@@ -18,6 +18,9 @@ import {
   ResourceType,
   RESOURCE_TYPES,
   EXPLORE_COST,
+  TICK_PRODUCTION,
+  FOOD_PER_AGENT_PER_TICK,
+  ENERGY_PER_INCOME_BUILDING_PER_TICK,
 } from '@gamestu/shared';
 import {
   getOrCreatePlayer,
@@ -510,27 +513,89 @@ export class GameRoom extends Room<GameState> {
       });
     }
 
-    // ---- Passive revenue tick ----
-    // One SELECT for the whole world, bucket by owner — avoids N queries
-    // per tick. The legacy `properties` table is unused; income flows
-    // entirely from parcels + building_type.
+    // ---- Tick economy ----
+    // One pass over all owned-built parcels; compute per-owner production,
+    // income capacity, and energy demand. Then settle each connected player:
+    //   1. Add tick production (farm/mine/shop/factory) to resources
+    //   2. Deduct 1 food per connected agent (consumption)
+    //   3. For each income-paying building the owner has, try to burn 1
+    //      energy to pay that income. If there isn't enough energy, the
+    //      extra buildings pay nothing this tick (partial payout).
+    // All applied via DB transactional helpers for crash-safety.
     this.lastRevenueTick += deltaTime;
     if (this.lastRevenueTick >= INCOME_TICK_MS) {
       this.lastRevenueTick = 0;
-      const incomeByOwner = new Map<string, number>();
+
+      interface OwnerBucket {
+        produce: { food: number; materials: number; energy: number; luxury: number };
+        incomeBuildings: number;    // count of buildings with income > 0
+        pendingIncomePer: number[]; // income per building (same length as incomeBuildings)
+      }
+      const byOwner = new Map<string, OwnerBucket>();
+      const getBucket = (id: string) => {
+        let b = byOwner.get(id);
+        if (!b) {
+          b = { produce: { food: 0, materials: 0, energy: 0, luxury: 0 }, incomeBuildings: 0, pendingIncomePer: [] };
+          byOwner.set(id, b);
+        }
+        return b;
+      };
+
       for (const row of getOwnedBuiltParcels()) {
         const spec = BUILDINGS[row.building_type as BuildingType];
-        if (!spec?.income) continue;
-        incomeByOwner.set(row.owner_id, (incomeByOwner.get(row.owner_id) ?? 0) + spec.income);
+        if (!spec) continue;
+        const tick = TICK_PRODUCTION[row.building_type as BuildingType];
+        const b = getBucket(row.owner_id);
+        if (tick) b.produce[tick.resource] += tick.rate;
+        if (spec.income > 0) {
+          b.incomeBuildings += 1;
+          b.pendingIncomePer.push(spec.income);
+        }
       }
+
       this.players.forEach((player, sessionId) => {
-        const revenue = incomeByOwner.get(sessionId) ?? 0;
-        if (revenue <= 0) return;
-        const newCredits = player.credits + revenue;
-        updatePlayerCredits(sessionId, newCredits);
-        player.credits = newCredits;
+        const bucket = byOwner.get(sessionId);
+        const resources = getPlayerResources(sessionId);
+
+        // 1. Apply tick production
+        if (bucket) {
+          resources.food += bucket.produce.food;
+          resources.materials += bucket.produce.materials;
+          resources.energy += bucket.produce.energy;
+          resources.luxury += bucket.produce.luxury;
+        }
+
+        // 2. Agent food consumption (floor at 0 — going "inactive" is a
+        // soft state; we still deduct so the penalty is economic, not
+        // mechanical. No negatives.)
+        resources.food = Math.max(0, resources.food - FOOD_PER_AGENT_PER_TICK);
+
+        // 3. Burn energy to pay income. Each income building needs
+        // ENERGY_PER_INCOME_BUILDING_PER_TICK energy; buildings beyond the
+        // available energy pay nothing this tick.
+        let paidIncome = 0;
+        if (bucket && bucket.incomeBuildings > 0) {
+          const maxPayouts = Math.floor(resources.energy / ENERGY_PER_INCOME_BUILDING_PER_TICK);
+          const payouts = Math.min(maxPayouts, bucket.incomeBuildings);
+          resources.energy -= payouts * ENERGY_PER_INCOME_BUILDING_PER_TICK;
+          // Pay the `payouts` highest-income buildings for fairness.
+          const sorted = [...bucket.pendingIncomePer].sort((a, b) => b - a);
+          for (let i = 0; i < payouts; i++) paidIncome += sorted[i] ?? 0;
+        }
+
+        updatePlayerResources(sessionId, resources);
+        if (paidIncome > 0) {
+          const newCredits = player.credits + paidIncome;
+          updatePlayerCredits(sessionId, newCredits);
+          player.credits = newCredits;
+        }
+
+        // Push state to the connected client
         const client = this.clients.find((c) => c.sessionId === sessionId);
-        if (client) client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+        if (client) {
+          client.send(MessageType.RESOURCE_UPDATE, resources);
+          if (paidIncome > 0) client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+        }
       });
     }
 

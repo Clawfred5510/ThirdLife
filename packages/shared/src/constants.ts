@@ -50,13 +50,40 @@ export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
 export const BUILDING_LIST: BuildingSpec[] = Object.values(BUILDINGS);
 export const RESOURCE_TYPES: ResourceType[] = ['food', 'materials', 'energy', 'luxury'];
 
-// Base market prices (credits per unit of resource)
+// Base market prices (credits per unit of resource) — canonical per
+// thirdlifeworld.xyz /docs. Keep in sync with the live spec.
 export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
   food: 500,
-  materials: 800,
-  energy: 1000,
-  luxury: 2000,
+  materials: 1000,
+  energy: 1500,
+  luxury: 2500,
 };
+
+// ── Tick-based economy (per thirdlifeworld.xyz /docs) ────────────────────
+// In addition to the manual WORK action (which awards `amount` per call),
+// resource-producing buildings now auto-produce `tickRate` per income tick.
+// Income-paying buildings require one energy per tick or they pay nothing.
+// Every active agent consumes one food per tick; below zero, they stop
+// producing (but stay in the game — inactive is a soft state).
+
+export const TICK_PRODUCTION: Record<BuildingType, { resource: ResourceType; rate: number } | null> = {
+  apartment: null,
+  house: null,
+  shop: { resource: 'luxury', rate: 2 },
+  farm: { resource: 'food', rate: 5 },
+  market: null,
+  office: null,
+  mine: { resource: 'materials', rate: 3 },
+  hall: null,
+  factory: { resource: 'energy', rate: 4 },
+  bank: null,
+};
+
+/** Food each active agent eats per tick. */
+export const FOOD_PER_AGENT_PER_TICK = 1;
+
+/** Energy each income-paying building burns per tick to actually pay out. */
+export const ENERGY_PER_INCOME_BUILDING_PER_TICK = 1;
 
 // Agent registration
 export type AgentPersonality = 'trader' | 'builder' | 'ambitious' | 'social' | 'accumulator' | 'worker';
