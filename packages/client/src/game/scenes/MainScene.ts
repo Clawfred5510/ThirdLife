@@ -691,12 +691,19 @@ export class MainScene {
       // origin) on first frame.
       const cam = this.arcCamera ?? new ArcRotateCamera(
         'playerCamera',
-        -Math.PI / 2,   // alpha: camera south of target → player yaw 0 → faces +Z
-        Math.PI / 2.6,  // beta: slight upward tilt so the rocket's upper body is in frame
-        14,             // radius: distance from player
+        -Math.PI / 2,
+        Math.PI / 2.6,
+        14,
         new Vector3(player.x, player.y + 1.2, player.z),
         this.sceneRef,
       );
+      // The initial ArcRotateCamera (line ~165) is reused so its mouse-drag
+      // attachment survives. The constructor params above never fire on the
+      // reuse path — explicitly re-aim the camera here so spawn frames the
+      // rocket regardless of where the init camera left it.
+      cam.alpha = -Math.PI / 2;        // camera south of target → player yaw 0 → faces +Z toward rocket
+      cam.beta = Math.PI / 2.6;        // slight upward tilt so rocket's upper body is in frame
+      cam.radius = 14;
       cam.attachControl(this.canvas, true);
       cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
       cam.lowerRadiusLimit = CAMERA_FOLLOW_MIN_ZOOM;
