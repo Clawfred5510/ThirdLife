@@ -299,18 +299,39 @@ export class MainScene {
 
     this.setupKeyboardInput();
 
-    // ---- Babylon Inspector toggle (button + backtick hotkey) ----
-    // Hotkey was originally Shift+Ctrl+I but every browser reserves that
-    // for DevTools and intercepts it before our listener fires. Backtick
-    // works as a power-user shortcut, but the button below is the
-    // primary discoverable way in.
+    // ---- Babylon Inspector toggle (CDN UMD load) ────────────────────────
+    // The npm @babylonjs/inspector package internally dynamic-imports peer
+    // packages (`@babylonjs/materials`, etc.) with bare module specifiers.
+    // Browsers can't resolve bare specifiers without an import map, and
+    // Vite doesn't bundle them because the imports are encoded as runtime
+    // strings. The Babylon docs' recommended fix for this exact issue is
+    // to load the Inspector as a self-contained UMD bundle from their CDN
+    // — every dep is pre-resolved into one script. We attach the bundle
+    // once on first use, then call scene.debugLayer.show() like normal.
+    const INSPECTOR_CDN = 'https://cdn.babylonjs.com/v7.54.3/inspector/babylon.inspector.bundle.js';
+    let inspectorScriptPromise: Promise<void> | null = null;
+    const ensureInspectorLoaded = (): Promise<void> => {
+      if (inspectorScriptPromise) return inspectorScriptPromise;
+      inspectorScriptPromise = new Promise<void>((resolve, reject) => {
+        const w = window as unknown as { BABYLON?: { Inspector?: unknown } };
+        if (w.BABYLON?.Inspector) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = INSPECTOR_CDN;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`Failed to load ${INSPECTOR_CDN}`));
+        document.head.appendChild(s);
+      });
+      return inspectorScriptPromise;
+    };
+
     let inspectorOpen = false;
     const toggleInspector = async () => {
       try {
         if (!inspectorOpen) {
           // eslint-disable-next-line no-console
-          console.log('[inspector] loading…');
-          await import('@babylonjs/inspector');
+          console.log('[inspector] loading from CDN…');
+          await ensureInspectorLoaded();
           scene.debugLayer.show({ embedMode: true, overlay: true });
           inspectorOpen = true;
           // eslint-disable-next-line no-console
