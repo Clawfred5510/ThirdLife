@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { getAllParcels, getAllPlayers, wipeParcels, deletePlayer, seedParcels } from '../db';
+import { getAllParcels, getAllPlayers, wipeParcels, deletePlayer, seedParcels, wipePlayerParcels } from '../db';
 
 const router = Router();
 
@@ -187,6 +187,20 @@ router.post('/api/wipe', (_req, res) => {
   wipeParcels();
   seedParcels();
   res.json({ ok: true });
+});
+
+// Scoped wipe: release only the parcels owned by `id`. Use this from QA
+// tests to clean up after a test player without nuking real users' data.
+// The full /api/wipe was used during QA earlier and accidentally deleted
+// real claims (2026-04-27 incident). Always prefer the scoped version.
+router.post('/api/wipe-player/:id', (req, res) => {
+  const id = req.params.id;
+  if (!id || id.length < 4) {
+    res.status(400).json({ ok: false, error: 'invalid_id' });
+    return;
+  }
+  const released = wipePlayerParcels(id);
+  res.json({ ok: true, released });
 });
 
 router.post('/api/ban/:id', (req, res) => {

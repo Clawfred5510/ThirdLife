@@ -55,6 +55,7 @@ interface DBBackend {
   getAllParcels(): ParcelRow[];
   getParcelOwner(parcelId: number): string | null;
   wipeParcels(): void;
+  wipePlayerParcels(id: string): number;
   getAllPlayers(): PlayerRow[];
   deletePlayer(id: string): boolean;
   savePlayerAppearance(id: string, appearanceJson: string): void;
@@ -476,6 +477,21 @@ class SQLiteDatabase implements DBBackend {
     `).run();
   }
 
+  wipePlayerParcels(id: string): number {
+    const result = this.db.prepare(`
+      UPDATE parcels SET
+        owner_id = NULL,
+        business_name = NULL,
+        business_type = NULL,
+        building_type = NULL,
+        color = '#4a90d9',
+        height = 4,
+        claimed_at = NULL
+      WHERE owner_id = ?
+    `).run(id);
+    return result.changes as number;
+  }
+
   getAllPlayers(): PlayerRow[] {
     return this.db.prepare('SELECT * FROM players').all() as PlayerRow[];
   }
@@ -775,6 +791,23 @@ class MemoryDB implements DBBackend {
     }
   }
 
+  wipePlayerParcels(id: string): number {
+    let n = 0;
+    for (const p of this.parcels.values()) {
+      if (p.owner_id === id) {
+        p.owner_id = null;
+        p.business_name = null;
+        p.business_type = null;
+        (p as ParcelRow & { building_type?: string | null }).building_type = null;
+        p.color = '#4a90d9';
+        p.height = 4;
+        p.claimed_at = null;
+        n++;
+      }
+    }
+    return n;
+  }
+
   getAllPlayers(): PlayerRow[] {
     return Array.from(this.players.values());
   }
@@ -935,6 +968,10 @@ export function getParcelOwner(parcelId: number): string | null {
 
 export function wipeParcels(): void {
   backend.wipeParcels();
+}
+
+export function wipePlayerParcels(id: string): number {
+  return backend.wipePlayerParcels(id);
 }
 
 export function getAllPlayers(): PlayerRow[] {
