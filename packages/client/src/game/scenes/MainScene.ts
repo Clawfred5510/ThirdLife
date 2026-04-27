@@ -697,13 +697,6 @@ export class MainScene {
         new Vector3(player.x, player.y + 1.2, player.z),
         this.sceneRef,
       );
-      // The initial ArcRotateCamera (line ~165) is reused so its mouse-drag
-      // attachment survives. The constructor params above never fire on the
-      // reuse path — explicitly re-aim the camera here so spawn frames the
-      // rocket regardless of where the init camera left it.
-      cam.alpha = -Math.PI / 2;        // camera south of target → player yaw 0 → faces +Z toward rocket
-      cam.beta = Math.PI / 2.6;        // slight upward tilt so rocket's upper body is in frame
-      cam.radius = 14;
       cam.attachControl(this.canvas, true);
       cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
       cam.lowerRadiusLimit = CAMERA_FOLLOW_MIN_ZOOM;
@@ -724,8 +717,16 @@ export class MainScene {
       cam.useBouncingBehavior = false;
       cam.useAutoRotationBehavior = false;
 
-      // Anchor camera slightly above the player's shoulders, not their feet
+      // Order matters: assigning `cam.target` triggers Babylon's
+      // ArcRotateCamera to RECOMPUTE alpha/beta/radius from the camera's
+      // current world position relative to the new target. So we must
+      // (1) re-target onto the player first, then (2) overwrite
+      // alpha/beta/radius. Doing it in the other order silently clobbers
+      // our spawn-framing values.
       cam.target = new Vector3(player.x, 1.3, player.z);
+      cam.alpha = -Math.PI / 2;        // camera south of target → player yaw 0 → faces +Z toward rocket
+      cam.beta = Math.PI / 2.6;        // slight upward tilt so rocket's upper body is in frame
+      cam.radius = 14;
 
       this.arcCamera = cam;
       this.localPlayerRoot = avatar.root;
