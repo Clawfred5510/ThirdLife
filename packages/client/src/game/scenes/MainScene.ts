@@ -306,13 +306,25 @@ export class MainScene {
     // primary discoverable way in.
     let inspectorOpen = false;
     const toggleInspector = async () => {
-      if (!inspectorOpen) {
-        await import('@babylonjs/inspector');
-        scene.debugLayer.show({ embedMode: true, overlay: true });
-        inspectorOpen = true;
-      } else {
-        scene.debugLayer.hide();
-        inspectorOpen = false;
+      try {
+        if (!inspectorOpen) {
+          // eslint-disable-next-line no-console
+          console.log('[inspector] loading…');
+          await import('@babylonjs/inspector');
+          scene.debugLayer.show({ embedMode: true, overlay: true });
+          inspectorOpen = true;
+          // eslint-disable-next-line no-console
+          console.log('[inspector] open');
+        } else {
+          scene.debugLayer.hide();
+          inspectorOpen = false;
+          // eslint-disable-next-line no-console
+          console.log('[inspector] closed');
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[inspector] failed to open:', err);
+        alert('Inspector failed to open. Open DevTools (F12) → Console tab for the full error.');
       }
     };
     // Expose globally so any UI element can call it (and so the user can
@@ -328,25 +340,25 @@ export class MainScene {
       await toggleInspector();
     });
 
-    // Floating button — bottom-right, 32×32, low-key but always visible.
+    // Floating button — top-right under the minimap, labeled, hard to miss.
     const btn = document.createElement('button');
-    btn.textContent = '🛠';
+    btn.id = 'tl-inspector-btn';
+    btn.textContent = '🛠 Inspector';
     btn.title = 'Open Babylon Inspector (or press backtick)';
     Object.assign(btn.style, {
       position: 'fixed',
-      bottom: '16px',
-      right: '180px', // sits to the left of the minimap
-      width: '32px',
-      height: '32px',
-      border: '1px solid rgba(255,255,255,0.18)',
+      top: '180px',     // sits below the 150px minimap (top:16 + 150)
+      right: '16px',
+      padding: '6px 10px',
+      border: '1px solid rgba(255,255,255,0.25)',
       borderRadius: '6px',
-      background: 'rgba(12,14,24,0.85)',
-      color: '#e4e4ef',
-      fontSize: '16px',
+      background: 'rgba(124,58,237,0.85)',
+      color: '#fff',
+      fontSize: '13px',
+      fontFamily: 'monospace',
       cursor: 'pointer',
-      zIndex: '10',
-      padding: '0',
-      lineHeight: '30px',
+      zIndex: '9999',
+      pointerEvents: 'auto',
     } as Partial<CSSStyleDeclaration>);
     btn.addEventListener('click', () => { toggleInspector(); });
     document.body.appendChild(btn);
