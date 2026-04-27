@@ -18,8 +18,22 @@ function resolveServerUrl(): string {
 
 const SERVER_URL = resolveServerUrl();
 
+const PLAYER_ID_KEY = 'tl_player_id';
+
+function getOrCreatePlayerId(): string {
+  if (typeof localStorage === 'undefined') return crypto.randomUUID();
+  let id = localStorage.getItem(PLAYER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    try { localStorage.setItem(PLAYER_ID_KEY, id); } catch { /* private mode, etc. — fall through */ }
+  }
+  return id;
+}
+
 let client: Client | null = null;
 let room: Room | null = null;
+// "myId" — the persistent player identity (UUID in localStorage), used as
+// stable identity across reconnects. Server returns it as PLAYER_STATE.self.
 let mySessionId: string | null = null;
 
 export interface PlayerSnapshot {
@@ -147,9 +161,10 @@ function applyPlayer(snap: PlayerSnapshot, emitEventsForSelf: boolean) {
 }
 
 export async function connect(playerName: string): Promise<Room> {
+  const playerId = getOrCreatePlayerId();
   client = new Client(SERVER_URL);
-  room = await client.joinOrCreate('game', { name: playerName });
-  mySessionId = room.sessionId;
+  room = await client.joinOrCreate('game', { name: playerName, playerId });
+  mySessionId = playerId;
   knownPlayers.clear();
 
   // Bulk player snapshot (sent on join, and periodic broadcasts)

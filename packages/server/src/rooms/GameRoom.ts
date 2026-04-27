@@ -51,8 +51,21 @@ export class GameRoom extends Room<GameState> {
   /** Server-side player map (NOT in Colyseus schema — see state/GameState.ts). */
   private players = new Map<string, PlayerData>();
 
+  /**
+   * Map of Colyseus sessionId → persistent player ID. Persistent ID is sent
+   * by the client via `joinOrCreate` options (stored in localStorage) and is
+   * what we use for all DB-bound ownership lookups (parcels, credits,
+   * resources, appearance). This makes claims survive reconnects — without
+   * it, a fresh sessionId on every connect locks parcels under dead IDs.
+   */
+  private pidBySession = new Map<string, string>();
+
   /** Latest input per player, consumed each server tick. */
   private pendingInputs = new Map<string, PlayerInput>();
+
+  private pid(sessionId: string): string {
+    return this.pidBySession.get(sessionId) ?? sessionId;
+  }
 
   /** Accumulated time (ms) since last revenue tick. */
   private lastRevenueTick = 0;
@@ -107,7 +120,7 @@ export class GameRoom extends Room<GameState> {
       const senderName = player?.name ?? 'Unknown';
 
       this.broadcast(MessageType.CHAT, {
-        senderId: client.sessionId,
+        senderId: this.pid(client.sessionId),
         senderName,
         text,
       });
@@ -119,7 +132,7 @@ export class GameRoom extends Room<GameState> {
       if (typeof data.color !== 'string') return;
       player.color = data.color;
       player.appearance.shirt_color = data.color;
-      savePlayerAppearance(client.sessionId, JSON.stringify(player.appearance));
+      savePlayerAppearance(this.pid(client.sessionId), JSON.stringify(player.appearance));
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
@@ -149,7 +162,7 @@ export class GameRoom extends Room<GameState> {
 
       player.appearance = next;
       player.color = next.shirt_color; // legacy `color` tracks shirt
-      savePlayerAppearance(client.sessionId, JSON.stringify(next));
+      savePlayerAppearance(this.pid(client.sessionId), JSON.stringify(next));
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 
@@ -172,8 +185,9 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
+      const ownerId = this.pid(client.sessionId);
       const result = claimAndBuild(
-        client.sessionId, data.parcelId, data.building_type, spec.cost, spec.label,
+        ownerId, data.parcelId, data.building_type, spec.cost, spec.label,
       );
       if (!result.ok) {
         client.send(MessageType.CLAIM_PARCEL, {
@@ -182,16 +196,16 @@ export class GameRoom extends Room<GameState> {
         });
         return;
       }
-      player.credits = getPlayerCreditsFromDb(client.sessionId);
+      player.credits = getPlayerCreditsFromDb(ownerId);
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       this.broadcast(MessageType.PARCEL_UPDATE, {
         id: data.parcelId,
-        owner_id: client.sessionId,
+        owner_id: ownerId,
         owner_name: player.name,
         business_name: spec.label,
         business_type: data.building_type,
       });
-      addEvent('claim_and_build', client.sessionId, {
+      addEvent('claim_and_build', ownerId, {
         parcel: data.parcelId, building: data.building_type, cost: spec.cost + 150000,
       });
       console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + 150000} $AMETA)`);
@@ -202,11 +216,12 @@ export class GameRoom extends Room<GameState> {
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
 
-      const success = updateBusinessInDb(data.parcelId, client.sessionId, data);
+      const ownerId = this.pid(client.sessionId);
+      const success = updateBusinessInDb(data.parcelId, ownerId, data);
       if (success) {
         this.broadcast(MessageType.PARCEL_UPDATE, {
           id: data.parcelId,
-          owner_id: client.sessionId,
+          owner_id: ownerId,
           business_name: data.name,
           business_type: data.type,
           color: data.color,
@@ -236,23 +251,24 @@ export class GameRoom extends Room<GameState> {
       if (!spec) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Unknown building type' }); return; }
       if (player.credits < spec.cost) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Insufficient credits', cost: spec.cost }); return; }
 
-      const parcels = getPlayerParcels(client.sessionId);
+      const ownerId = this.pid(client.sessionId);
+      const parcels = getPlayerParcels(ownerId);
       const parcel = parcels.find(p => p.id === data.parcelId);
       if (!parcel) { client.send(MessageType.BUILD_STRUCTURE, { error: 'You do not own this parcel' }); return; }
 
       player.credits -= spec.cost;
-      updatePlayerCredits(client.sessionId, player.credits);
+      updatePlayerCredits(ownerId, player.credits);
       setBuildingType(data.parcelId, data.buildingType);
-      updateBusinessInDb(data.parcelId, client.sessionId, { type: data.buildingType, name: spec.label });
+      updateBusinessInDb(data.parcelId, ownerId, { type: data.buildingType, name: spec.label });
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       this.broadcast(MessageType.PARCEL_UPDATE, {
         id: data.parcelId,
-        owner_id: client.sessionId,
+        owner_id: ownerId,
         business_name: spec.label,
         business_type: data.buildingType,
       });
-      addEvent('build', client.sessionId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost });
+      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost });
       console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
     });
 
@@ -261,8 +277,9 @@ export class GameRoom extends Room<GameState> {
       const player = this.players.get(client.sessionId);
       if (!player) return;
 
-      const parcels = getPlayerParcels(client.sessionId);
-      const resources = getPlayerResources(client.sessionId);
+      const ownerId = this.pid(client.sessionId);
+      const parcels = getPlayerParcels(ownerId);
+      const resources = getPlayerResources(ownerId);
       let creditsEarned = 0;
       const produced: Record<string, number> = {};
 
@@ -284,13 +301,13 @@ export class GameRoom extends Room<GameState> {
 
       if (creditsEarned > 0) {
         player.credits += creditsEarned;
-        updatePlayerCredits(client.sessionId, player.credits);
+        updatePlayerCredits(ownerId, player.credits);
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       }
-      updatePlayerResources(client.sessionId, resources);
+      updatePlayerResources(ownerId, resources);
       client.send(MessageType.WORK_RESULT, { produced, creditsEarned, resources });
       client.send(MessageType.RESOURCE_UPDATE, resources);
-      addEvent('work', client.sessionId, { produced, creditsEarned });
+      addEvent('work', ownerId, { produced, creditsEarned });
     });
 
     // ---- TRADE: sell resources at market prices ----
@@ -300,7 +317,8 @@ export class GameRoom extends Room<GameState> {
       if (typeof data.resource !== 'string' || typeof data.quantity !== 'number' || data.quantity <= 0) return;
       if (!RESOURCE_TYPES.includes(data.resource as ResourceType)) { client.send(MessageType.TRADE_RESULT, { error: 'Invalid resource' }); return; }
 
-      const resources = getPlayerResources(client.sessionId);
+      const ownerId = this.pid(client.sessionId);
+      const resources = getPlayerResources(ownerId);
       const key = data.resource as keyof typeof resources;
       if (resources[key] < data.quantity) { client.send(MessageType.TRADE_RESULT, { error: 'Insufficient resource' }); return; }
 
@@ -308,13 +326,13 @@ export class GameRoom extends Room<GameState> {
       const earnings = Math.floor(price * data.quantity);
       resources[key] -= data.quantity;
       player.credits += earnings;
-      updatePlayerCredits(client.sessionId, player.credits);
-      updatePlayerResources(client.sessionId, resources);
+      updatePlayerCredits(ownerId, player.credits);
+      updatePlayerResources(ownerId, resources);
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       client.send(MessageType.RESOURCE_UPDATE, resources);
       client.send(MessageType.TRADE_RESULT, { sold: data.resource, quantity: data.quantity, earned: earnings });
-      addEvent('trade', client.sessionId, { resource: data.resource, quantity: data.quantity, earned: earnings });
+      addEvent('trade', ownerId, { resource: data.resource, quantity: data.quantity, earned: earnings });
     });
 
     // ---- MARKET_PRICES: return current prices ----
@@ -333,15 +351,16 @@ export class GameRoom extends Room<GameState> {
       if (unclaimed.length === 0) { client.send(MessageType.EXPLORE, { error: 'No unclaimed parcels' }); return; }
 
       const target = unclaimed[Math.floor(Math.random() * unclaimed.length)];
+      const ownerId = this.pid(client.sessionId);
       player.credits -= EXPLORE_COST;
-      updatePlayerCredits(client.sessionId, player.credits);
+      updatePlayerCredits(ownerId, player.credits);
       player.x = target.grid_x * 48 - 1200 + 20; // approx world coords
       player.z = target.grid_y * 48 - 1200 + 20;
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       client.send(MessageType.EXPLORE, { parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y } });
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
-      addEvent('explore', client.sessionId, { parcel: target.id });
+      addEvent('explore', ownerId, { parcel: target.id });
     });
 
     // ---- EVENTS: return recent events ----
@@ -398,9 +417,18 @@ export class GameRoom extends Room<GameState> {
     console.log(`GameRoom created: ${this.roomId}`);
   }
 
-  onJoin(client: Client, options: { name?: string }) {
-    const displayName = options.name || `Player_${client.sessionId.slice(0, 4)}`;
-    const row = getOrCreatePlayer(client.sessionId, displayName);
+  onJoin(client: Client, options: { name?: string; playerId?: string }) {
+    // Persistent player identity. The client generates a UUID once and stores
+    // it in localStorage; reconnects pass it back so parcel ownership
+    // survives. Validate format defensively (guard against bad clients).
+    const PID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+    const persistentId = (typeof options.playerId === 'string' && PID_RE.test(options.playerId))
+      ? options.playerId
+      : client.sessionId;
+    this.pidBySession.set(client.sessionId, persistentId);
+
+    const displayName = options.name || `Player_${persistentId.slice(0, 4)}`;
+    const row = getOrCreatePlayer(persistentId, displayName);
 
     let appearance: Appearance = { ...DEFAULT_APPEARANCE };
     if (row.appearance) {
@@ -413,7 +441,7 @@ export class GameRoom extends Room<GameState> {
     }
 
     const player: PlayerData = {
-      id: client.sessionId,
+      id: persistentId,
       name: row.name,
       x: row.x,
       y: row.y,
@@ -427,7 +455,7 @@ export class GameRoom extends Room<GameState> {
 
     // Tell the joining client about itself + all current players
     client.send(MessageType.PLAYER_STATE, {
-      self: client.sessionId,
+      self: persistentId,
       players: Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
     });
 
@@ -436,7 +464,7 @@ export class GameRoom extends Room<GameState> {
 
     // Initial credits + resources UI sync
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-    client.send(MessageType.RESOURCE_UPDATE, getPlayerResources(client.sessionId));
+    client.send(MessageType.RESOURCE_UPDATE, getPlayerResources(persistentId));
 
     // Parcel snapshot
     const snapshot = getAllParcels().map((p) => ({
@@ -455,22 +483,24 @@ export class GameRoom extends Room<GameState> {
       startTutorialIfNeeded(client.sessionId, client);
     }
 
-    console.log(`${player.name} joined (${client.sessionId}) — credits: ${player.credits}`);
+    console.log(`${player.name} joined (sid=${client.sessionId}, pid=${persistentId}) — credits: ${player.credits}`);
   }
 
   onLeave(client: Client) {
     const player = this.players.get(client.sessionId);
+    const persistentId = this.pid(client.sessionId);
     if (player) {
-      savePlayerPosition(client.sessionId, player.x, player.y, player.z);
-      console.log(`${player.name} left (${client.sessionId}) — position saved`);
+      savePlayerPosition(persistentId, player.x, player.y, player.z);
+      console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}) — position saved`);
     }
     this.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
+    this.pidBySession.delete(client.sessionId);
     cancelJob(client.sessionId);
     if (features.TUTORIAL) {
       cancelTutorial(client.sessionId);
     }
-    this.broadcast(MessageType.PLAYER_LEAVE, { id: client.sessionId });
+    this.broadcast(MessageType.PLAYER_LEAVE, { id: persistentId });
   }
 
   private snapshotPlayer(p: PlayerData) {
@@ -578,8 +608,12 @@ export class GameRoom extends Room<GameState> {
       }
 
       this.players.forEach((player, sessionId) => {
-        const bucket = byOwner.get(sessionId);
-        const resources = getPlayerResources(sessionId);
+        // byOwner is keyed by persistent owner_id from the parcels table;
+        // DB resource/credits ops use the same persistent ID. The
+        // sessionId here is only used to find the network client to push to.
+        const ownerId = player.id;
+        const bucket = byOwner.get(ownerId);
+        const resources = getPlayerResources(ownerId);
 
         // 1. Apply tick production
         if (bucket) {
@@ -607,10 +641,10 @@ export class GameRoom extends Room<GameState> {
           for (let i = 0; i < payouts; i++) paidIncome += sorted[i] ?? 0;
         }
 
-        updatePlayerResources(sessionId, resources);
+        updatePlayerResources(ownerId, resources);
         if (paidIncome > 0) {
           const newCredits = player.credits + paidIncome;
-          updatePlayerCredits(sessionId, newCredits);
+          updatePlayerCredits(ownerId, newCredits);
           player.credits = newCredits;
         }
 
