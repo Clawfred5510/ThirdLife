@@ -134,8 +134,11 @@ export const Minimap: React.FC = () => {
     // ── Layer 6: Local player ─────────────────────────────────────────────
     if (localPlayer) {
       const [mx, my] = worldToMinimap(localPlayer.x, localPlayer.z);
-      // rotation=0 faces +Z (canvas-down); add PI to get on-canvas pointing direction
-      const canvasAngle = localPlayer.rotation + Math.PI;
+      // rotation=0 means forward = +Z in world. The z-flip in worldToMinimap
+      // already inverts the y axis, so apex = my - cos(rotation) maps that
+      // forward vector onto canvas-up correctly. (Originally had a +PI
+      // here which double-inverted and pointed the arrow away from heading.)
+      const canvasAngle = localPlayer.rotation;
       const halfSize = 5;
       const apexX = mx + halfSize * Math.sin(canvasAngle);
       const apexY = my - halfSize * Math.cos(canvasAngle);

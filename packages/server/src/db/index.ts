@@ -171,6 +171,11 @@ class SQLiteDatabase implements DBBackend {
       this.db.exec(`ALTER TABLE parcels ADD COLUMN building_type TEXT`);
     } catch (_) { /* exists */ }
 
+    // Pre-launch one-shot: any player still parked at the legacy spawn
+    // (400, 0, -200) gets teleported to the new rocket-facing spawn.
+    // Players who have actually moved keep their position.
+    this.db.exec(`UPDATE players SET x = 0, y = 0, z = -80 WHERE x = 400 AND y = 0 AND z = -200`);
+
     // Events log
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS events (
@@ -217,7 +222,17 @@ class SQLiteDatabase implements DBBackend {
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }
-  private get stmtInsertPlayer() { return this.db.prepare(`INSERT INTO players (id, name, last_login) VALUES (?, ?, datetime('now'))`); }
+  // Explicit position on insert: SQLite's CREATE TABLE … DEFAULT runs once
+  // at table-creation time. The live DB was created with the old defaults
+  // (400, 0, -200). Updating the CREATE TABLE clause has no effect on an
+  // existing table, so we set position columns explicitly here to guarantee
+  // new players spawn at the rocket-facing position regardless of when the
+  // schema was first laid down.
+  private get stmtInsertPlayer() {
+    return this.db.prepare(
+      `INSERT INTO players (id, name, x, y, z, last_login) VALUES (?, ?, 0, 0, -80, datetime('now'))`,
+    );
+  }
   private get stmtUpdateLogin() { return this.db.prepare(`UPDATE players SET last_login = datetime('now') WHERE id = ?`); }
   private get stmtSavePosition() { return this.db.prepare('UPDATE players SET x = ?, y = ?, z = ? WHERE id = ?'); }
   private get stmtUpdateCredits() { return this.db.prepare('UPDATE players SET credits = ? WHERE id = ?'); }
