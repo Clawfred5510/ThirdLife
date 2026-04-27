@@ -90,6 +90,12 @@ interface DBBackend {
   ): { ok: boolean; reason?: string; credits?: number };
   /** All owned parcels with a building set — single scan for the income tick. */
   getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }>;
+  // Wallet auth
+  createAuthNonce(address: string, nonce: string, expiresAt: number): void;
+  consumeAuthNonce(address: string, nonce: string): boolean;
+  createAuthSession(token: string, playerId: string, expiresAt: number): void;
+  getAuthSessionPlayerId(token: string): string | null;
+  revokeAuthSession(token: string): void;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
@@ -189,6 +195,24 @@ class SQLiteDatabase implements DBBackend {
         api_key TEXT NOT NULL UNIQUE,
         created_at TEXT DEFAULT (datetime('now'))
       );
+    `);
+
+    // Wallet auth — short-lived nonces (one per challenge) + long-lived
+    // session tokens. Address is always stored lowercased.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS auth_nonces (
+        address TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (address, nonce)
+      );
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        token TEXT PRIMARY KEY,
+        player_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_auth_sessions_player ON auth_sessions(player_id);
     `);
   }
 
@@ -476,6 +500,39 @@ class SQLiteDatabase implements DBBackend {
     const row = this.db.prepare('SELECT id, name FROM agents WHERE api_key = ?').get(apiKey) as { id: string; name: string } | undefined;
     return row ?? null;
   }
+
+  createAuthNonce(address: string, nonce: string, expiresAt: number): void {
+    // Best-effort cleanup of expired nonces — keeps the table from growing
+    // unboundedly under sustained challenge spam.
+    this.db.prepare('DELETE FROM auth_nonces WHERE expires_at < ?').run(Date.now());
+    this.db.prepare('INSERT OR REPLACE INTO auth_nonces (address, nonce, expires_at) VALUES (?, ?, ?)').run(address, nonce, expiresAt);
+  }
+
+  consumeAuthNonce(address: string, nonce: string): boolean {
+    const row = this.db.prepare('SELECT expires_at FROM auth_nonces WHERE address = ? AND nonce = ?').get(address, nonce) as { expires_at: number } | undefined;
+    if (!row) return false;
+    this.db.prepare('DELETE FROM auth_nonces WHERE address = ? AND nonce = ?').run(address, nonce);
+    return row.expires_at >= Date.now();
+  }
+
+  createAuthSession(token: string, playerId: string, expiresAt: number): void {
+    this.db.prepare('DELETE FROM auth_sessions WHERE expires_at < ?').run(Date.now());
+    this.db.prepare('INSERT INTO auth_sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(token, playerId, expiresAt, Date.now());
+  }
+
+  getAuthSessionPlayerId(token: string): string | null {
+    const row = this.db.prepare('SELECT player_id, expires_at FROM auth_sessions WHERE token = ?').get(token) as { player_id: string; expires_at: number } | undefined;
+    if (!row) return null;
+    if (row.expires_at < Date.now()) {
+      this.db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
+      return null;
+    }
+    return row.player_id;
+  }
+
+  revokeAuthSession(token: string): void {
+    this.db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
+  }
 }
 
 // ── In-Memory Map-based fallback ───────────────────────────────────────────
@@ -738,6 +795,35 @@ class MemoryDB implements DBBackend {
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
     return this.agents.get(apiKey) ?? null;
   }
+
+  // Wallet auth — kept in memory; loses state on restart, fine for fallback.
+  private nonces = new Map<string, number>(); // `${address}:${nonce}` -> expiresAt
+  private sessions = new Map<string, { playerId: string; expiresAt: number }>();
+
+  createAuthNonce(address: string, nonce: string, expiresAt: number): void {
+    this.nonces.set(`${address}:${nonce}`, expiresAt);
+  }
+
+  consumeAuthNonce(address: string, nonce: string): boolean {
+    const key = `${address}:${nonce}`;
+    const exp = this.nonces.get(key);
+    if (!exp) return false;
+    this.nonces.delete(key);
+    return exp >= Date.now();
+  }
+
+  createAuthSession(token: string, playerId: string, expiresAt: number): void {
+    this.sessions.set(token, { playerId, expiresAt });
+  }
+
+  getAuthSessionPlayerId(token: string): string | null {
+    const s = this.sessions.get(token);
+    if (!s) return null;
+    if (s.expiresAt < Date.now()) { this.sessions.delete(token); return null; }
+    return s.playerId;
+  }
+
+  revokeAuthSession(token: string): void { this.sessions.delete(token); }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -849,3 +935,18 @@ export function claimAndBuild(
   id: string, parcelId: number, buildingType: string, buildingCost: number, buildingLabel: string,
 ) { return backend.claimAndBuild(id, parcelId, buildingType, buildingCost, buildingLabel); }
 export function getOwnedBuiltParcels() { return backend.getOwnedBuiltParcels(); }
+export function createAuthNonce(address: string, nonce: string, expiresAt: number) {
+  backend.createAuthNonce(address, nonce, expiresAt);
+}
+export function consumeAuthNonce(address: string, nonce: string) {
+  return backend.consumeAuthNonce(address, nonce);
+}
+export function createAuthSession(token: string, playerId: string, expiresAt: number) {
+  backend.createAuthSession(token, playerId, expiresAt);
+}
+export function getAuthSessionPlayerId(token: string) {
+  return backend.getAuthSessionPlayerId(token);
+}
+export function revokeAuthSession(token: string) {
+  backend.revokeAuthSession(token);
+}

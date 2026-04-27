@@ -19,6 +19,7 @@ function resolveServerUrl(): string {
 const SERVER_URL = resolveServerUrl();
 
 const PLAYER_ID_KEY = 'tl_player_id';
+const AUTH_TOKEN_KEY = 'tl_auth_token';
 
 function getOrCreatePlayerId(): string {
   if (typeof localStorage === 'undefined') return crypto.randomUUID();
@@ -28,6 +29,19 @@ function getOrCreatePlayerId(): string {
     try { localStorage.setItem(PLAYER_ID_KEY, id); } catch { /* private mode, etc. — fall through */ }
   }
   return id;
+}
+
+function getStoredAuthToken(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try { return localStorage.getItem(AUTH_TOKEN_KEY); } catch { return null; }
+}
+
+function clearWalletCredentials(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(PLAYER_ID_KEY);
+  } catch { /* ignore */ }
 }
 
 let client: Client | null = null;
@@ -162,8 +176,25 @@ function applyPlayer(snap: PlayerSnapshot, emitEventsForSelf: boolean) {
 
 export async function connect(playerName: string): Promise<Room> {
   const playerId = getOrCreatePlayerId();
+  const authToken = getStoredAuthToken();
   client = new Client(SERVER_URL);
-  room = await client.joinOrCreate('game', { name: playerName, playerId });
+  try {
+    room = await client.joinOrCreate('game', { name: playerName, playerId, authToken: authToken ?? undefined });
+  } catch (err) {
+    // Server rejects expired/invalid tokens with code 4001. Drop the bad
+    // credentials and retry as a guest so the player isn't locked out.
+    const msg = (err as Error)?.message ?? '';
+    if (authToken && /auth_token_invalid|4001/.test(msg)) {
+      clearWalletCredentials();
+      const freshId = getOrCreatePlayerId();
+      room = await client.joinOrCreate('game', { name: playerName, playerId: freshId });
+      mySessionId = freshId;
+      knownPlayers.clear();
+      window.dispatchEvent(new CustomEvent('wallet-auth-expired'));
+      return room;
+    }
+    throw err;
+  }
   mySessionId = playerId;
   knownPlayers.clear();
 

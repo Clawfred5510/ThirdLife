@@ -1,6 +1,13 @@
 import React, { useState, useEffect, CSSProperties } from 'react';
 import { getPlayerName, sendPlayerColor } from '../../network/Client';
 import { getDayNightCycle } from '../../game/scenes/MainScene';
+import {
+  hasInjectedWallet,
+  getStoredPlayerId,
+  getStoredAuthToken,
+  connectWallet,
+  logoutWallet,
+} from '../../network/wallet';
 
 const COLOR_PRESETS: { name: string; hex: string }[] = [
   { name: 'Red', hex: '#e53e3e' },
@@ -28,6 +35,12 @@ export const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   const [cycleSpeed, setCycleSpeed] = useState<number>(
     () => parseInt(localStorage.getItem('thirdlife_cycle_seconds') ?? '600', 10),
   );
+  const [walletAddress, setWalletAddress] = useState<string | null>(() => {
+    const pid = getStoredPlayerId();
+    return pid && /^0x[a-fA-F0-9]{40}$/.test(pid) && getStoredAuthToken() ? pid : null;
+  });
+  const [walletBusy, setWalletBusy] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
 
   useEffect(() => {
     const name = getPlayerName();
@@ -44,6 +57,34 @@ export const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     const val = parseInt(e.target.value, 10);
     setVolume(val);
     localStorage.setItem('thirdlife_volume', String(val));
+  };
+
+  const handleConnectWallet = async () => {
+    setWalletBusy(true);
+    setWalletError(null);
+    try {
+      const result = await connectWallet();
+      setWalletAddress(result.address);
+      // Reload so the next Colyseus connect uses the wallet identity. Any
+      // building/credit data tied to the prior guest UUID is left in the DB
+      // (recoverable later via a migrate flow) — we don't merge silently.
+      window.location.reload();
+    } catch (e) {
+      setWalletError((e as Error).message);
+    } finally {
+      setWalletBusy(false);
+    }
+  };
+
+  const handleDisconnectWallet = async () => {
+    setWalletBusy(true);
+    try {
+      await logoutWallet();
+      setWalletAddress(null);
+      window.location.reload();
+    } finally {
+      setWalletBusy(false);
+    }
   };
 
   const handleCycleToggle = () => {
@@ -108,6 +149,47 @@ export const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           <button style={styles.cycleButton} onClick={handleCycleToggle}>
             {cycleSpeed === 300 ? '5 min' : '10 min'}
           </button>
+        </div>
+
+        {/* Wallet */}
+        <div style={styles.section}>
+          <label style={styles.label}>Account</label>
+          {walletAddress ? (
+            <>
+              <span style={styles.value} title={walletAddress}>
+                {walletAddress.slice(0, 6)}…{walletAddress.slice(-4)}
+              </span>
+              <button
+                style={styles.cycleButton}
+                onClick={handleDisconnectWallet}
+                disabled={walletBusy}
+              >
+                {walletBusy ? '…' : 'Disconnect Wallet'}
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={styles.value}>Guest (browser-local)</span>
+              {hasInjectedWallet() ? (
+                <button
+                  style={styles.cycleButton}
+                  onClick={handleConnectWallet}
+                  disabled={walletBusy}
+                >
+                  {walletBusy ? 'Connecting…' : 'Connect Wallet'}
+                </button>
+              ) : (
+                <span style={{ ...styles.label, opacity: 0.5 }}>
+                  Install MetaMask to use a persistent wallet identity.
+                </span>
+              )}
+              {walletError && (
+                <span style={{ ...styles.label, color: '#f87171', textTransform: 'none' }}>
+                  {walletError}
+                </span>
+              )}
+            </>
+          )}
         </div>
 
         {/* Close */}
