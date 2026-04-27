@@ -299,21 +299,13 @@ export class MainScene {
 
     this.setupKeyboardInput();
 
-    // ---- Babylon Inspector hotkey: backtick (`) toggles ----
-    // Was Shift+Ctrl+I, which Chrome/Firefox/Edge all intercept as their
-    // DevTools shortcut before our listener gets to run — so the inspector
-    // never opened. Backtick is the universal game-console hotkey and has
-    // no browser conflict. Lazy-imported so it doesn't bloat the main
-    // bundle; first toggle takes ~200ms to load on slow connections.
+    // ---- Babylon Inspector toggle (button + backtick hotkey) ----
+    // Hotkey was originally Shift+Ctrl+I but every browser reserves that
+    // for DevTools and intercepts it before our listener fires. Backtick
+    // works as a power-user shortcut, but the button below is the
+    // primary discoverable way in.
     let inspectorOpen = false;
-    window.addEventListener('keydown', async (e) => {
-      if (e.code !== 'Backquote') return;
-      // Don't fire while typing in chat / name inputs / parcel-name field.
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      e.preventDefault();
+    const toggleInspector = async () => {
       if (!inspectorOpen) {
         await import('@babylonjs/inspector');
         scene.debugLayer.show({ embedMode: true, overlay: true });
@@ -322,7 +314,42 @@ export class MainScene {
         scene.debugLayer.hide();
         inspectorOpen = false;
       }
+    };
+    // Expose globally so any UI element can call it (and so the user can
+    // type `__tlOpenInspector()` in the JS console as a last-resort fallback).
+    (window as unknown as { __tlOpenInspector?: () => Promise<void> }).__tlOpenInspector = toggleInspector;
+    window.addEventListener('keydown', async (e) => {
+      if (e.code !== 'Backquote') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+      await toggleInspector();
     });
+
+    // Floating button — bottom-right, 32×32, low-key but always visible.
+    const btn = document.createElement('button');
+    btn.textContent = '🛠';
+    btn.title = 'Open Babylon Inspector (or press backtick)';
+    Object.assign(btn.style, {
+      position: 'fixed',
+      bottom: '16px',
+      right: '180px', // sits to the left of the minimap
+      width: '32px',
+      height: '32px',
+      border: '1px solid rgba(255,255,255,0.18)',
+      borderRadius: '6px',
+      background: 'rgba(12,14,24,0.85)',
+      color: '#e4e4ef',
+      fontSize: '16px',
+      cursor: 'pointer',
+      zIndex: '10',
+      padding: '0',
+      lineHeight: '30px',
+    } as Partial<CSSStyleDeclaration>);
+    btn.addEventListener('click', () => { toggleInspector(); });
+    document.body.appendChild(btn);
 
     // ---- Per-frame update ----
 
