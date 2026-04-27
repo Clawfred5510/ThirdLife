@@ -1,8 +1,10 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
-import { LAND_COST, GRID_COLS, GRID_ROWS } from '@gamestu/shared';
+import { LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS } from '@gamestu/shared';
 import type { ResourceType } from '@gamestu/shared';
+
+const RESERVED_SET = new Set<number>(RESERVED_PARCEL_IDS);
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -175,6 +177,17 @@ class SQLiteDatabase implements DBBackend {
     // (400, 0, -200) gets teleported to the new rocket-facing spawn.
     // Players who have actually moved keep their position.
     this.db.exec(`UPDATE players SET x = 0, y = 0, z = -80 WHERE x = 400 AND y = 0 AND z = -200`);
+
+    // Reserved-parcel cleanup: clear any owner/business on landmark plots
+    // (e.g. the rocket cell at world origin). New claim attempts on these
+    // are rejected by buyLand/claimAndBuild — this just unwinds historical
+    // claims placed before the reservation was added.
+    if (RESERVED_PARCEL_IDS.length > 0) {
+      const placeholders = RESERVED_PARCEL_IDS.map(() => '?').join(', ');
+      this.db.prepare(
+        `UPDATE parcels SET owner_id = NULL, business_name = NULL, business_type = NULL, claimed_at = NULL WHERE id IN (${placeholders})`,
+      ).run(...RESERVED_PARCEL_IDS);
+    }
 
     // Events log
     this.db.exec(`
@@ -384,6 +397,7 @@ class SQLiteDatabase implements DBBackend {
   }
 
   buyLand(id: string, parcelId: number): { ok: boolean; reason?: string; credits?: number } {
+    if (RESERVED_SET.has(parcelId)) return { ok: false, reason: 'reserved_landmark' };
     const txn = this.db.transaction(() => {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel) return { ok: false, reason: 'parcel_not_found' };
@@ -405,6 +419,7 @@ class SQLiteDatabase implements DBBackend {
     buildingCost: number,
     buildingLabel: string,
   ): { ok: boolean; reason?: string; credits?: number } {
+    if (RESERVED_SET.has(parcelId)) return { ok: false, reason: 'reserved_landmark' };
     const txn = this.db.transaction(() => {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel) return { ok: false, reason: 'parcel_not_found' };

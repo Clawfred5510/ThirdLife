@@ -163,7 +163,11 @@ export function buildRocket(scene: Scene, position: Vector3): TransformNode {
   nose.position.y = 52.2; // bottom at y=43.2 (body top=43), center at 52.2
   nose.material = mBody;
 
-  // ── 3 portholes at z=+5.1, y=30/34/38 ───────────────────────────────────
+  // ── 3 portholes facing the spawn (south face, z=-5.1) ──────────────────
+  // Player spawns at z=-80 looking +Z; the rocket's south face (-Z) is the
+  // side they see. Portholes were originally placed at +5.1 (the rear/back
+  // of the rocket from spawn POV) which made them invisible from spawn —
+  // visible only when the player walked behind the rocket.
 
   const portholeYs = [30, 34, 38];
   for (let i = 0; i < portholeYs.length; i++) {
@@ -172,7 +176,7 @@ export function buildRocket(scene: Scene, position: Vector3): TransformNode {
       segments: 12,
     }, scene);
     porthole.parent = root;
-    porthole.position.set(0, portholeYs[i], 5.1);
+    porthole.position.set(0, portholeYs[i], -5.1);
     porthole.material = mGlass;
   }
 

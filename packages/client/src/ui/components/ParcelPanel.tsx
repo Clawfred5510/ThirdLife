@@ -6,6 +6,7 @@ import {
   BUILDINGS,
   BUILDING_LIST,
   BuildingType,
+  RESERVED_PARCEL_IDS,
 } from '@gamestu/shared';
 import {
   sendClaimParcel,
@@ -178,7 +179,14 @@ export const ParcelPanel: React.FC = () => {
         </div>
       </div>
 
-      {!parcel.owner_id && (
+      {!parcel.owner_id && RESERVED_PARCEL_IDS.includes(parcel.id) && (
+        <div style={{ marginBottom: 8, opacity: 0.8 }}>
+          🚀 Reserved landmark plot — this parcel hosts the world rocket and
+          can&apos;t be built on.
+        </div>
+      )}
+
+      {!parcel.owner_id && !RESERVED_PARCEL_IDS.includes(parcel.id) && (
         <>
           <div style={{ marginBottom: 8, opacity: 0.8 }}>
             Unclaimed parcel — <span style={{ opacity: 0.6 }}>pick what to build:</span>

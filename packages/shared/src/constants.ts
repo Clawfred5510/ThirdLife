@@ -16,6 +16,15 @@ export const EXPLORE_COST = 69;
 export const GRID_COLS = 45;
 export const GRID_ROWS = 45;
 
+/**
+ * Parcels reserved for world landmarks (e.g. the rocket centerpiece). The
+ * server rejects claim attempts on these IDs and the client should hide
+ * their parcel markers / claim UI. Center cell of the 45×45 grid is
+ * (22, 22) → id = 22*45 + 22 = 1012, which sits at world origin where
+ * the rocket lives.
+ */
+export const RESERVED_PARCEL_IDS: readonly number[] = [22 * GRID_COLS + 22];
+
 // ── Building types ──────────────────────────────────────────────────────
 
 export type BuildingType =
