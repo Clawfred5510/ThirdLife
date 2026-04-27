@@ -12,6 +12,7 @@
   "dependencies": {
     "@babylonjs/core": "^7.0.0",
     "@babylonjs/gui": "^7.0.0",
+    "@babylonjs/inspector": "^7.54.3",
     "@babylonjs/loaders": "^7.0.0",
     "@gamestu/shared": "*",
     "colyseus.js": "^0.15.0",

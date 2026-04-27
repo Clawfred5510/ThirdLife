@@ -285,6 +285,25 @@ export class MainScene {
 
     this.setupKeyboardInput();
 
+    // ---- Babylon Inspector hotkey: Shift+Ctrl+I toggles ----
+    // Lets the user click any mesh to inspect/edit position, rotation,
+    // scale, materials, emissive, etc. live, then tell me the values they
+    // want made permanent. Lazy-imported so it doesn't bloat the main
+    // bundle; first toggle takes ~200ms to load on slow connections.
+    let inspectorOpen = false;
+    window.addEventListener('keydown', async (e) => {
+      if (e.code !== 'KeyI' || !e.shiftKey || !e.ctrlKey) return;
+      e.preventDefault();
+      if (!inspectorOpen) {
+        await import('@babylonjs/inspector');
+        scene.debugLayer.show({ embedMode: true, overlay: true });
+        inspectorOpen = true;
+      } else {
+        scene.debugLayer.hide();
+        inspectorOpen = false;
+      }
+    });
+
     // ---- Per-frame update ----
 
     scene.onBeforeRenderObservable.add(() => {
@@ -847,27 +866,30 @@ export class MainScene {
 
     // Server reconciliation: hard-snap ONLY on catastrophic desync.
     //
-    // Soft per-frame lerping toward the server's last broadcast feels
-    // smooth in theory but causes visible sway at the start/stop of
-    // movement: the server is always ~1 tick behind the client during
-    // acceleration, and ~1 tick ahead right after a stop (it processes
-    // one more "moving" tick before the release input lands). Pulling
-    // toward either biased target produces a wobble.
+    // Threshold is intentionally generous (60 units ≈ 3s of sprint) because
+    // legitimate prediction drift can briefly cross 25 units when:
+    //   - the browser frame stalls (GC pause, tab refocus)
+    //   - the user rotates the camera fast while moving (server's `forward`
+    //     direction lags one input-tick behind client's)
+    //   - the network briefly buffers inputs
+    // A small drift left uncorrected is invisible; a snap-back to a stale
+    // server position is very visible. Bias toward never snapping.
     //
-    // Because our prediction uses the exact same PLAYER_SPEED, yaw
-    // basis, and diagonal-normalisation as the server, position drift
-    // accumulates only from variable dt and would take a very long
-    // stretch to exceed 10 units. So we trust prediction until the
-    // gap is clearly pathological (network stall, teleport, physics
-    // anomaly).
-    // Reconcile only if we're connected to a server. In offline mode the
-    // server target is frozen at spawn, so the snap would yank the player
-    // back every time they walked more than 25 units.
+    // Soft per-frame lerping was tried and caused visible sway at start/
+    // stop of movement (server is ~1 tick behind during accel, ~1 tick
+    // ahead after a stop). Hard snap on catastrophic-only is the right
+    // tradeoff.
+    //
+    // Telemetry: log snaps to console so we can observe frequency in prod.
+    // Each entry: delta magnitude + which axis dominates.
     if (getSessionId()) {
       const tx = remote.targetX, tz = remote.targetZ;
       const dxRec = tx - remote.root.position.x;
       const dzRec = tz - remote.root.position.z;
-      if (dxRec * dxRec + dzRec * dzRec > 25 * 25) {
+      const distSq = dxRec * dxRec + dzRec * dzRec;
+      if (distSq > 60 * 60) {
+        const dist = Math.sqrt(distSq);
+        console.warn(`[reconcile] snap ${dist.toFixed(1)}u back to server (dx=${dxRec.toFixed(1)}, dz=${dzRec.toFixed(1)})`);
         remote.root.position.x = tx;
         remote.root.position.z = tz;
       }
