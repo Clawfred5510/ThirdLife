@@ -301,10 +301,11 @@ export class MainScene {
       }
     });
 
-    // Dev-only debug hook: lets Playwright tests read the live scene + local
-    // player state via window.__tlDebug. Tree-shaken in production via the
-    // import.meta.env.DEV gate.
-    if (import.meta.env.DEV) {
+    // Read-only debug hook for Playwright QA + live-prod inspection. No
+    // mutations exposed; just lets a test script find the local avatar and
+    // camera state without parsing screenshots. Available in all builds —
+    // small attack surface (read-only, well-known mesh names).
+    {
       (window as unknown as { __tlDebug?: unknown }).__tlDebug = {
         scene,
         getLocalPlayer: () => {
