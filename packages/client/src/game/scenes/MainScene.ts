@@ -299,14 +299,20 @@ export class MainScene {
 
     this.setupKeyboardInput();
 
-    // ---- Babylon Inspector hotkey: Shift+Ctrl+I toggles ----
-    // Lets the user click any mesh to inspect/edit position, rotation,
-    // scale, materials, emissive, etc. live, then tell me the values they
-    // want made permanent. Lazy-imported so it doesn't bloat the main
+    // ---- Babylon Inspector hotkey: backtick (`) toggles ----
+    // Was Shift+Ctrl+I, which Chrome/Firefox/Edge all intercept as their
+    // DevTools shortcut before our listener gets to run — so the inspector
+    // never opened. Backtick is the universal game-console hotkey and has
+    // no browser conflict. Lazy-imported so it doesn't bloat the main
     // bundle; first toggle takes ~200ms to load on slow connections.
     let inspectorOpen = false;
     window.addEventListener('keydown', async (e) => {
-      if (e.code !== 'KeyI' || !e.shiftKey || !e.ctrlKey) return;
+      if (e.code !== 'Backquote') return;
+      // Don't fire while typing in chat / name inputs / parcel-name field.
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
       e.preventDefault();
       if (!inspectorOpen) {
         await import('@babylonjs/inspector');
