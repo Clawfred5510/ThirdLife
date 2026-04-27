@@ -6,6 +6,7 @@ import {
   TransformNode,
   AbstractMesh,
 } from '@babylonjs/core';
+import { AdvancedDynamicTexture, TextBlock } from '@babylonjs/gui';
 import { buildFurniture } from '../buildingFurniture';
 import { BuildingSpec, BuildingOutput, buildInteriorShell, mat, isRoofMesh } from './shared';
 
@@ -23,6 +24,7 @@ export function buildShop(
   id: string | number,
   position: Vector3,
   spec: BuildingSpec,
+  businessName?: string,
 ): BuildingOutput {
   const root = new TransformNode(`shop_${id}`, scene);
   root.position.copyFrom(position);
@@ -76,13 +78,26 @@ export function buildShop(
   sign.material = signRed;
   sign.receiveShadows = true;
   exteriorCasters.push(sign);
-  // Illuminated text panel
+  // Illuminated white panel (south-facing) — carries the business name as
+  // a dynamic texture. Updates via re-render when business_name changes.
   const signText = MeshBuilder.CreateBox(`shopSignTxt_${id}`, {
     width: shopW * 0.6, height: 1.6, depth: 0.1,
   }, scene);
   signText.parent = body;
   signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.4);
   signText.material = signWhite;
+
+  if (businessName && businessName.trim().length > 0) {
+    const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
+    const text = new TextBlock();
+    text.text = businessName.trim().toUpperCase();
+    text.color = '#1A1208';
+    text.fontFamily = 'Arial';
+    text.fontStyle = 'bold';
+    text.fontSize = 140;
+    text.textWrapping = true;
+    adt.addControl(text);
+  }
 
   // ── STRIPED AWNING above the storefront windows ─────────────────────
   const awningD = 2.0;
@@ -98,22 +113,29 @@ export function buildShop(
   }
 
   // ── FULL-HEIGHT DISPLAY WINDOWS flanking the door ────────────────────
+  // Solid trim-coloured frame box was reading as opaque "brown panes."
+  // Replaced with proud-of-wall glass plates + a 4-piece trim border.
   const winH = spec.doorHeight - 0.3;
   const winY = winH / 2 + 0.4;
   const winW = (shopW - spec.doorWidth - 2) / 2 - 0.6;
+  const frameT = 0.12;
   for (const side of [-1, 1]) {
     const xCenter = side * (spec.doorWidth / 2 + 0.6 + winW / 2);
-    const frame = MeshBuilder.CreateBox(`shopWinF_${id}_${side}`, {
-      width: winW + 0.25, height: winH + 0.25, depth: spec.wallThickness * 1.1,
-    }, scene);
-    frame.parent = body;
-    frame.position.set(xCenter, winY, -shopD / 2 + spec.wallThickness / 2);
-    frame.material = trimMat;
+    const winZ = -shopD / 2 - 0.04;
     const glass = MeshBuilder.CreateBox(`shopWin_${id}_${side}`, {
-      width: winW, height: winH, depth: spec.wallThickness * 0.6,
+      width: winW, height: winH, depth: 0.06,
     }, scene);
-    glass.parent = frame;
+    glass.parent = body;
+    glass.position.set(xCenter, winY, winZ);
     glass.material = glassMat;
+    const top = MeshBuilder.CreateBox(`shopWinT_${id}_${side}`, { width: winW + frameT * 2, height: frameT, depth: 0.08 }, scene);
+    top.parent = body; top.position.set(xCenter, winY + winH / 2 + frameT / 2, winZ); top.material = trimMat;
+    const bot = MeshBuilder.CreateBox(`shopWinB_${id}_${side}`, { width: winW + frameT * 2, height: frameT, depth: 0.08 }, scene);
+    bot.parent = body; bot.position.set(xCenter, winY - winH / 2 - frameT / 2, winZ); bot.material = trimMat;
+    const lj = MeshBuilder.CreateBox(`shopWinL_${id}_${side}`, { width: frameT, height: winH, depth: 0.08 }, scene);
+    lj.parent = body; lj.position.set(xCenter - winW / 2 - frameT / 2, winY, winZ); lj.material = trimMat;
+    const rj = MeshBuilder.CreateBox(`shopWinR_${id}_${side}`, { width: frameT, height: winH, depth: 0.08 }, scene);
+    rj.parent = body; rj.position.set(xCenter + winW / 2 + frameT / 2, winY, winZ); rj.material = trimMat;
   }
 
   // ── SANDWICH-BOARD A-FRAME SIGN ─────────────────────────────────────

@@ -80,23 +80,33 @@ export function buildFarm(
     barnWallMat, barnTrimMat,
   );
 
-  // Horizontal board lines on the barn facades
+  // Horizontal board lines on the barn facades.
+  // Was a single full-footprint slab per height — that slab sliced through
+  // the barn interior as a brown "floor layer" the player would see when
+  // walking inside. Now four thin strips per height, each hugging one
+  // facade just proud of the wall, so the interior stays clear.
+  const boardT = 0.08;
   for (let y = 1.5; y < wallH; y += 1.5) {
-    const line = MeshBuilder.CreateBox(`board_${id}_${y}`, {
-      width: barnW + 0.05, height: 0.1, depth: barnD + 0.05,
+    const front = MeshBuilder.CreateBox(`board_${id}_F_${y}`, {
+      width: barnW + boardT * 2, height: 0.1, depth: boardT,
     }, scene);
-    line.parent = barnRoot;
-    line.position.y = y;
-    line.material = darkWoodMat;
+    front.parent = barnRoot; front.position.set(0, y, -barnD / 2 - boardT / 2); front.material = darkWoodMat;
+    const back = MeshBuilder.CreateBox(`board_${id}_B_${y}`, {
+      width: barnW + boardT * 2, height: 0.1, depth: boardT,
+    }, scene);
+    back.parent = barnRoot; back.position.set(0, y, barnD / 2 + boardT / 2); back.material = darkWoodMat;
+    const left = MeshBuilder.CreateBox(`board_${id}_L_${y}`, {
+      width: boardT, height: 0.1, depth: barnD,
+    }, scene);
+    left.parent = barnRoot; left.position.set(-barnW / 2 - boardT / 2, y, 0); left.material = darkWoodMat;
+    const right = MeshBuilder.CreateBox(`board_${id}_R_${y}`, {
+      width: boardT, height: 0.1, depth: barnD,
+    }, scene);
+    right.parent = barnRoot; right.position.set(barnW / 2 + boardT / 2, y, 0); right.material = darkWoodMat;
   }
 
-  // Hayloft window (small square high on the front gable face)
-  const hayWin = MeshBuilder.CreateBox(`hayWin_${id}`, {
-    width: 1.4, height: 1.4, depth: spec.wallThickness * 0.8,
-  }, scene);
-  hayWin.parent = barnRoot;
-  hayWin.position.set(0, wallH + peak * 0.4, -barnD / 2 + spec.wallThickness / 2);
-  hayWin.material = darkWoodMat;
+  // (Hayloft "window" removed — user feedback: read as a brown brick over
+  // the door with no clear purpose, and didn't fade with the roof. Drop.)
 
   // ── BARN ROOF (proper gable) ────────────────────────────────────────
   // Gable helper takes: length (along x, ridge direction), width (across z), peak

@@ -118,6 +118,7 @@ export function buildProceduralBuilding(
   position: Vector3,
   spec: BuildingSpec,
   buildingType: string = 'apartment',
+  businessName?: string,
 ): BuildingOutput {
   // Every type now has its own module; dispatch accordingly. The
   // monolithic fallback below is only hit for unknown building types.
@@ -128,7 +129,7 @@ export function buildProceduralBuilding(
   if (buildingType === 'hall')      return buildHall(scene, id, position, spec);
   if (buildingType === 'mine')      return buildMine(scene, id, position, spec);
   if (buildingType === 'market')    return buildMarket(scene, id, position, spec);
-  if (buildingType === 'shop')      return buildShop(scene, id, position, spec);
+  if (buildingType === 'shop')      return buildShop(scene, id, position, spec, businessName);
   if (buildingType === 'office')    return buildOffice(scene, id, position, spec);
   if (buildingType === 'apartment') return buildApartment(scene, id, position, spec);
 

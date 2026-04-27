@@ -84,20 +84,12 @@ export function buildApartment(
     exteriorCasters.push(seg);
   }
 
-  // ── MID-HEIGHT CORNICE BAND ─────────────────────────────────────────
-  const cornice = MeshBuilder.CreateBox(`aptCornice_${id}`, {
-    width: buildingW + 0.4, height: 0.45, depth: buildingD + 0.4,
-  }, scene);
-  cornice.parent = body;
-  cornice.position.y = wallH * 0.5;
-  cornice.material = corniceMat;
-  exteriorCasters.push(cornice);
-
   // ── WATER TOWER on the rooftop ──────────────────────────────────────
   const wtX = -buildingW * 0.25;
   const wtZ = buildingD * 0.25;
   const wtLegY = wallH + 0.4;
-  // 4 lattice legs
+  // 4 lattice legs — pushed to exteriorCasters so they fade with the rest
+  // of the rooftop kit when the player walks inside.
   for (let i = 0; i < 4; i++) {
     const ang = (i / 4) * Math.PI * 2 + Math.PI / 4;
     const lx = wtX + Math.cos(ang) * 1.0;
@@ -106,6 +98,7 @@ export function buildApartment(
     leg.parent = body;
     leg.position.set(lx, wtLegY + 1.1, lz);
     leg.material = metalMat;
+    exteriorCasters.push(leg);
   }
   const drum = MeshBuilder.CreateCylinder(`wtDrum_${id}`, {
     diameter: 2.4, height: 3.0, tessellation: 18,

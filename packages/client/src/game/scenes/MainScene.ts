@@ -548,8 +548,13 @@ export class MainScene {
     const desiredType = data.business_type ?? renderData.anchor?.metadata?.business_type ?? 'apartment';
     const existingType = renderData.anchor?.metadata?.business_type as string | undefined;
     const typeChanged = renderData.building && existingType !== desiredType;
+    // Shop sign text is baked into the mesh at build time. If the business
+    // name changed, rebuild so the new name renders on the blade-sign panel.
+    const desiredName = (data.business_name ?? renderData.anchor?.metadata?.business_name ?? '') as string;
+    const existingName = (renderData.anchor?.metadata?.business_name ?? '') as string;
+    const shopNameChanged = desiredType === 'shop' && renderData.building && existingName !== desiredName;
 
-    if (renderData.building && !typeChanged) {
+    if (renderData.building && !typeChanged && !shopNameChanged) {
       this.updateBuildingMetaAndLabel(renderData, def, data);
       return;
     }
@@ -566,6 +571,7 @@ export class MainScene {
       new Vector3(def.x, 0.1, def.z),
       { ...spec, wallColor },
       desiredType,
+      desiredName,
     );
     renderData.building = built;
     renderData.anchor = built.exteriorCasters[0] ?? null;

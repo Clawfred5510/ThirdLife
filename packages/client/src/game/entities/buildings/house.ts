@@ -53,7 +53,10 @@ export function buildHouse(
   // Materials
   const wallMat = mat(scene, 'cottage-wall', '#F0E4C8', 0.9);
   const trimMat = mat(scene, 'cottage-trim', '#8B5A3C', 0.6);
-  const roofMat = mat(scene, 'terracotta', '#B04A2A', 0.75);
+  // Role name contains 'roof' so the shared mat() helper disables backface
+  // culling (roof primitives are vertex-data slopes that get viewed from
+  // both sides; with culling on, the back panel disappears at low angles).
+  const roofMat = mat(scene, 'roof-terracotta', '#B04A2A', 0.75);
   const brickMat = mat(scene, 'brick', '#8A4A38', 0.88);
   const woodMat = mat(scene, 'wood-trim', '#C49A6C', 0.7);
   const pathMat = mat(scene, 'stone-path', '#B5AE9A', 0.9);
@@ -128,11 +131,14 @@ export function buildHouse(
     exteriorCasters.push(col);
   }
 
-  // Porch gable canopy — short gable over the porch
+  // Porch gable canopy — short gable over the porch.
+  // Default orientation (no rotation) puts the ridge along X (left↔right
+  // across the front of the house), so the front slope faces +Z (toward
+  // the street) and the back slope faces -Z (against the house wall).
+  // That's the conventional way porch awnings sit.
   const porchCanopy = buildGableRoof(scene, `porch_${id}`, porchW + 0.4, porchDepth + 0.6, 1.0, 0.2);
   porchCanopy.parent = cottageRoot;
   porchCanopy.position.set(0, spec.doorHeight + 0.6, -cottageD / 2 - porchDepth / 2 + 0.15);
-  porchCanopy.rotation.y = Math.PI / 2; // ridge runs across (along z) so the gable face points toward the street
   finishRoof(porchCanopy, roofMat, exteriorCasters);
 
   // Porch light — small emissive sphere + post
@@ -150,28 +156,38 @@ export function buildHouse(
   lightBulb.material = lightMat;
 
   // ── WINDOWS on front facade flanking the porch ──────────────────────
+  // Was a solid brown box (winFrame) covering the glass; user reported the
+  // windows reading as opaque "brown panes." Replaced with a glass plate
+  // proud of the wall + a 4-piece trim border (sill, lintel, jambs) plus
+  // the cross-muntin so the window reads as actual glass with a wooden
+  // surround.
   const frontWinY = wallH * 0.55;
   const glassMat = mat(scene, 'window-glass', '#9AC8E8', 0.2, { alpha: 0.55, emissive: new Color3(0.3, 0.4, 0.5) });
+  const winW = 1.5, winH = 1.4, frameT = 0.1;
   for (const side of [-1, 1]) {
     const winX = side * (cottageW / 2 - 2.2);
-    const winFrame = MeshBuilder.CreateBox(`winFrame_${id}_${side}`, {
-      width: 1.5, height: 1.4, depth: spec.wallThickness * 1.1,
-    }, scene);
-    winFrame.parent = cottageRoot;
-    winFrame.position.set(winX, frontWinY, -cottageD / 2 + spec.wallThickness / 2);
-    winFrame.material = trimMat;
+    const winZ = -cottageD / 2 - 0.04; // slightly proud of the front wall
     const glass = MeshBuilder.CreateBox(`winGlass_${id}_${side}`, {
-      width: 1.2, height: 1.1, depth: spec.wallThickness * 0.6,
+      width: winW, height: winH, depth: 0.06,
     }, scene);
-    glass.parent = winFrame;
+    glass.parent = cottageRoot;
+    glass.position.set(winX, frontWinY, winZ);
     glass.material = glassMat;
-    // Window cross-muntin (decorative wood cross)
-    const muntinH = MeshBuilder.CreateBox(`mh_${id}_${side}`, { width: 1.1, height: 0.06, depth: spec.wallThickness * 0.65 }, scene);
-    muntinH.parent = winFrame;
-    muntinH.material = trimMat;
-    const muntinV = MeshBuilder.CreateBox(`mv_${id}_${side}`, { width: 0.06, height: 1.05, depth: spec.wallThickness * 0.65 }, scene);
-    muntinV.parent = winFrame;
-    muntinV.material = trimMat;
+    // 4-piece trim border (top/bottom/left/right) sitting just outside the glass
+    const borderD = 0.08;
+    const top = MeshBuilder.CreateBox(`winTop_${id}_${side}`, { width: winW + frameT * 2, height: frameT, depth: borderD }, scene);
+    top.parent = cottageRoot; top.position.set(winX, frontWinY + winH / 2 + frameT / 2, winZ); top.material = trimMat;
+    const bot = MeshBuilder.CreateBox(`winBot_${id}_${side}`, { width: winW + frameT * 2, height: frameT, depth: borderD }, scene);
+    bot.parent = cottageRoot; bot.position.set(winX, frontWinY - winH / 2 - frameT / 2, winZ); bot.material = trimMat;
+    const ljamb = MeshBuilder.CreateBox(`winL_${id}_${side}`, { width: frameT, height: winH, depth: borderD }, scene);
+    ljamb.parent = cottageRoot; ljamb.position.set(winX - winW / 2 - frameT / 2, frontWinY, winZ); ljamb.material = trimMat;
+    const rjamb = MeshBuilder.CreateBox(`winR_${id}_${side}`, { width: frameT, height: winH, depth: borderD }, scene);
+    rjamb.parent = cottageRoot; rjamb.position.set(winX + winW / 2 + frameT / 2, frontWinY, winZ); rjamb.material = trimMat;
+    // Cross-muntin (decorative wood cross) on the glass
+    const muntinH = MeshBuilder.CreateBox(`mh_${id}_${side}`, { width: winW * 0.9, height: 0.05, depth: 0.05 }, scene);
+    muntinH.parent = cottageRoot; muntinH.position.set(winX, frontWinY, winZ - 0.04); muntinH.material = trimMat;
+    const muntinV = MeshBuilder.CreateBox(`mv_${id}_${side}`, { width: 0.05, height: winH * 0.9, depth: 0.05 }, scene);
+    muntinV.parent = cottageRoot; muntinV.position.set(winX, frontWinY, winZ - 0.04); muntinV.material = trimMat;
   }
 
   // ── FLOWER BED under the front window (left side) ───────────────────
