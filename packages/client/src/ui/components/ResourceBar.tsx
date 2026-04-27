@@ -31,7 +31,7 @@ export const ResourceBar: React.FC = () => {
 
 const S: Record<string, React.CSSProperties> = {
   bar: {
-    position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+    position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
     display: 'flex', gap: 12, background: 'rgba(12,14,24,0.85)',
     border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
     padding: '6px 16px', pointerEvents: 'auto', zIndex: 10, fontFamily: 'sans-serif',
