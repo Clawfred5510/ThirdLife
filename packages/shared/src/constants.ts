@@ -1,5 +1,5 @@
 export const TICK_RATE = 20; // Server ticks per second
-export const WORLD_SIZE = 2400; // World dimensions in units (grid ~2392 wide)
+export const WORLD_SIZE = 2152; // World dimensions in units (45*40 + 44*8 = 2152)
 export const MAX_PLAYERS_PER_ROOM = 50;
 /** Base walking speed in world units per second. */
 export const PLAYER_SPEED = 10;
@@ -7,14 +7,14 @@ export const PLAYER_SPEED = 10;
 export const SPRINT_MULTIPLIER = 2;
 export const DEFAULT_SERVER_PORT = 2567;
 export const GAME_NAME = 'ThirdLife';
-export const WORLD_HALF = WORLD_SIZE / 2; // 1200
+export const WORLD_HALF = WORLD_SIZE / 2; // 1076
 export const CURRENCY_NAME = 'AMETA';
 export const CLAIM_COST = 150000;      // same as LAND_COST
 export const LAND_COST = 150000;
 export const STARTING_BALANCE = 50;
 export const EXPLORE_COST = 69;
-export const GRID_COLS = 50;
-export const GRID_ROWS = 50;
+export const GRID_COLS = 45;
+export const GRID_ROWS = 45;
 
 // ── Building types ──────────────────────────────────────────────────────
 

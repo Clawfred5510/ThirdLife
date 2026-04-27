@@ -1,44 +1,42 @@
 import React, { useEffect, useRef, useCallback } from 'react';
+import { WORLD_HALF } from '@gamestu/shared';
 import {
   onPlayerAdd,
   onPlayerRemove,
   onPlayerChange,
+  onParcelState,
+  onParcelUpdate,
   getSessionId,
+  getLocalPlayer,
   PlayerSnapshot,
 } from '../../network/Client';
+import type { ParcelData } from '@gamestu/shared';
 
+// i18n: compass label is a single character — no localization needed
 const SIZE = 150;
-const WORLD_MIN = -1000;
-const WORLD_MAX = 1000;
-const WORLD_RANGE = WORLD_MAX - WORLD_MIN; // 2000
 
-interface DistrictZone {
-  label: string;
-  x1: number;
-  z1: number;
-  x2: number;
-  z2: number;
-  color: string;
-}
+// Mirror of buildings.ts STRIDE — keep in sync if STRIDE changes there
+const MINIMAP_STRIDE = 48;
 
-const DISTRICTS: DistrictZone[] = [
-  { label: 'Downtown', x1: 100, z1: -600, x2: 800, z2: 100, color: 'rgba(100,110,120,0.4)' },
-  { label: 'Residential', x1: -900, z1: 100, x2: -100, z2: 900, color: 'rgba(80,130,60,0.4)' },
-  { label: 'Industrial', x1: 100, z1: 200, x2: 900, z2: 900, color: 'rgba(100,100,90,0.4)' },
-  { label: 'Waterfront', x1: 200, z1: -1000, x2: 1000, z2: -500, color: 'rgba(150,140,100,0.4)' },
-  { label: 'Entertainment', x1: -900, z1: -600, x2: -100, z2: 100, color: 'rgba(110,80,120,0.4)' },
-];
+// Validated hex color — fallback used when parcel.color is missing or malformed
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const PARCEL_COLOR_FALLBACK = '#4A90D9';
 
 function worldToMinimap(wx: number, wz: number): [number, number] {
-  const mx = ((wx - WORLD_MIN) / WORLD_RANGE) * SIZE;
-  const my = ((wz - WORLD_MIN) / WORLD_RANGE) * SIZE;
+  const mx = ((wx + WORLD_HALF) / (WORLD_HALF * 2)) * SIZE;
+  const my = ((-wz + WORLD_HALF) / (WORLD_HALF * 2)) * SIZE; // flip z so +Z is canvas-down
   return [mx, my];
 }
 
 export const Minimap: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playersRef = useRef<Map<string, PlayerSnapshot>>(new Map());
+  const parcelsRef = useRef<Map<number, ParcelData>>(new Map());
   const rafRef = useRef<number>(0);
+
+  // Optimization: only re-sort remotes when count changes
+  const lastRemoteCountRef = useRef<number>(0);
+  const sortedRemotesRef = useRef<PlayerSnapshot[]>([]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -46,56 +44,163 @@ export const Minimap: React.FC = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear
-    ctx.clearRect(0, 0, SIZE, SIZE);
-
-    // Background
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    // ── Layer 1: Background ───────────────────────────────────────────────
+    ctx.fillStyle = 'rgba(10, 12, 16, 0.78)';
     ctx.fillRect(0, 0, SIZE, SIZE);
 
-    // District zones
-    for (const d of DISTRICTS) {
-      const [x1, y1] = worldToMinimap(d.x1, d.z1);
-      const [x2, y2] = worldToMinimap(d.x2, d.z2);
-      ctx.fillStyle = d.color;
-      ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    // ── Layer 2: Parcel grid lines ────────────────────────────────────────
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 0.5;
+    const step = MINIMAP_STRIDE * 5;
+    for (let worldX = -WORLD_HALF; worldX <= WORLD_HALF; worldX += step) {
+      const [cx] = worldToMinimap(worldX, 0);
+      ctx.beginPath();
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, SIZE);
+      ctx.stroke();
+    }
+    for (let worldZ = -WORLD_HALF; worldZ <= WORLD_HALF; worldZ += step) {
+      const [, cy] = worldToMinimap(0, worldZ);
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(SIZE, cy);
+      ctx.stroke();
     }
 
+    // ── Layer 3: Claimed parcel fills ─────────────────────────────────────
+    const prevAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = 0.7;
+    for (const parcel of parcelsRef.current.values()) {
+      if (!parcel.owner_id) continue;
+      const wx = parcel.grid_x * MINIMAP_STRIDE - WORLD_HALF + 20;
+      const wz = parcel.grid_y * MINIMAP_STRIDE - WORLD_HALF + 20;
+      const [cx, cy] = worldToMinimap(wx, wz);
+      ctx.fillStyle = HEX_COLOR_RE.test(parcel.color) ? parcel.color : PARCEL_COLOR_FALLBACK;
+      ctx.fillRect(cx, cy, 2, 2);
+    }
+    ctx.globalAlpha = prevAlpha;
+
+    // ── Layer 4: Rocket landmark (always at canvas center) ────────────────
+    ctx.fillStyle = '#FFFFFF';
+    // Body: 3×8 rectangle centered at (75,75), spanning y 71→79
+    ctx.fillRect(73.5, 71, 3, 8);
+    // Cap: triangle with apex at (75, 67), base from (71.5, 71) to (78.5, 71)
+    ctx.beginPath();
+    ctx.moveTo(75, 67);
+    ctx.lineTo(71.5, 71);
+    ctx.lineTo(78.5, 71);
+    ctx.closePath();
+    ctx.fill();
+
+    // ── Layer 5: Remote players ───────────────────────────────────────────
     const myId = getSessionId();
+    const localPlayer = getLocalPlayer();
 
-    // Draw players
+    const allRemotes: PlayerSnapshot[] = [];
     for (const [sessionId, player] of playersRef.current) {
-      const [mx, my] = worldToMinimap(player.x, player.z);
-      if (sessionId === myId) {
-        // Local player: white dot, slightly larger
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(mx, my, 3, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        // Other players: red dot
-        ctx.fillStyle = '#ff4444';
-        ctx.beginPath();
-        ctx.arc(mx, my, 2, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      if (sessionId !== myId) allRemotes.push(player);
     }
+
+    const remoteCount = allRemotes.length;
+    let rendered = sortedRemotesRef.current;
+    if (remoteCount !== lastRemoteCountRef.current) {
+      // Re-sort only when count changes — sort by distance to local player
+      if (localPlayer && remoteCount > 20) {
+        const lx = localPlayer.x;
+        const lz = localPlayer.z;
+        allRemotes.sort((a, b) => {
+          const da = (a.x - lx) ** 2 + (a.z - lz) ** 2;
+          const db = (b.x - lx) ** 2 + (b.z - lz) ** 2;
+          return da - db;
+        });
+        rendered = allRemotes.slice(0, 20);
+      } else {
+        rendered = allRemotes;
+      }
+      sortedRemotesRef.current = rendered;
+      lastRemoteCountRef.current = remoteCount;
+    }
+
+    ctx.fillStyle = '#FF6B6B';
+    for (const player of rendered) {
+      const [cx, cy] = worldToMinimap(player.x, player.z);
+      const px = Math.max(1, Math.min(SIZE - 1, cx));
+      const py = Math.max(1, Math.min(SIZE - 1, cy));
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Layer 6: Local player ─────────────────────────────────────────────
+    if (localPlayer) {
+      const [mx, my] = worldToMinimap(localPlayer.x, localPlayer.z);
+      // rotation=0 faces +Z (canvas-down); add PI to get on-canvas pointing direction
+      const canvasAngle = localPlayer.rotation + Math.PI;
+      const halfSize = 5;
+      const apexX = mx + halfSize * Math.sin(canvasAngle);
+      const apexY = my - halfSize * Math.cos(canvasAngle);
+      const leftAngle = canvasAngle + 2.5;
+      const rightAngle = canvasAngle - 2.5;
+      const baseX1 = mx + halfSize * Math.sin(leftAngle);
+      const baseY1 = my - halfSize * Math.cos(leftAngle);
+      const baseX2 = mx + halfSize * Math.sin(rightAngle);
+      const baseY2 = my - halfSize * Math.cos(rightAngle);
+
+      ctx.beginPath();
+      ctx.moveTo(apexX, apexY);
+      ctx.lineTo(baseX1, baseY1);
+      ctx.lineTo(baseX2, baseY2);
+      ctx.closePath();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // ── Layer 7: N compass label ──────────────────────────────────────────
+    ctx.fillStyle = '#CCCCCC';
+    ctx.font = 'bold 8px monospace';
+    ctx.textBaseline = 'top';
+    ctx.fillText('N', 4, 11);
   }, []);
 
   useEffect(() => {
-    const handleAdd = (sessionId: string, player: PlayerSnapshot) => {
+    // Player subscriptions
+    const handlePlayerAdd = (sessionId: string, player: PlayerSnapshot) => {
       playersRef.current.set(sessionId, player);
     };
-    const handleRemove = (sessionId: string) => {
+    const handlePlayerRemove = (sessionId: string) => {
       playersRef.current.delete(sessionId);
     };
-    const handleChange = (sessionId: string, player: PlayerSnapshot) => {
+    const handlePlayerChange = (sessionId: string, player: PlayerSnapshot) => {
       playersRef.current.set(sessionId, player);
     };
 
-    const unsubAdd = onPlayerAdd(handleAdd);
-    const unsubRemove = onPlayerRemove(handleRemove);
-    const unsubChange = onPlayerChange(handleChange);
+    // Parcel subscriptions
+    const handleParcelState = (parcels: ParcelData[]) => {
+      parcelsRef.current.clear();
+      for (const p of parcels) {
+        parcelsRef.current.set(p.id, p);
+      }
+    };
+    const handleParcelUpdate = (update: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
+      if (update.id === undefined) return;
+      const existing = parcelsRef.current.get(update.id);
+      if (existing) {
+        // Merge partial update into stored parcel
+        parcelsRef.current.set(update.id, { ...existing, ...update });
+      } else if (update.grid_x !== undefined && update.grid_y !== undefined) {
+        // New parcel we haven't seen before — store it if we have enough data
+        parcelsRef.current.set(update.id, update as ParcelData);
+      }
+    };
+
+    const unsubAdd = onPlayerAdd(handlePlayerAdd);
+    const unsubRemove = onPlayerRemove(handlePlayerRemove);
+    const unsubChange = onPlayerChange(handlePlayerChange);
+    const unsubParcelState = onParcelState(handleParcelState);
+    const unsubParcelUpdate = onParcelUpdate(handleParcelUpdate);
 
     // Draw loop at ~10 fps
     let lastTime = 0;
@@ -113,6 +218,8 @@ export const Minimap: React.FC = () => {
       unsubAdd();
       unsubRemove();
       unsubChange();
+      unsubParcelState();
+      unsubParcelUpdate();
     };
   }, [draw]);
 

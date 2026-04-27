@@ -50,6 +50,7 @@ import {
 } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
+import { buildRocket } from '../entities/rocketCenterpiece';
 import { buildProceduralBuilding, BUILDING_SPECS, DEFAULT_BUILDING_SPEC, BuildingOutput } from '../entities/proceduralBuilding';
 import { spawnNPCs } from '../entities/npcs';
 import { selectParcel } from '../../ui/components/ParcelPanel';
@@ -235,6 +236,9 @@ export class MainScene {
     // Await so parcelRenders is populated before any code that depends on
     // it (e.g. offline-mode demo building seed) runs.
     await this.spawnBuildingsAndSetupParcels(scene);
+
+    // ---- Rocket centerpiece at world origin ----
+    buildRocket(scene, Vector3.Zero());
 
     // ---- Day/Night Cycle ----
     if (features.DAY_NIGHT) {

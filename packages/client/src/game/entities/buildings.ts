@@ -11,6 +11,7 @@ import {
   InstancedMesh,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
+import { GRID_COLS, GRID_ROWS } from '@gamestu/shared';
 
 // ---------------------------------------------------------------------------
 // Parcel grid configuration
@@ -24,8 +25,7 @@ export interface ParcelDef {
   z: number;
 }
 
-export const GRID_COLS = 50;
-export const GRID_ROWS = 50;
+export { GRID_COLS, GRID_ROWS };
 const CELL_SIZE = 40;
 const ROAD_WIDTH = 8;
 const GRID_TOTAL_W = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * ROAD_WIDTH;

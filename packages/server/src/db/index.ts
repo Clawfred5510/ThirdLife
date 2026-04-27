@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
-import { LAND_COST } from '@gamestu/shared';
+import { LAND_COST, GRID_COLS, GRID_ROWS } from '@gamestu/shared';
 import type { ResourceType } from '@gamestu/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -117,9 +117,9 @@ class SQLiteDatabase implements DBBackend {
         name TEXT NOT NULL,
         credits INTEGER DEFAULT 50,
         reputation INTEGER DEFAULT 0,
-        x REAL DEFAULT 400,
+        x REAL DEFAULT 0,
         y REAL DEFAULT 0,
-        z REAL DEFAULT -200,
+        z REAL DEFAULT -80,
         last_login TEXT,
         tutorial_done INTEGER DEFAULT 0
       );
@@ -283,13 +283,17 @@ class SQLiteDatabase implements DBBackend {
   }
 
   seedParcels(): void {
-    const { cnt } = this.stmtCountParcels.get() as { cnt: number };
-    if (cnt > 0) return;
-    const GRID_SIZE = 50;
+    // Parcel id is computed `gx * GRID_COLS + gy`. If GRID_COLS ever
+    // changes, every previously-seeded row now has the wrong id for its
+    // (grid_x, grid_y) and INSERT OR IGNORE would silently duplicate rows.
+    // Drop any stale-id rows before reseeding.
+    this.db.prepare(
+      'DELETE FROM parcels WHERE grid_x >= ? OR grid_y >= ? OR id != grid_x * ? + grid_y',
+    ).run(GRID_COLS, GRID_ROWS, GRID_COLS);
     const insertMany = this.db.transaction(() => {
-      for (let gx = 0; gx < GRID_SIZE; gx++) {
-        for (let gy = 0; gy < GRID_SIZE; gy++) {
-          this.stmtInsertParcel.run(gx * GRID_SIZE + gy, gx, gy);
+      for (let gx = 0; gx < GRID_COLS; gx++) {
+        for (let gy = 0; gy < GRID_ROWS; gy++) {
+          this.stmtInsertParcel.run(gx * GRID_COLS + gy, gx, gy);
         }
       }
     });
@@ -556,9 +560,9 @@ class MemoryDB implements DBBackend {
       name,
       credits: 500,
       reputation: 0,
-      x: 400,
+      x: 0,
       y: 0,
-      z: -200,
+      z: -80,
       last_login: new Date().toISOString(),
       tutorial_done: 0,
       appearance: null,
@@ -591,21 +595,27 @@ class MemoryDB implements DBBackend {
   }
 
   seedParcels(): void {
-    if (this.parcels.size > 0) return;
-    const GRID_SIZE = 50;
-    for (let gx = 0; gx < GRID_SIZE; gx++) {
-      for (let gy = 0; gy < GRID_SIZE; gy++) {
-        this.parcels.set(gx * GRID_SIZE + gy, {
-          id: gx * GRID_SIZE + gy,
-          grid_x: gx,
-          grid_y: gy,
-          owner_id: null,
-          business_name: null,
-          business_type: null,
-          color: '#4a90d9',
-          height: 4,
-          claimed_at: null,
-        });
+    // Remove out-of-bounds parcels (handles grid shrinks).
+    for (const [id, p] of this.parcels) {
+      if (p.grid_x >= GRID_COLS || p.grid_y >= GRID_ROWS) this.parcels.delete(id);
+    }
+    // Insert any missing parcels for the current grid bounds.
+    for (let gx = 0; gx < GRID_COLS; gx++) {
+      for (let gy = 0; gy < GRID_ROWS; gy++) {
+        const id = gx * GRID_COLS + gy;
+        if (!this.parcels.has(id)) {
+          this.parcels.set(id, {
+            id,
+            grid_x: gx,
+            grid_y: gy,
+            owner_id: null,
+            business_name: null,
+            business_type: null,
+            color: '#4a90d9',
+            height: 4,
+            claimed_at: null,
+          });
+        }
       }
     }
   }
@@ -789,7 +799,7 @@ class MemoryDB implements DBBackend {
 
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
     this.agents.set(apiKey, { id, name, apiKey });
-    this.players.set(id, { id, name, credits: 50, reputation: 0, x: 400, y: 0, z: -200, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
+    this.players.set(id, { id, name, credits: 50, reputation: 0, x: 0, y: 0, z: -80, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
