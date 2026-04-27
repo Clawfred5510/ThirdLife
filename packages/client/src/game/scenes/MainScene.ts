@@ -685,10 +685,14 @@ export class MainScene {
     if (isLocal && this.sceneRef) {
       // Reuse the initial ArcRotateCamera instead of creating a new one
       // so its mouse-drag attachment survives. Just re-point its target.
+      // alpha = -π/2 puts the camera on -Z side of the target. The player
+      // yaw is derived from camera-to-target direction (`sendPlayerInput`),
+      // so this makes the player face +Z (toward the rocket at world
+      // origin) on first frame.
       const cam = this.arcCamera ?? new ArcRotateCamera(
         'playerCamera',
-        Math.PI,        // alpha: start looking from +Z (camera behind player when player faces -Z)
-        Math.PI / 2.4,  // beta: slight downward tilt
+        -Math.PI / 2,   // alpha: camera south of target → player yaw 0 → faces +Z
+        Math.PI / 2.6,  // beta: slight upward tilt so the rocket's upper body is in frame
         14,             // radius: distance from player
         new Vector3(player.x, player.y + 1.2, player.z),
         this.sceneRef,
