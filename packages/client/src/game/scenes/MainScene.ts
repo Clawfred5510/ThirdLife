@@ -30,6 +30,7 @@ import {
   sendInput,
   getSessionId,
   PlayerSnapshot,
+  onParcelState,
   onParcelUpdate,
 } from '../../network/Client';
 import {
@@ -275,7 +276,20 @@ export class MainScene {
       this.updateRemotePlayerTarget(sessionId, player);
     });
 
-    // ---- Parcel update listener (from Colyseus schema sync + broadcast messages) ----
+    // ---- Parcel state on connect: render every already-claimed parcel ----
+    // Without this the bulk snapshot from the server only updates the
+    // network cache; visible buildings only appear when the per-parcel
+    // PARCEL_UPDATE messages arrive (which never fire on a clean connect).
+    // Result: claimed parcels show as empty until clicked. Render them now.
+    onParcelState((parcels) => {
+      for (const p of parcels) {
+        if (p.owner_id) {
+          this.handleParcelUpdate(p.id, p);
+        }
+      }
+    });
+
+    // ---- Parcel update listener (incremental — claim, build, sell, recolor) ----
     onParcelUpdate((update: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
       if (update.id === undefined) return;
       this.handleParcelUpdate(update.id, update);
