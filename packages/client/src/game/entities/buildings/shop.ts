@@ -94,14 +94,10 @@ export function buildShop(
   exteriorCasters.push(signText);
 
   if (businessName && businessName.trim().length > 0) {
-    // CRITICAL: AdvancedDynamicTexture.CreateForMesh REPLACES the mesh's
-    // material with one that has the ADT as its diffuse texture. If we
-    // don't set adt.background, the panel renders TRANSPARENT outside the
-    // text — the white signWhite material set above is gone. That's why
-    // the previous shipped versions had "no visible white panel" and the
-    // inverted-looking text (the only visible thing was the back face's
-    // mirrored text bleeding through the transparent front).
-    // Match the rocket COMING SOON sign which sets a cream background.
+    // CreateForMesh replaces the mesh's material with one whose diffuse
+    // texture is this ADT. Without adt.background the panel renders
+    // transparent outside the glyphs, which is what was making the white
+    // panel invisible in earlier rounds. Cream matches the rocket sign.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
     adt.background = '#FFFAE8';
     const text = new TextBlock('shopName', businessName.trim().toUpperCase());
@@ -111,6 +107,12 @@ export function buildShop(
     text.fontSize = 140;
     text.textHorizontalAlignment = TextBlock.HORIZONTAL_ALIGNMENT_CENTER;
     text.textVerticalAlignment = TextBlock.VERTICAL_ALIGNMENT_CENTER;
+    // User screenshot showed text reading right-to-left on the visible
+    // face. Babylon's CreateBox lays out the back-face UV mirrored, so the
+    // -Z face the player sees displays the texture flipped on X. Pre-flip
+    // the text in the texture (scaleX = -1) so the double-mirror cancels
+    // and the player sees correct left-to-right text.
+    text.scaleX = -1;
     adt.addControl(text);
   } else {
     // No name set — keep the panel a solid white plate (no ADT, so the
