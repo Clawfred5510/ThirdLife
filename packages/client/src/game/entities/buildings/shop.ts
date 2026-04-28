@@ -100,9 +100,12 @@ export function buildShop(
     // panel invisible in earlier rounds. Cream matches the rocket sign.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
     adt.background = '#FFFAE8';
-    // Cancel the box face's mirrored U sampling so the player sees the
-    // text in the correct left-to-right order.
+    // Cancel the box face's mirrored U sampling. uScale=-1 alone moves
+    // the visible content outside [0,1]; uOffset=1 shifts it back in.
+    // Together they map u → 1-u, i.e. a horizontal flip within the same
+    // visible region.
     adt.uScale = -1;
+    adt.uOffset = 1;
     const text = new TextBlock('shopName', businessName.trim().toUpperCase());
     text.color = '#1A1208';
     text.fontFamily = 'Arial';
