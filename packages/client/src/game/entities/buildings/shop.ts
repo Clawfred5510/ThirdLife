@@ -78,18 +78,18 @@ export function buildShop(
   sign.material = signRed;
   sign.receiveShadows = true;
   exteriorCasters.push(sign);
-  // White text panel — Box rotated 180° around Y so the box's "front"
-  // face (mesh-local +Z) now faces world -Z (toward the player). Babylon's
-  // CreateBox lays out face UVs such that opposing faces are mirror
-  // copies; the player viewing the natural -Z face was reading the
-  // texture flipped left-to-right ("THE STORE" → "EROTS EHT" per user
-  // screenshot). Rotating the box swaps which face the player sees.
+  // White text panel. Babylon's CreateBox lays out the front (+Z) face's
+  // UV such that the texture appears mirrored when viewed from the south
+  // (-Z). The fix is on the texture, not the geometry: setting uScale=-1
+  // on the ADT flips the texture's U sampling, and combined with the
+  // face's mirror those two flips cancel and the player sees correct
+  // text. Rotating the box doesn't help because both opposing faces have
+  // the same UV layout, so they look identical regardless of orientation.
   const signText = MeshBuilder.CreateBox(`shopSignTxt_${id}`, {
     width: shopW * 0.6, height: 1.6, depth: 0.1,
   }, scene);
   signText.parent = body;
   signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.6);
-  signText.rotation.y = Math.PI;
   signText.material = signWhite;
   exteriorCasters.push(signText);
 
@@ -100,6 +100,9 @@ export function buildShop(
     // panel invisible in earlier rounds. Cream matches the rocket sign.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
     adt.background = '#FFFAE8';
+    // Cancel the box face's mirrored U sampling so the player sees the
+    // text in the correct left-to-right order.
+    adt.uScale = -1;
     const text = new TextBlock('shopName', businessName.trim().toUpperCase());
     text.color = '#1A1208';
     text.fontFamily = 'Arial';
