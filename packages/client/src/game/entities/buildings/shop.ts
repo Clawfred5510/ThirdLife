@@ -78,18 +78,18 @@ export function buildShop(
   sign.material = signRed;
   sign.receiveShadows = true;
   exteriorCasters.push(sign);
-  // White text panel — Box at the natural orientation, like the rocket
-  // COMING SOON sign. The previous Plane+rotation.y=PI mirrored the UV on
-  // the visible side, making the text read as inverted from the player's
-  // view. The back-face mirror is no longer a problem because the panel
-  // is in exteriorCasters and fades with the roof when the player walks
-  // inside. Sits proud of the red sign so the white inset is clearly
-  // visible from outside.
+  // White text panel — Box rotated 180° around Y so the box's "front"
+  // face (mesh-local +Z) now faces world -Z (toward the player). Babylon's
+  // CreateBox lays out face UVs such that opposing faces are mirror
+  // copies; the player viewing the natural -Z face was reading the
+  // texture flipped left-to-right ("THE STORE" → "EROTS EHT" per user
+  // screenshot). Rotating the box swaps which face the player sees.
   const signText = MeshBuilder.CreateBox(`shopSignTxt_${id}`, {
     width: shopW * 0.6, height: 1.6, depth: 0.1,
   }, scene);
   signText.parent = body;
   signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.6);
+  signText.rotation.y = Math.PI;
   signText.material = signWhite;
   exteriorCasters.push(signText);
 
@@ -107,12 +107,6 @@ export function buildShop(
     text.fontSize = 140;
     text.textHorizontalAlignment = TextBlock.HORIZONTAL_ALIGNMENT_CENTER;
     text.textVerticalAlignment = TextBlock.VERTICAL_ALIGNMENT_CENTER;
-    // User screenshot showed text reading right-to-left on the visible
-    // face. Babylon's CreateBox lays out the back-face UV mirrored, so the
-    // -Z face the player sees displays the texture flipped on X. Pre-flip
-    // the text in the texture (scaleX = -1) so the double-mirror cancels
-    // and the player sees correct left-to-right text.
-    text.scaleX = -1;
     adt.addControl(text);
   } else {
     // No name set — keep the panel a solid white plate (no ADT, so the
