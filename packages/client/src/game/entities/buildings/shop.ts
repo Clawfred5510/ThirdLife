@@ -100,13 +100,14 @@ export function buildShop(
     // panel invisible in earlier rounds. Cream matches the rocket sign.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
     adt.background = '#FFFAE8';
-    // Cancel the box face's mirrored U sampling. uScale=-1 alone moves
-    // the visible content outside [0,1]; uOffset=1 shifts it back in.
-    // Together they map u → 1-u, i.e. a horizontal flip within the same
-    // visible region.
-    adt.uScale = -1;
-    adt.uOffset = 1;
-    const text = new TextBlock('shopName', businessName.trim().toUpperCase());
+    // Box face mirrors the texture horizontally on the visible side and
+    // ADT-level uScale/uOffset don't propagate through (ADT overrides the
+    // texture sampling pipeline). Pre-reverse the character ORDER in the
+    // source string so the box's mirror flips it back to correct order.
+    // (Letter SHAPES are also mirrored by the box; we accept that — see
+    // user screenshot, glyph order was the dominant readability issue.)
+    const reversed = businessName.trim().toUpperCase().split('').reverse().join('');
+    const text = new TextBlock('shopName', reversed);
     text.color = '#1A1208';
     text.fontFamily = 'Arial';
     text.fontWeight = 'bold';
