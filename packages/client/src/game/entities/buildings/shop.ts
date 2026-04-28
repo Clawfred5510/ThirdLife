@@ -100,14 +100,13 @@ export function buildShop(
     // panel invisible in earlier rounds. Cream matches the rocket sign.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
     adt.background = '#FFFAE8';
-    // Box face mirrors the texture horizontally on the visible side and
-    // ADT-level uScale/uOffset don't propagate through (ADT overrides the
-    // texture sampling pipeline). Pre-reverse the character ORDER in the
-    // source string so the box's mirror flips it back to correct order.
-    // (Letter SHAPES are also mirrored by the box; we accept that — see
-    // user screenshot, glyph order was the dominant readability issue.)
-    const reversed = businessName.trim().toUpperCase().split('').reverse().join('');
-    const text = new TextBlock('shopName', reversed);
+    // Self-screenshot test confirmed: with the pre-reversed source string
+    // "EROTS EHT", the visible rendered text was "EROTS EHT" with correct
+    // letter SHAPES. That means the box face was never mirroring at all —
+    // it simply renders the source string as-is. Earlier rounds of "the
+    // text is inverted" feedback were a perceptual misread on my part.
+    // Removed the pre-reverse hack; render the name straight.
+    const text = new TextBlock('shopName', businessName.trim().toUpperCase());
     text.color = '#1A1208';
     text.fontFamily = 'Arial';
     text.fontWeight = 'bold';
