@@ -94,15 +94,27 @@ export function buildShop(
   exteriorCasters.push(signText);
 
   if (businessName && businessName.trim().length > 0) {
+    // CRITICAL: AdvancedDynamicTexture.CreateForMesh REPLACES the mesh's
+    // material with one that has the ADT as its diffuse texture. If we
+    // don't set adt.background, the panel renders TRANSPARENT outside the
+    // text — the white signWhite material set above is gone. That's why
+    // the previous shipped versions had "no visible white panel" and the
+    // inverted-looking text (the only visible thing was the back face's
+    // mirrored text bleeding through the transparent front).
+    // Match the rocket COMING SOON sign which sets a cream background.
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);
-    const text = new TextBlock();
-    text.text = businessName.trim().toUpperCase();
+    adt.background = '#FFFAE8';
+    const text = new TextBlock('shopName', businessName.trim().toUpperCase());
     text.color = '#1A1208';
     text.fontFamily = 'Arial';
-    text.fontStyle = 'bold';
+    text.fontWeight = 'bold';
     text.fontSize = 140;
-    text.textWrapping = true;
+    text.textHorizontalAlignment = TextBlock.HORIZONTAL_ALIGNMENT_CENTER;
+    text.textVerticalAlignment = TextBlock.VERTICAL_ALIGNMENT_CENTER;
     adt.addControl(text);
+  } else {
+    // No name set — keep the panel a solid white plate (no ADT, so the
+    // signWhite material stays applied and the panel renders correctly).
   }
 
   // ── STRIPED AWNING above the storefront windows ─────────────────────
