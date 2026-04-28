@@ -78,13 +78,29 @@ export function buildMarket(
   rim.material = stoneMat;
   exteriorCasters.push(rim);
   solid(rim);
+  // Visible water surface inside the basin — sits clearly above the rim
+  // top so it reads as a glassy blue pool rather than disappearing into
+  // the stonework. Walkable so the player can wade onto the fountain.
   const water = MeshBuilder.CreateCylinder(`mkWater_${id}`, {
-    diameter: 4.4, height: 0.12, tessellation: 32,
+    diameter: 4.6, height: 0.18, tessellation: 32,
   }, scene);
   water.parent = root;
-  water.position.set(0, 1.1, 0);
+  water.position.set(0, 1.25, 0);
   water.material = waterMat;
-  // (water surface stays walkable — purely decorative)
+  // Small fountain spray — three slim columns rising from the plinth
+  // sphere, each slightly translucent blue, to give a visible "fountain
+  // is on" silhouette without the cost of a particle system.
+  for (let i = 0; i < 3; i++) {
+    const ang = (i / 3) * Math.PI * 2;
+    const sx = Math.sin(ang) * 0.18;
+    const sz = Math.cos(ang) * 0.18;
+    const jet = MeshBuilder.CreateCylinder(`mkJet_${id}_${i}`, {
+      diameterTop: 0.05, diameterBottom: 0.18, height: 1.4, tessellation: 10,
+    }, scene);
+    jet.parent = root;
+    jet.position.set(sx, 4.0, sz); // rises above the topSphere at y=3.3
+    jet.material = waterMat;
+  }
   const plinth = MeshBuilder.CreateCylinder(`mkPlinth_${id}`, {
     diameter: 0.9, height: 2.0, tessellation: 16,
   }, scene);

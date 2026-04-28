@@ -5,7 +5,6 @@ import {
   Color3,
   TransformNode,
   AbstractMesh,
-  Mesh,
 } from '@babylonjs/core';
 import { AdvancedDynamicTexture, TextBlock } from '@babylonjs/gui';
 import { buildFurniture } from '../buildingFurniture';
@@ -79,22 +78,19 @@ export function buildShop(
   sign.material = signRed;
   sign.receiveShadows = true;
   exteriorCasters.push(sign);
-  // White text panel — sits proud of the red sign as a clearly visible
-  // inset rectangle on the south (player-facing) face. Was a Box before;
-  // ADT on a Box renders the texture on ALL 6 faces, so from inside the
-  // shop the back face showed the text mirrored ("inverted version").
-  // Plane = single face, no mirror, and we force FRONTSIDE so the text
-  // only appears facing -Z. Pushed deeper south so the red sign no longer
-  // hides it.
-  const signText = MeshBuilder.CreatePlane(`shopSignTxt_${id}`, {
-    width: shopW * 0.6, height: 1.6, sideOrientation: Mesh.FRONTSIDE,
+  // White text panel — Box at the natural orientation, like the rocket
+  // COMING SOON sign. The previous Plane+rotation.y=PI mirrored the UV on
+  // the visible side, making the text read as inverted from the player's
+  // view. The back-face mirror is no longer a problem because the panel
+  // is in exteriorCasters and fades with the roof when the player walks
+  // inside. Sits proud of the red sign so the white inset is clearly
+  // visible from outside.
+  const signText = MeshBuilder.CreateBox(`shopSignTxt_${id}`, {
+    width: shopW * 0.6, height: 1.6, depth: 0.1,
   }, scene);
   signText.parent = body;
   signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.6);
-  signText.rotation.y = Math.PI; // face -Z (toward spawn / player)
   signText.material = signWhite;
-  // Push to exteriorCasters so the y > 2.5 fade filter picks it up and the
-  // sign disappears with the roof when the player walks inside.
   exteriorCasters.push(signText);
 
   if (businessName && businessName.trim().length > 0) {
