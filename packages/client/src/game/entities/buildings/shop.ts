@@ -5,6 +5,7 @@ import {
   Color3,
   TransformNode,
   AbstractMesh,
+  Mesh,
 } from '@babylonjs/core';
 import { AdvancedDynamicTexture, TextBlock } from '@babylonjs/gui';
 import { buildFurniture } from '../buildingFurniture';
@@ -78,14 +79,23 @@ export function buildShop(
   sign.material = signRed;
   sign.receiveShadows = true;
   exteriorCasters.push(sign);
-  // Illuminated white panel (south-facing) — carries the business name as
-  // a dynamic texture. Updates via re-render when business_name changes.
-  const signText = MeshBuilder.CreateBox(`shopSignTxt_${id}`, {
-    width: shopW * 0.6, height: 1.6, depth: 0.1,
+  // White text panel — sits proud of the red sign as a clearly visible
+  // inset rectangle on the south (player-facing) face. Was a Box before;
+  // ADT on a Box renders the texture on ALL 6 faces, so from inside the
+  // shop the back face showed the text mirrored ("inverted version").
+  // Plane = single face, no mirror, and we force FRONTSIDE so the text
+  // only appears facing -Z. Pushed deeper south so the red sign no longer
+  // hides it.
+  const signText = MeshBuilder.CreatePlane(`shopSignTxt_${id}`, {
+    width: shopW * 0.6, height: 1.6, sideOrientation: Mesh.FRONTSIDE,
   }, scene);
   signText.parent = body;
-  signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.4);
+  signText.position.set(0, wallH + 1.7, -shopD / 2 - 0.6);
+  signText.rotation.y = Math.PI; // face -Z (toward spawn / player)
   signText.material = signWhite;
+  // Push to exteriorCasters so the y > 2.5 fade filter picks it up and the
+  // sign disappears with the roof when the player walks inside.
+  exteriorCasters.push(signText);
 
   if (businessName && businessName.trim().length > 0) {
     const adt = AdvancedDynamicTexture.CreateForMesh(signText, 1024, 256);

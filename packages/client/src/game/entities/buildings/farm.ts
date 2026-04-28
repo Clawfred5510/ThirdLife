@@ -81,16 +81,31 @@ export function buildFarm(
   );
 
   // Horizontal board lines on the barn facades.
-  // Was a single full-footprint slab per height — that slab sliced through
-  // the barn interior as a brown "floor layer" the player would see when
-  // walking inside. Now four thin strips per height, each hugging one
-  // facade just proud of the wall, so the interior stays clear.
+  // Front strips skip a centered gap matching the doorway so the planks
+  // don't cross the open door. Back/left/right are full width.
   const boardT = 0.08;
+  const doorW = spec.doorWidth;
+  const doorH = spec.doorHeight;
   for (let y = 1.5; y < wallH; y += 1.5) {
-    const front = MeshBuilder.CreateBox(`board_${id}_F_${y}`, {
-      width: barnW + boardT * 2, height: 0.1, depth: boardT,
-    }, scene);
-    front.parent = barnRoot; front.position.set(0, y, -barnD / 2 - boardT / 2); front.material = darkWoodMat;
+    const crossesDoor = y < doorH + 0.1;
+    if (crossesDoor) {
+      // Front: two halves with a gap
+      const sideW = (barnW - doorW) / 2;
+      const xCenter = (doorW / 2) + (sideW / 2);
+      const fL = MeshBuilder.CreateBox(`board_${id}_FL_${y}`, {
+        width: sideW + boardT, height: 0.1, depth: boardT,
+      }, scene);
+      fL.parent = barnRoot; fL.position.set(-xCenter, y, -barnD / 2 - boardT / 2); fL.material = darkWoodMat;
+      const fR = MeshBuilder.CreateBox(`board_${id}_FR_${y}`, {
+        width: sideW + boardT, height: 0.1, depth: boardT,
+      }, scene);
+      fR.parent = barnRoot; fR.position.set(xCenter, y, -barnD / 2 - boardT / 2); fR.material = darkWoodMat;
+    } else {
+      const front = MeshBuilder.CreateBox(`board_${id}_F_${y}`, {
+        width: barnW + boardT * 2, height: 0.1, depth: boardT,
+      }, scene);
+      front.parent = barnRoot; front.position.set(0, y, -barnD / 2 - boardT / 2); front.material = darkWoodMat;
+    }
     const back = MeshBuilder.CreateBox(`board_${id}_B_${y}`, {
       width: barnW + boardT * 2, height: 0.1, depth: boardT,
     }, scene);
@@ -235,8 +250,12 @@ export function buildFarm(
   bucket.position.set(wellX, 1.6, wellZ);
   bucket.material = darkWoodMat;
 
-  // ── HAYSTACK pile (left side of the lot) ────────────────────────────
-  const hayX = -lotHalfW + 3;
+  // ── HAYSTACK pile (back-right corner, away from the barn) ───────────
+  // Was at (-lotHalfW+3, lotHalfD-4) which sat right against the barn's
+  // back wall (barn extends z=-5..13, haystack was at z=12..13.3).
+  // Bales were phasing through the wall. Moved to back-right where the
+  // barn's footprint doesn't reach.
+  const hayX = lotHalfW - 4;
   const hayZ = lotHalfD - 4;
   // Base layer of bales
   for (let i = 0; i < 4; i++) {
@@ -308,18 +327,28 @@ export function buildFarm(
   const furn = buildFurniture(scene, id, 'farm', Math.min(barnW, barnD) - spec.wallThickness * 2, wallH);
   furn.root.parent = barnRoot;
 
-  // Roof meshes = everything decorative (not walls). The interior shell
-  // pushed wallsAdded entries; everything else goes in roofMeshes.
+  // Roof fade list — only meshes that actually belong to the BARN should
+  // disappear when the player walks inside it. Silos, well, haystack,
+  // wheelbarrow, fences are standalone props on the lot, not the barn,
+  // so they must stay solid even from inside.
+  //
+  // Filter: must be a descendant of barnRoot (silos/well/haystack are
+  // parented to the lot root, not barnRoot, so they're excluded).
+  const isUnderBarn = (m: AbstractMesh): boolean => {
+    let n: { parent?: unknown } | null = m as unknown as { parent?: unknown };
+    while (n && n.parent) {
+      if (n.parent === barnRoot) return true;
+      n = n.parent as { parent?: unknown };
+    }
+    return false;
+  };
   const roofMeshes: AbstractMesh[] = [
     shell.ceiling,
     roof, ridge,
-    // silos + caps are pushed last, but we want them to fade too
   ];
-  // All exterior casters AFTER the wall count belong to roof/decor — but
-  // many of them are LOW (crops, plots, fence, wheelbarrow). The fade
-  // should only target things above ~3u. Filter by height:
   for (const m of exteriorCasters.slice(shell.wallsAdded)) {
     if (roofMeshes.includes(m)) continue;
+    if (!isUnderBarn(m)) continue;
     const y = m.getAbsolutePosition().y;
     if (isRoofMesh(m.name) || y > 2.5) roofMeshes.push(m);
   }

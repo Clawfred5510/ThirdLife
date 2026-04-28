@@ -54,6 +54,12 @@ export function buildMarket(
   plaza.material = cobbleMat;
   plaza.receiveShadows = true;
 
+  // Helper: mark a mesh as a solid the player can't walk through.
+  // The local player collider uses moveWithCollisions which respects
+  // checkCollisions. Tracked in collisionWalls for parity with other
+  // building types' shells.
+  const solid = (m: AbstractMesh) => { m.checkCollisions = true; collisionWalls.push(m); };
+
   // Central fountain
   const fountBase = MeshBuilder.CreateCylinder(`mkFountBase_${id}`, {
     diameter: 5.0, height: 1.0, tessellation: 32,
@@ -63,6 +69,7 @@ export function buildMarket(
   fountBase.material = stoneMat;
   fountBase.receiveShadows = true;
   exteriorCasters.push(fountBase);
+  solid(fountBase);
   const rim = MeshBuilder.CreateCylinder(`mkFountRim_${id}`, {
     diameter: 5.1, height: 0.3, tessellation: 32,
   }, scene);
@@ -70,12 +77,14 @@ export function buildMarket(
   rim.position.set(0, 1.05, 0);
   rim.material = stoneMat;
   exteriorCasters.push(rim);
+  solid(rim);
   const water = MeshBuilder.CreateCylinder(`mkWater_${id}`, {
     diameter: 4.4, height: 0.12, tessellation: 32,
   }, scene);
   water.parent = root;
   water.position.set(0, 1.1, 0);
   water.material = waterMat;
+  // (water surface stays walkable — purely decorative)
   const plinth = MeshBuilder.CreateCylinder(`mkPlinth_${id}`, {
     diameter: 0.9, height: 2.0, tessellation: 16,
   }, scene);
@@ -83,6 +92,7 @@ export function buildMarket(
   plinth.position.set(0, 2.1, 0);
   plinth.material = stoneMat;
   exteriorCasters.push(plinth);
+  solid(plinth);
   const topSphere = MeshBuilder.CreateSphere(`mkFountTop_${id}`, {
     diameter: 1.0, segments: 14,
   }, scene);
@@ -90,6 +100,7 @@ export function buildMarket(
   topSphere.position.set(0, 3.3, 0);
   topSphere.material = stoneMat;
   exteriorCasters.push(topSphere);
+  solid(topSphere);
 
   // Tall central flagpole on top of the fountain
   const pole = MeshBuilder.CreateCylinder(`mkPole_${id}`, {
@@ -128,6 +139,7 @@ export function buildMarket(
     counter.material = woodMat;
     counter.receiveShadows = true;
     exteriorCasters.push(counter);
+    solid(counter);
 
     for (let p = 0; p < 2; p++) {
       const crate = MeshBuilder.CreateBox(`crate_${id}_${i}_${p}`, {
@@ -136,6 +148,7 @@ export function buildMarket(
       crate.parent = stallRoot;
       crate.position.set(-0.6 + p * 1.2, 1.2, 0);
       crate.material = mat(scene, `mkProduce-${i}-${p}`, stallColors[(i + p) % stallColors.length], 0.8);
+      solid(crate);
     }
 
     for (const px of [-1.1, 1.1]) {
@@ -146,6 +159,7 @@ export function buildMarket(
         pl.parent = stallRoot;
         pl.position.set(px, 1.3, pz);
         pl.material = trimMat;
+        solid(pl);
       }
     }
 
