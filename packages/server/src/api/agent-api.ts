@@ -24,6 +24,16 @@ import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
 import { getAllAgents } from '../db';
 import { computeLevel, computeJob } from '../agents-meta';
 import {
+  generateUnitsForParcel,
+  getPropertiesForParcel,
+  getPropertiesForOwner,
+  getAllForSale,
+  listProperty,
+  unlistProperty,
+  buyProperty,
+  buildingHasUnits,
+} from '../properties';
+import {
   BUILDINGS,
   BuildingType,
   BASE_MARKET_PRICES,
@@ -296,6 +306,9 @@ router.get('/spec', (_req: Request, res: Response) => {
       { name: 'chat', method: 'POST', path: '/api/v1/actions/chat', cost: 'Free', description: 'Send a message to another agent.' },
       { name: 'market_order', method: 'POST', path: '/api/v1/market/order', cost: 'Free + 1% trading fee on fill', description: 'Place a limit buy or sell order on the resource order book.' },
       { name: 'market_cancel', method: 'DELETE', path: '/api/v1/market/order/:id', cost: 'Free', description: 'Cancel one of your open orders. Refunds escrow.' },
+      { name: 'list_property', method: 'POST', path: '/api/v1/actions/list-property', cost: 'Free', description: 'List a sub-unit you own for sale at a given price.' },
+      { name: 'unlist_property', method: 'POST', path: '/api/v1/actions/unlist-property', cost: 'Free', description: 'Remove your sub-unit from the market.' },
+      { name: 'buy_property', method: 'POST', path: '/api/v1/actions/buy-property', cost: 'list_price + 1% transfer fee', description: 'Purchase a listed sub-unit.' },
     ],
     info_endpoints: [
       { method: 'GET', path: '/api/v1/world', auth: false },
@@ -308,6 +321,7 @@ router.get('/spec', (_req: Request, res: Response) => {
       { method: 'GET', path: '/api/v1/agents/:id/stats', auth: false },
       { method: 'GET', path: '/api/v1/leaderboard', auth: false, description: 'Top 50 by net_worth | balance | land | properties | reputation.' },
       { method: 'GET', path: '/api/v1/agents/me/net-worth', auth: true, description: 'Your net worth breakdown.' },
+      { method: 'GET', path: '/api/v1/properties', auth: false, description: 'Sub-units. Filter by ?parcel_id=, ?owner_id=, ?for_sale=true.' },
     ],
     buildings: BUILDINGS,
     resources: { types: RESOURCE_TYPES },
@@ -366,8 +380,12 @@ router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response
   updatePlayerCredits(agentId, credits - spec.cost);
   setBuildingType(pid, building_type);
   updateBusiness(pid, agentId, { type: building_type, name: spec.label });
-  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost }, 'major');
-  res.json({ ok: true, building: building_type, cost: spec.cost });
+  // Phase C: apartments/offices generate sub-units on build.
+  const unitsCreated = buildingHasUnits(building_type)
+    ? generateUnitsForParcel(pid, building_type, agentId)
+    : 0;
+  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, units_created: unitsCreated }, 'major');
+  res.json({ ok: true, building: building_type, cost: spec.cost, units_created: unitsCreated });
 });
 
 router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response) => {
@@ -515,6 +533,53 @@ router.get('/agents/me/net-worth', authAgent, (req: Request, res: Response) => {
   const nw = getNetWorth(agentId);
   if (!nw) return res.status(404).json({ error: 'agent_not_found' });
   res.json(nw);
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Properties (sub-units inside multi-floor buildings) — Phase C
+// ──────────────────────────────────────────────────────────────────────
+
+router.get('/properties', (req: Request, res: Response) => {
+  const parcelIdStr = req.query.parcel_id;
+  const forSale = req.query.for_sale === 'true';
+  const ownerId = typeof req.query.owner_id === 'string' ? req.query.owner_id : null;
+
+  if (typeof parcelIdStr === 'string') {
+    const pid = parseInt(parcelIdStr, 10);
+    if (!Number.isFinite(pid)) return res.status(400).json({ error: 'invalid parcel_id' });
+    return res.json({ properties: getPropertiesForParcel(pid, forSale) });
+  }
+  if (ownerId) return res.json({ properties: getPropertiesForOwner(ownerId) });
+  return res.json({ properties: getAllForSale() });
+});
+
+router.post('/actions/list-property', authAgent, rateLimit, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { property_id, price } = req.body ?? {};
+  const r = listProperty(agentId, Number(property_id), Math.floor(Number(price)));
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  res.json({ ok: true });
+});
+
+router.post('/actions/unlist-property', authAgent, rateLimit, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { property_id } = req.body ?? {};
+  const r = unlistProperty(agentId, Number(property_id));
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  res.json({ ok: true });
+});
+
+router.post('/actions/buy-property', authAgent, rateLimit, async (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { property_id } = req.body ?? {};
+  try {
+    const r = await buyProperty(agentId, Number(property_id));
+    if (!r.ok) return res.status(400).json({ error: r.reason });
+    res.json({ ok: true, paid: r.price });
+  } catch (e) {
+    console.error('[api] buy-property failed:', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
 export default router;

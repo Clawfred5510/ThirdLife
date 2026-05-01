@@ -131,16 +131,6 @@ class SQLiteDatabase implements DBBackend {
         tutorial_done INTEGER DEFAULT 0
       );
 
-      CREATE TABLE IF NOT EXISTS properties (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        building_name TEXT NOT NULL,
-        district TEXT NOT NULL,
-        owner_id TEXT,
-        price INTEGER NOT NULL,
-        revenue_rate INTEGER DEFAULT 0,
-        FOREIGN KEY (owner_id) REFERENCES players(id)
-      );
-
       CREATE TABLE IF NOT EXISTS parcels (
         id INTEGER PRIMARY KEY,
         grid_x INTEGER NOT NULL,
@@ -230,6 +220,36 @@ class SQLiteDatabase implements DBBackend {
     // personality routine each income tick.
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN autopilot_enabled INTEGER DEFAULT 1`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN last_autopilot_tick INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
+
+    // Phase C: properties table = sub-units of multi-floor buildings
+    // (apartment studios, office spaces). The legacy columns
+    // (building_name/district/price/revenue_rate) were never wired up;
+    // detect that legacy shape and drop it so the new schema can be
+    // created cleanly.
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(properties)`).all() as Array<{ name: string }>;
+      const hasLegacy = cols.some((c) => c.name === 'district') || !cols.some((c) => c.name === 'parcel_id');
+      if (cols.length > 0 && hasLegacy) {
+        this.db.exec(`DROP TABLE properties`);
+      }
+    } catch (_) { /* table doesn't exist yet */ }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS properties (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parcel_id INTEGER NOT NULL,
+        unit_type TEXT NOT NULL,           -- 'studio' | 'office' | 'penthouse'
+        floor INTEGER NOT NULL,
+        unit_index INTEGER NOT NULL,
+        owner_id TEXT,
+        list_price INTEGER,                -- NULL = not for sale
+        income_per_tick INTEGER NOT NULL,
+        FOREIGN KEY (parcel_id) REFERENCES parcels(id),
+        FOREIGN KEY (owner_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_properties_parcel ON properties(parcel_id);
+      CREATE INDEX IF NOT EXISTS idx_properties_owner ON properties(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_properties_listed ON properties(list_price) WHERE list_price IS NOT NULL;
+    `);
 
     // Wallet auth — short-lived nonces (one per challenge) + long-lived
     // session tokens. Address is always stored lowercased.

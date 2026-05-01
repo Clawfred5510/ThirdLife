@@ -44,6 +44,7 @@ import {
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
+import { generateUnitsForParcel, buildingHasUnits, tickPropertyIncome, backfillSubUnits } from '../properties';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -85,6 +86,13 @@ export class GameRoom extends Room<GameState> {
     seedParcels();
     const allParcels = getAllParcels();
     console.log(`[GameRoom] ${allParcels.length} parcels in DB`);
+
+    // ---- Phase C: backfill sub-units for any pre-existing apartments
+    // and offices that were built before the multi-floor system landed.
+    const back = backfillSubUnits();
+    if (back.created > 0) {
+      console.log(`[GameRoom] backfilled ${back.created} sub-units across ${back.processed} multi-floor parcels`);
+    }
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
       const player = this.players.get(client.sessionId);
@@ -209,8 +217,12 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.building_type,
       });
+      const unitsCreated = buildingHasUnits(data.building_type)
+        ? generateUnitsForParcel(data.parcelId, data.building_type, ownerId)
+        : 0;
       addEvent('claim_and_build', ownerId, {
         parcel: data.parcelId, building: data.building_type, cost: spec.cost + 150000,
+        units_created: unitsCreated,
       }, 'major');
       console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + 150000} $AMETA)`);
     });
@@ -264,6 +276,9 @@ export class GameRoom extends Room<GameState> {
       updatePlayerCredits(ownerId, player.credits);
       setBuildingType(data.parcelId, data.buildingType);
       updateBusinessInDb(data.parcelId, ownerId, { type: data.buildingType, name: spec.label });
+      const unitsCreated = buildingHasUnits(data.buildingType)
+        ? generateUnitsForParcel(data.parcelId, data.buildingType, ownerId)
+        : 0;
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       this.broadcast(MessageType.PARCEL_UPDATE, {
@@ -272,7 +287,7 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.buildingType,
       });
-      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost }, 'major');
+      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost, units_created: unitsCreated }, 'major');
       console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
     });
 
@@ -622,6 +637,10 @@ export class GameRoom extends Room<GameState> {
       // gains +1 reputation per consumed unit. Done after autopilot so
       // freshly-bought luxury counts.
       tickReputation();
+
+      // Phase C.4: per-unit passive income to sub-unit owners. GDP
+      // accumulator already records the total inside tickPropertyIncome.
+      tickPropertyIncome();
 
       interface OwnerBucket {
         produce: { food: number; materials: number; energy: number; luxury: number };
