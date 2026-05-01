@@ -107,7 +107,9 @@ export function buildFactory(
   // ── WATER TOWER on right side of roof ────────────────────────────────
   const wtX = buildingW * 0.28;
   const wtLegY = wallH + spec.roofPeak;
-  // Lattice legs (4 thin cylinders forming an X frame)
+  // Lattice legs (4 thin cylinders forming an X frame).
+  // exteriorCasters.push so legs enter the roof-fade list and disappear
+  // along with the rest of the rooftop kit when the player walks inside.
   for (let i = 0; i < 4; i++) {
     const ang = (i / 4) * Math.PI * 2 + Math.PI / 4;
     const lx = wtX + Math.cos(ang) * 0.9;
@@ -116,6 +118,7 @@ export function buildFactory(
     leg.parent = body;
     leg.position.set(lx, wtLegY + 1.5, lz);
     leg.material = metalMat;
+    exteriorCasters.push(leg);
   }
   const drum = MeshBuilder.CreateCylinder(`wtDrum_${id}`, {
     diameter: 2.6, height: 3.0, tessellation: 16,
@@ -183,18 +186,86 @@ export function buildFactory(
   pipeH.material = rustMat;
   exteriorCasters.push(pipeH);
 
-  // ── CHAIN-LINK FENCE (posts only, simplified) ───────────────────────
+  // ── CHAIN-LINK FENCE (full perimeter) ───────────────────────────────
+  // Was just posts on the front face. Now a real perimeter with posts
+  // every 4u on all four sides + thin horizontal rails (top + bottom)
+  // and a translucent grey "mesh" panel between adjacent posts so the
+  // fence reads as chain-link rather than a row of poles. Each panel
+  // has checkCollisions=true so the player can't walk through. Front
+  // face has a 6u gap centred at x=0 for the entry path.
   const fenceH = 1.8;
-  const postMat = metalMat;
-  for (let i = 0; i <= 8; i++) {
-    const t = i / 8;
-    // front fence posts
-    const px = -lotHalfW + t * lotW;
-    if (Math.abs(px) > 3) { // gap in the center for entry
-      const post = MeshBuilder.CreateBox(`fencePost_${id}_${i}`, { width: 0.15, height: fenceH, depth: 0.15 }, scene);
-      post.parent = root;
-      post.position.set(px, fenceH / 2, -lotHalfD);
-      post.material = postMat;
+  const fenceMeshMat = mat(scene, 'fac-fence-mesh', '#7E8088', 0.9, { alpha: 0.35 });
+  const fencePostStep = 4;
+  const buildPost = (x: number, z: number, key: string) => {
+    const post = MeshBuilder.CreateBox(`fencePost_${id}_${key}`, {
+      width: 0.18, height: fenceH, depth: 0.18,
+    }, scene);
+    post.parent = root;
+    post.position.set(x, fenceH / 2, z);
+    post.material = metalMat;
+    post.receiveShadows = true;
+  };
+  const buildPanel = (x1: number, z1: number, x2: number, z2: number, key: string) => {
+    const dx = x2 - x1, dz = z2 - z1;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.5) return;
+    const cx = (x1 + x2) / 2;
+    const cz = (z1 + z2) / 2;
+    const panel = MeshBuilder.CreateBox(`fencePanel_${id}_${key}`, {
+      width: len, height: fenceH * 0.95, depth: 0.05,
+    }, scene);
+    panel.parent = root;
+    panel.position.set(cx, fenceH / 2, cz);
+    panel.rotation.y = -Math.atan2(dz, dx);
+    panel.material = fenceMeshMat;
+    panel.checkCollisions = true;
+    collisionWalls.push(panel);
+    // Top rail (thin metal bar)
+    const top = MeshBuilder.CreateBox(`fenceRailT_${id}_${key}`, {
+      width: len, height: 0.06, depth: 0.06,
+    }, scene);
+    top.parent = root;
+    top.position.set(cx, fenceH - 0.1, cz);
+    top.rotation.y = -Math.atan2(dz, dx);
+    top.material = metalMat;
+    // Bottom rail
+    const bot = MeshBuilder.CreateBox(`fenceRailB_${id}_${key}`, {
+      width: len, height: 0.06, depth: 0.06,
+    }, scene);
+    bot.parent = root;
+    bot.position.set(cx, 0.1, cz);
+    bot.rotation.y = -Math.atan2(dz, dx);
+    bot.material = metalMat;
+  };
+  // Build posts + panels along each of the 4 perimeter edges.
+  // Front edge has a 6u gap centered on x=0 (skip posts/panels in that range).
+  const sides: Array<{ p1: [number, number]; p2: [number, number]; key: string; gap?: [number, number] }> = [
+    { p1: [-lotHalfW, -lotHalfD], p2: [lotHalfW, -lotHalfD], key: 'front', gap: [-3, 3] },
+    { p1: [-lotHalfW, lotHalfD],  p2: [lotHalfW, lotHalfD],  key: 'back' },
+    { p1: [-lotHalfW, -lotHalfD], p2: [-lotHalfW, lotHalfD], key: 'left' },
+    { p1: [lotHalfW, -lotHalfD],  p2: [lotHalfW, lotHalfD],  key: 'right' },
+  ];
+  for (const side of sides) {
+    const dx = side.p2[0] - side.p1[0];
+    const dz = side.p2[1] - side.p1[1];
+    const len = Math.hypot(dx, dz);
+    const segments = Math.max(1, Math.round(len / fencePostStep));
+    let prev: [number, number] | null = null;
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const px = side.p1[0] + dx * t;
+      const pz = side.p1[1] + dz * t;
+      const inGap = side.gap && px >= side.gap[0] && px <= side.gap[1] && Math.abs(dz) < 0.1;
+      if (!inGap) buildPost(px, pz, `${side.key}_${i}`);
+      if (prev) {
+        const midX = (prev[0] + px) / 2;
+        const prevInGap = side.gap && prev[0] >= side.gap[0] && prev[0] <= side.gap[1] && Math.abs(dz) < 0.1;
+        const segInGap = side.gap && midX >= side.gap[0] && midX <= side.gap[1] && Math.abs(dz) < 0.1;
+        if (!segInGap && !inGap && !prevInGap) {
+          buildPanel(prev[0], prev[1], px, pz, `${side.key}_${i}`);
+        }
+      }
+      prev = [px, pz];
     }
   }
 

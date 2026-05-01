@@ -67,46 +67,61 @@ export function buildHall(
   finishRoof(pyr, roofMat, exteriorCasters);
 
   // ── CENTRAL CLOCK TOWER ─────────────────────────────────────────────
+  // Tower lowered + lengthened so its bottom embeds deep into the
+  // pyramid roof instead of hovering on the very tip. Center is at
+  // wallH + peak/2 + height/2 = wallH + peak/2 + 2.75 → bottom at wallH
+  // (level with eaves), top at wallH + peak + 5.5 - peak/2 ≈ wallH + 4.
+  const towerH = 5.5;
+  const towerBaseY = wallH + peak * 0.4 + towerH / 2;
   const towerBase = MeshBuilder.CreateBox(`towerBase_${id}`, {
-    width: 3.5, height: 3.5, depth: 3.5,
+    width: 3.5, height: towerH, depth: 3.5,
   }, scene);
   towerBase.parent = body;
-  towerBase.position.y = wallH + peak + 1.75;
+  towerBase.position.y = towerBaseY;
   towerBase.material = stoneMat;
   towerBase.receiveShadows = true;
   exteriorCasters.push(towerBase);
-  // Clock face on the front
+  // Clock face on the front of the tower (south-facing)
+  const clockY = towerBaseY + towerH / 2 - 1.4;
   const clock = MeshBuilder.CreateCylinder(`clockFace_${id}`, {
     diameter: 2.4, height: 0.15, tessellation: 24,
   }, scene);
   clock.parent = body;
   clock.rotation.x = Math.PI / 2;
-  clock.position.set(0, wallH + peak + 1.75, -1.75);
+  clock.position.set(0, clockY, -1.78);
   clock.material = marbleMat;
   exteriorCasters.push(clock);
-  // Clock hands
-  const hourHand = MeshBuilder.CreateBox(`hourHand_${id}`, { width: 0.12, height: 0.6, depth: 0.05 }, scene);
+  // Clock hands — push to exteriorCasters so they enter the roof-fade
+  // list and disappear with the rest of the tower when the player walks
+  // inside (was missing before, the hands persisted indoors).
+  const hourHand = MeshBuilder.CreateBox(`clockHourHand_${id}`, {
+    width: 0.12, height: 0.6, depth: 0.05,
+  }, scene);
   hourHand.parent = body;
   hourHand.rotation.z = 0.3;
-  hourHand.position.set(0, wallH + peak + 2.0, -1.85);
+  hourHand.position.set(0, clockY + 0.25, -1.88);
   hourHand.material = trimMat;
-  const minHand = MeshBuilder.CreateBox(`minHand_${id}`, { width: 0.08, height: 0.9, depth: 0.05 }, scene);
+  exteriorCasters.push(hourHand);
+  const minHand = MeshBuilder.CreateBox(`clockMinHand_${id}`, {
+    width: 0.08, height: 0.9, depth: 0.05,
+  }, scene);
   minHand.parent = body;
   minHand.rotation.z = -0.5;
-  minHand.position.set(0, wallH + peak + 1.7, -1.85);
+  minHand.position.set(0, clockY - 0.05, -1.88);
   minHand.material = trimMat;
-  // Tower pyramid cap
+  exteriorCasters.push(minHand);
+  // Tower pyramid cap (above the tower base)
   const towerCap = buildPyramidRoof(scene, `tower_${id}`, 3.7, 3.7, 2.5, 0.1);
   towerCap.parent = body;
-  towerCap.position.y = wallH + peak + 3.5;
+  towerCap.position.y = towerBaseY + towerH / 2;
   towerCap.material = roofMat;
-  exteriorCasters.push(towerCap);
+  finishRoof(towerCap, roofMat, exteriorCasters);
   // Spire
   const spire = MeshBuilder.CreateCylinder(`spire_${id}`, {
     diameter: 0.15, height: 1.8, tessellation: 8,
   }, scene);
   spire.parent = body;
-  spire.position.y = wallH + peak + 6.5;
+  spire.position.y = towerBaseY + towerH / 2 + 2.5 + 0.9;
   spire.material = bronzeMat;
   exteriorCasters.push(spire);
 
@@ -131,8 +146,11 @@ export function buildHall(
     exteriorCasters.push(cap);
   }
 
-  // ── TRIANGULAR PEDIMENT above columns ───────────────────────────────
-  // A thin triangular prism (gable-shaped) — use our gable primitive scaled thin
+  // ── ENTABLATURE + ENTRANCE AWNING above columns ─────────────────────
+  // Replaces a broken pediment hack (a tessellation=3 cylinder rotated
+  // weirdly that read as a "sideways triangle"). Now a clean classical
+  // entablature block sitting on the columns + a slim flat awning slab
+  // projecting forward over the entrance with two diagonal supports.
   const pedW = colSpan + 2.5;
   const pedestal = MeshBuilder.CreateBox(`pedBase_${id}`, {
     width: pedW + 1, height: 0.6, depth: 1.4,
@@ -141,17 +159,39 @@ export function buildHall(
   pedestal.position.set(0, wallH + 0.1, -buildingD / 2 - 1.2);
   pedestal.material = marbleMat;
   exteriorCasters.push(pedestal);
-  // Triangle block (using a cylinder tessellation=3 on proper orientation)
-  const triProm = MeshBuilder.CreateCylinder(`pediment_${id}`, {
-    diameterTop: 0, diameterBottom: 2.4, height: pedW, tessellation: 3,
+  // Decorative top moulding
+  const topMould = MeshBuilder.CreateBox(`pedTop_${id}`, {
+    width: pedW + 1.4, height: 0.25, depth: 1.6,
   }, scene);
-  triProm.parent = body;
-  triProm.rotation.z = Math.PI / 2;
-  triProm.rotation.x = Math.PI / 6;
-  triProm.scaling.set(1, 0.4, 1);
-  triProm.position.set(0, wallH + 1.0, -buildingD / 2 - 1.2);
-  triProm.material = marbleMat;
-  exteriorCasters.push(triProm);
+  topMould.parent = body;
+  topMould.position.set(0, wallH + 0.55, -buildingD / 2 - 1.2);
+  topMould.material = marbleMat;
+  exteriorCasters.push(topMould);
+  // Awning over the entrance — projects forward (-Z) from the building
+  // wall. Slim slab at door-height-plus, supported by two diagonal stays.
+  const awningW = spec.doorWidth + 4;
+  const awningD = 2.0;
+  const awningY = spec.doorHeight + 0.6;
+  const awningSlab = MeshBuilder.CreateBox(`hallAwning_${id}`, {
+    width: awningW, height: 0.18, depth: awningD,
+  }, scene);
+  awningSlab.parent = body;
+  awningSlab.position.set(0, awningY, -buildingD / 2 - awningD / 2 - 0.3);
+  awningSlab.material = bronzeMat;
+  exteriorCasters.push(awningSlab);
+  // Two diagonal support stays from the wall up to the awning's outer corners
+  for (const sx of [-1, 1]) {
+    const stayLen = Math.hypot(awningD - 0.3, 0.8);
+    const stay = MeshBuilder.CreateBox(`hallAwningStay_${id}_${sx}`, {
+      width: 0.12, height: stayLen, depth: 0.12,
+    }, scene);
+    stay.parent = body;
+    // Anchor at the wall (y=awningY-0.8, z=-buildingD/2), tip at outer corner
+    stay.rotation.x = Math.atan2(awningD - 0.3, 0.8);
+    stay.position.set(sx * (awningW / 2 - 0.4), awningY - 0.4, -buildingD / 2 - (awningD - 0.3) / 2 - 0.3);
+    stay.material = bronzeMat;
+    exteriorCasters.push(stay);
+  }
 
   // ── WIDE MARBLE STAIRCASE ───────────────────────────────────────────
   for (let s = 0; s < 3; s++) {

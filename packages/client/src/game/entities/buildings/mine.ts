@@ -103,16 +103,21 @@ export function buildMine(
     leg.receiveShadows = true;
     exteriorCasters.push(leg);
   }
-  // Cross beams (2 horizontals at top + middle)
+  // Cross beams (2 horizontals at top + middle).
+  // Pushed to exteriorCasters so they fade with the roof when the
+  // player walks inside — were the "two brown crossbar pluses" the user
+  // saw persisting indoors.
   for (const y of [hfH * 0.5, hfH - 0.5]) {
     const cx = MeshBuilder.CreateBox(`hfCross_${id}_${y}`, { width: 2.0, height: 0.2, depth: 0.2 }, scene);
     cx.parent = headRoot;
     cx.position.y = y;
     cx.material = darkWoodMat;
+    exteriorCasters.push(cx);
     const cz = MeshBuilder.CreateBox(`hfCross_${id}_${y}_z`, { width: 0.2, height: 0.2, depth: 2.0 }, scene);
     cz.parent = headRoot;
     cz.position.y = y;
     cz.material = darkWoodMat;
+    exteriorCasters.push(cz);
   }
   // Hoist wheel at top (cylinder on its side)
   const wheel = MeshBuilder.CreateCylinder(`hfWheel_${id}`, {
@@ -122,6 +127,7 @@ export function buildMine(
   wheel.rotation.z = Math.PI / 2;
   wheel.position.y = hfH - 0.2;
   wheel.material = metalMat;
+  exteriorCasters.push(wheel);
   exteriorCasters.push(wheel);
 
   // Smokestack beside the headframe

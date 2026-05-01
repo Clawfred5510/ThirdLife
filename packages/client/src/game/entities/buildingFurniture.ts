@@ -212,126 +212,519 @@ export function buildFurniture(
       break;
     }
     case 'office': {
-      // 4 desks in a 2x2 grid, each with a monitor
+      // Layout per user feedback: elevator bank on the back wall, an
+      // executive corner office on the front-left, cubicle grid on the
+      // front-right, narrow walkway between.
       const deskMat = pbr(scene, `desk_${id}`, LIGHT_WOOD, 0.7);
       const chairMat = pbr(scene, `chair_${id}`, DARK_STEEL, 0.6);
-      const screenMat = pbr(scene, `screen_${id}`, SCREEN_BLUE, 0.2);
-      screenMat.emissiveColor = SCREEN_BLUE;
-      const placements = [[-halfI + 2.5, -halfI + 3], [halfI - 2.5, -halfI + 3], [-halfI + 2.5, halfI - 3], [halfI - 2.5, halfI - 3]] as const;
-      for (const [dx, dz] of placements) {
-        const desk = MeshBuilder.CreateBox(`desk_${id}_${dx}_${dz}`, { width: 1.6, height: 0.1, depth: 0.9 }, scene);
-        desk.position.set(dx, 0.8, dz);
-        desk.material = deskMat;
-        parent(desk);
-        // Desk legs
-        for (const [lx, lz] of [[-0.7, -0.35], [0.7, -0.35], [-0.7, 0.35], [0.7, 0.35]] as const) {
-          const leg = MeshBuilder.CreateBox(`deskLeg_${id}_${dx}_${dz}_${lx}_${lz}`, { width: 0.08, height: 0.8, depth: 0.08 }, scene);
-          leg.position.set(dx + lx, 0.4, dz + lz);
-          leg.material = deskMat;
-          parent(leg);
+      const screenMat = pbr(scene, `screen_${id}`, SCREEN_BLUE, 0.2, SCREEN_BLUE);
+      const partitionMat = pbr(scene, `officePart_${id}`, new Color3(0.55, 0.45, 0.38), 0.85);
+      const wallTrimMat = pbr(scene, `officeTrim_${id}`, new Color3(0.55, 0.4, 0.28), 0.7);
+      const elevatorMat = metal(scene, `officeElev_${id}`, STEEL, 0.4);
+      const elevatorPanelMat = metal(scene, `officeElevPanel_${id}`, DARK_STEEL, 0.3);
+      const callBtnMat = pbr(scene, `officeCallBtn_${id}`, new Color3(1.0, 0.55, 0.15), 0.2, new Color3(0.65, 0.3, 0.05));
+
+      // ── Elevator bank (back wall) ─────────────────────────────────
+      const elevW = 2.0;
+      const elevDepth = 0.6;
+      const elevH = wallHeight - 0.4;
+      const elevZ = halfI - elevDepth / 2 - 0.1;
+      for (let i = -1; i <= 1; i++) {
+        const ex = i * (elevW + 0.6);
+        // Elevator door frame (deeper recess giving the door look)
+        const frame = MeshBuilder.CreateBox(`elevFrame_${id}_${i}`, {
+          width: elevW + 0.4, height: elevH + 0.3, depth: 0.15,
+        }, scene);
+        frame.position.set(ex, elevH / 2 + 0.1, elevZ + 0.25);
+        frame.material = elevatorPanelMat;
+        parent(frame);
+        // Two-panel sliding door
+        for (const dSide of [-1, 1]) {
+          const door = MeshBuilder.CreateBox(`elevDoor_${id}_${i}_${dSide}`, {
+            width: elevW / 2 - 0.04, height: elevH, depth: 0.08,
+          }, scene);
+          door.position.set(ex + dSide * (elevW / 4), elevH / 2, elevZ + 0.15);
+          door.material = elevatorMat;
+          parent(door);
         }
-        // Monitor
-        const monitor = MeshBuilder.CreateBox(`mon_${id}_${dx}_${dz}`, { width: 0.9, height: 0.55, depth: 0.05 }, scene);
-        monitor.position.set(dx, 1.25, dz - 0.25);
-        monitor.material = screenMat;
-        parent(monitor);
-        // Chair
-        const ch = MeshBuilder.CreateBox(`ch_${id}_${dx}_${dz}`, { width: 0.5, height: 0.8, depth: 0.5 }, scene);
-        ch.position.set(dx, 0.4, dz + 0.8);
-        ch.material = chairMat;
-        parent(ch);
+        // Floor indicator panel above the doors
+        const indicator = MeshBuilder.CreateBox(`elevInd_${id}_${i}`, {
+          width: 0.7, height: 0.25, depth: 0.05,
+        }, scene);
+        indicator.position.set(ex, elevH + 0.05, elevZ + 0.1);
+        indicator.material = pbr(scene, `elevIndMat_${id}_${i}`, new Color3(0.1, 0.1, 0.12), 0.3, new Color3(0.85, 0.55, 0.15));
+        parent(indicator);
+        // Call button (between the two outermost shafts and the side)
+        if (i === -1) {
+          const btn = MeshBuilder.CreateCylinder(`elevBtn_${id}_${i}`, {
+            diameter: 0.12, height: 0.05, tessellation: 10,
+          }, scene);
+          btn.rotation.x = Math.PI / 2;
+          btn.position.set(ex + elevW / 2 + 0.4, 1.2, elevZ + 0.35);
+          btn.material = callBtnMat;
+          parent(btn);
+        }
+      }
+
+      // ── Executive corner office (front-left) ─────────────────────
+      const cornerX = -halfI;
+      const cornerZ = -halfI;
+      const officeW = halfI * 0.55;
+      const officeD = halfI * 0.55;
+      // Half-height partition walls (so it reads as an "office" but the
+      // player can still see in over the top — and we don't risk
+      // colliding with the building's actual walls).
+      const partH = 1.8;
+      // Wall along +X side (right side of the corner office)
+      const wallEast = MeshBuilder.CreateBox(`exECorner_E_${id}`, {
+        width: 0.12, height: partH, depth: officeD,
+      }, scene);
+      wallEast.position.set(cornerX + officeW, partH / 2, cornerZ + officeD / 2);
+      wallEast.material = wallTrimMat;
+      parent(wallEast);
+      // Wall along +Z side (back side of the office, parallel to building front)
+      const wallNorth = MeshBuilder.CreateBox(`exECorner_N_${id}`, {
+        width: officeW, height: partH, depth: 0.12,
+      }, scene);
+      wallNorth.position.set(cornerX + officeW / 2, partH / 2, cornerZ + officeD);
+      wallNorth.material = wallTrimMat;
+      parent(wallNorth);
+      // Big executive desk
+      const exDesk = MeshBuilder.CreateBox(`exDesk_${id}`, {
+        width: 2.0, height: 0.1, depth: 1.0,
+      }, scene);
+      exDesk.position.set(cornerX + officeW * 0.5, 0.85, cornerZ + officeD * 0.6);
+      exDesk.material = deskMat;
+      parent(exDesk);
+      for (const [lx, lz] of [[-0.85, -0.4], [0.85, -0.4], [-0.85, 0.4], [0.85, 0.4]] as const) {
+        const leg = MeshBuilder.CreateBox(`exDeskLeg_${id}_${lx}_${lz}`, {
+          width: 0.1, height: 0.85, depth: 0.1,
+        }, scene);
+        leg.position.set(cornerX + officeW * 0.5 + lx, 0.42, cornerZ + officeD * 0.6 + lz);
+        leg.material = deskMat;
+        parent(leg);
+      }
+      // Executive chair
+      const exChair = MeshBuilder.CreateBox(`exChair_${id}`, {
+        width: 0.7, height: 0.5, depth: 0.7,
+      }, scene);
+      exChair.position.set(cornerX + officeW * 0.5, 0.45, cornerZ + officeD * 0.85);
+      exChair.material = chairMat;
+      parent(exChair);
+      const exChairBack = MeshBuilder.CreateBox(`exChairBack_${id}`, {
+        width: 0.7, height: 1.2, depth: 0.1,
+      }, scene);
+      exChairBack.position.set(cornerX + officeW * 0.5, 1.1, cornerZ + officeD * 0.85 + 0.3);
+      exChairBack.material = chairMat;
+      parent(exChairBack);
+      // Monitor on the desk
+      const exMon = MeshBuilder.CreateBox(`exMon_${id}`, {
+        width: 1.0, height: 0.6, depth: 0.05,
+      }, scene);
+      exMon.position.set(cornerX + officeW * 0.5, 1.3, cornerZ + officeD * 0.6 - 0.3);
+      exMon.material = screenMat;
+      parent(exMon);
+      // Couch against the office's east wall
+      const couch = MeshBuilder.CreateBox(`exCouch_${id}`, {
+        width: 0.8, height: 0.5, depth: 1.6,
+      }, scene);
+      couch.position.set(cornerX + officeW - 0.5, 0.25, cornerZ + officeD * 0.4);
+      couch.material = pbr(scene, `couchMat_${id}`, new Color3(0.4, 0.18, 0.18), 0.7);
+      parent(couch);
+      const couchBack = MeshBuilder.CreateBox(`exCouchBack_${id}`, {
+        width: 0.2, height: 0.8, depth: 1.6,
+      }, scene);
+      couchBack.position.set(cornerX + officeW - 0.2, 0.65, cornerZ + officeD * 0.4);
+      couchBack.material = pbr(scene, `couchBackMat_${id}`, new Color3(0.4, 0.18, 0.18), 0.7);
+      parent(couchBack);
+
+      // ── Cubicle grid (front-right) ──────────────────────────────
+      // 2×3 arrangement of cubicles. Each is a small desk + chair +
+      // partial partitions on 2 sides.
+      const cubX0 = halfI * 0.05;
+      const cubZ0 = -halfI + 1.5;
+      const cubW = (halfI - cubX0 - 0.5) / 3;
+      const cubD = 1.6;
+      for (let cy = 0; cy < 2; cy++) {
+        for (let cx = 0; cx < 3; cx++) {
+          const x = cubX0 + cx * cubW + cubW / 2;
+          const z = cubZ0 + cy * (cubD + 0.6) + cubD / 2;
+          // Desk (L-shape simplified to one rectangle)
+          const desk = MeshBuilder.CreateBox(`cubDesk_${id}_${cx}_${cy}`, {
+            width: cubW * 0.85, height: 0.08, depth: cubD * 0.55,
+          }, scene);
+          desk.position.set(x, 0.78, z - cubD * 0.15);
+          desk.material = deskMat;
+          parent(desk);
+          // Monitor
+          const mon = MeshBuilder.CreateBox(`cubMon_${id}_${cx}_${cy}`, {
+            width: 0.7, height: 0.45, depth: 0.05,
+          }, scene);
+          mon.position.set(x, 1.18, z - cubD * 0.4);
+          mon.material = screenMat;
+          parent(mon);
+          // Chair
+          const chair = MeshBuilder.CreateBox(`cubChair_${id}_${cx}_${cy}`, {
+            width: 0.5, height: 0.4, depth: 0.5,
+          }, scene);
+          chair.position.set(x, 0.2, z + 0.25);
+          chair.material = chairMat;
+          parent(chair);
+          // Side partition (right wall of each cubicle, shared with neighbour)
+          if (cx < 2) {
+            const sidePart = MeshBuilder.CreateBox(`cubPartSide_${id}_${cx}_${cy}`, {
+              width: 0.06, height: 1.2, depth: cubD,
+            }, scene);
+            sidePart.position.set(x + cubW / 2, 0.6, z);
+            sidePart.material = partitionMat;
+            parent(sidePart);
+          }
+          // Front (desk-facing) partition
+          const frontPart = MeshBuilder.CreateBox(`cubPartFront_${id}_${cx}_${cy}`, {
+            width: cubW, height: 1.2, depth: 0.06,
+          }, scene);
+          frontPart.position.set(x, 0.6, z - cubD * 0.5);
+          frontPart.material = partitionMat;
+          parent(frontPart);
+        }
       }
       break;
     }
     case 'mine': {
-      // Ore piles
       const oreMat = pbr(scene, `ore_${id}`, ORE_GRAY, 0.95);
-      for (const [ox, oz, os] of [[-halfI + 1.8, halfI - 1.8, 1.2], [-halfI + 1.8, -halfI + 2.5, 0.9], [halfI - 1.8, halfI - 2, 1.5]] as const) {
-        const pile = MeshBuilder.CreateSphere(`pile_${id}_${ox}_${oz}`, { diameter: os, segments: 8 }, scene);
+      const steelMat = metal(scene, `mineSteel_${id}`, STEEL, 0.6);
+      const darkSteelMat = metal(scene, `mineDarkSteel_${id}`, DARK_STEEL, 0.4);
+      // Rails along the floor running into the mine shaft (back wall)
+      for (const rSide of [-0.5, 0.5]) {
+        const rail = MeshBuilder.CreateBox(`mineRail_${id}_${rSide}`, {
+          width: 0.12, height: 0.08, depth: inner * 0.85,
+        }, scene);
+        rail.position.set(rSide, 0.04, 0);
+        rail.material = darkSteelMat;
+        parent(rail);
+      }
+      // Cross-ties under the rails
+      for (let i = 0; i < 7; i++) {
+        const tie = MeshBuilder.CreateBox(`mineTie_${id}_${i}`, {
+          width: 1.5, height: 0.07, depth: 0.3,
+        }, scene);
+        tie.position.set(0, 0.035, -inner * 0.4 + i * (inner * 0.85 / 7));
+        tie.material = wood;
+        parent(tie);
+      }
+      // Minecart on the rails
+      const cart = MeshBuilder.CreateBox(`cart_${id}`, {
+        width: 1.5, height: 0.9, depth: 1.0,
+      }, scene);
+      cart.position.set(0, 0.55, halfI - 2);
+      cart.material = steelMat;
+      parent(cart);
+      for (const wx of [-0.6, 0.6]) {
+        for (const wz of [-0.4, 0.4]) {
+          const wheel = MeshBuilder.CreateCylinder(`wheel_${id}_${wx}_${wz}`, {
+            diameter: 0.5, height: 0.1, tessellation: 12,
+          }, scene);
+          wheel.position.set(wx, 0.25, halfI - 2 + wz);
+          wheel.rotation.z = Math.PI / 2;
+          wheel.material = darkSteelMat;
+          parent(wheel);
+        }
+      }
+      // Ore piles dotted around
+      for (const [ox, oz, os] of [
+        [-halfI + 1.8, halfI - 1.8, 1.2],
+        [-halfI + 1.8, -halfI + 2.5, 0.9],
+        [halfI - 1.8, halfI - 2, 1.5],
+        [halfI - 2.5, -halfI + 2, 0.8],
+      ] as const) {
+        const pile = MeshBuilder.CreateSphere(`pile_${id}_${ox}_${oz}`, {
+          diameter: os, segments: 8,
+        }, scene);
         pile.position.set(ox, os / 2 - 0.2, oz);
         pile.scaling.y = 0.6;
         pile.material = oreMat;
         parent(pile);
       }
-      // Minecart + rails
-      const cart = MeshBuilder.CreateBox(`cart_${id}`, { width: 1.5, height: 0.9, depth: 1.0 }, scene);
-      cart.position.set(0, 0.55, halfI - 2);
-      cart.material = metal(scene, `cartMat_${id}`, STEEL, 0.6);
-      parent(cart);
-      // Wheels
-      for (const wx of [-0.6, 0.6]) {
-        for (const wz of [-0.4, 0.4]) {
-          const wheel = MeshBuilder.CreateCylinder(`wheel_${id}_${wx}_${wz}`, { diameter: 0.5, height: 0.1, tessellation: 12 }, scene);
-          wheel.position.set(wx, 0.25, halfI - 2 + wz);
-          wheel.rotation.z = Math.PI / 2;
-          wheel.material = metal(scene, `wheelMat_${id}_${wx}_${wz}`, DARK_STEEL, 0.4);
-          parent(wheel);
-        }
-      }
-      // Pickaxe (just two crossed cylinders leaning on wall)
-      const handle = MeshBuilder.CreateCylinder(`pickH_${id}`, { diameter: 0.08, height: 1.6, tessellation: 8 }, scene);
-      handle.position.set(halfI - 0.5, 0.8, -halfI + 1.5);
+      // Tool rack against the side wall — pickaxe + shovel
+      const rackBack = MeshBuilder.CreateBox(`mineToolRack_${id}`, {
+        width: 0.1, height: 1.8, depth: 1.6,
+      }, scene);
+      rackBack.position.set(-halfI + 0.3, 0.9, -halfI + 2.5);
+      rackBack.material = wood;
+      parent(rackBack);
+      // Pickaxe leaning on the rack
+      const handle = MeshBuilder.CreateCylinder(`mineHandle_${id}`, {
+        diameter: 0.09, height: 1.6, tessellation: 8,
+      }, scene);
+      handle.position.set(-halfI + 0.5, 0.8, -halfI + 2.0);
       handle.rotation.z = 0.2;
       handle.material = wood;
       parent(handle);
-      const head = MeshBuilder.CreateBox(`pickHead_${id}`, { width: 0.6, height: 0.12, depth: 0.1 }, scene);
-      head.position.set(halfI - 0.5, 1.55, -halfI + 1.5);
-      head.material = metal(scene, `pickHeadMat_${id}`, STEEL, 0.3);
+      const head = MeshBuilder.CreateBox(`mineHead_${id}`, {
+        width: 0.6, height: 0.12, depth: 0.1,
+      }, scene);
+      head.position.set(-halfI + 0.5, 1.55, -halfI + 2.0);
+      head.material = metal(scene, `mineHeadMat_${id}`, STEEL, 0.3);
       parent(head);
+      // Shovel
+      const shaft = MeshBuilder.CreateCylinder(`mineShaft_${id}`, {
+        diameter: 0.07, height: 1.7, tessellation: 8,
+      }, scene);
+      shaft.position.set(-halfI + 0.5, 0.85, -halfI + 3.1);
+      shaft.rotation.z = 0.15;
+      shaft.material = wood;
+      parent(shaft);
+      const blade = MeshBuilder.CreateBox(`mineBlade_${id}`, {
+        width: 0.3, height: 0.4, depth: 0.05,
+      }, scene);
+      blade.position.set(-halfI + 0.4, 0.2, -halfI + 3.1);
+      blade.material = darkSteelMat;
+      parent(blade);
+      // Worktable with helmets and a lantern
+      const tbl = MeshBuilder.CreateBox(`mineTbl_${id}`, {
+        width: 1.6, height: 0.1, depth: 0.7,
+      }, scene);
+      tbl.position.set(halfI - 1.5, 0.85, -halfI + 1.5);
+      tbl.material = wood;
+      parent(tbl);
+      for (const lx of [-0.6, 0]) {
+        const tblLeg = MeshBuilder.CreateBox(`mineTblLeg_${id}_${lx}`, {
+          width: 0.08, height: 0.85, depth: 0.08,
+        }, scene);
+        tblLeg.position.set(halfI - 1.5 + lx, 0.42, -halfI + 1.5);
+        tblLeg.material = wood;
+        parent(tblLeg);
+      }
+      // Helmet on the table
+      const helmet = MeshBuilder.CreateSphere(`mineHelmet_${id}`, {
+        diameter: 0.4, segments: 10,
+      }, scene);
+      helmet.scaling.y = 0.6;
+      helmet.position.set(halfI - 1.7, 1.0, -halfI + 1.5);
+      helmet.material = pbr(scene, `helmetMat_${id}`, new Color3(0.85, 0.55, 0.15), 0.7);
+      parent(helmet);
+      // Lantern on table
+      const lantBase = MeshBuilder.CreateCylinder(`mineLantB_${id}`, {
+        diameter: 0.18, height: 0.08, tessellation: 10,
+      }, scene);
+      lantBase.position.set(halfI - 1.2, 0.94, -halfI + 1.5);
+      lantBase.material = darkSteelMat;
+      parent(lantBase);
+      const lantGlass = MeshBuilder.CreateSphere(`mineLantG_${id}`, {
+        diameter: 0.22, segments: 10,
+      }, scene);
+      lantGlass.position.set(halfI - 1.2, 1.1, -halfI + 1.5);
+      lantGlass.material = pbr(scene, `lantGlassMat_${id}`, new Color3(1.0, 0.85, 0.45), 0.2, new Color3(0.7, 0.55, 0.2));
+      parent(lantGlass);
+      // Wooden support beams holding up the (mine shaft) ceiling, back wall
+      for (const bx of [-2, 0, 2]) {
+        const support = MeshBuilder.CreateCylinder(`mineSupport_${id}_${bx}`, {
+          diameter: 0.25, height: wallHeight - 0.3, tessellation: 10,
+        }, scene);
+        support.position.set(bx, (wallHeight - 0.3) / 2, halfI - 0.4);
+        support.material = wood;
+        parent(support);
+      }
+      // Crossbeam connecting the back-wall supports
+      const beam = MeshBuilder.CreateBox(`mineBeam_${id}`, {
+        width: 4.4, height: 0.25, depth: 0.25,
+      }, scene);
+      beam.position.set(0, wallHeight - 0.4, halfI - 0.4);
+      beam.material = wood;
+      parent(beam);
       break;
     }
     case 'hall': {
-      // Long banquet table
-      const tbl = MeshBuilder.CreateBox(`hallTbl_${id}`, { width: inner * 0.75, height: 0.1, depth: 1.5 }, scene);
-      tbl.position.set(0, 0.9, 0);
-      tbl.material = lightWood;
-      parent(tbl);
-      // 6 benches (3 per side)
-      for (const side of [-1, 1]) {
-        for (let i = 0; i < 3; i++) {
-          const bench = MeshBuilder.CreateBox(`bench_${id}_${side}_${i}`, { width: inner * 0.2, height: 0.5, depth: 0.4 }, scene);
-          bench.position.set(-inner * 0.22 + i * inner * 0.22, 0.25, side * 1.2);
-          bench.material = wood;
-          parent(bench);
+      // Council-chamber layout: a wide raised dais along the back wall
+      // with five seats for officials, then ranks of audience chairs
+      // facing the dais in the middle of the room. Per user feedback —
+      // city hall vibe instead of a banquet table.
+      const daisW = inner * 0.8;
+      const daisDepth = 1.5;
+      const daisH = 0.5;
+      const daisZ = halfI - daisDepth / 2 - 0.3;
+      // Raised platform
+      const dais = MeshBuilder.CreateBox(`hallDais_${id}`, {
+        width: daisW, height: daisH, depth: daisDepth,
+      }, scene);
+      dais.position.set(0, daisH / 2, daisZ);
+      dais.material = wood;
+      parent(dais);
+      // Long bench/desk on the dais — extends across most of the dais
+      const benchW = daisW - 0.4;
+      const benchH = 1.1;
+      const dBench = MeshBuilder.CreateBox(`hallBench_${id}`, {
+        width: benchW, height: benchH, depth: 0.7,
+      }, scene);
+      dBench.position.set(0, daisH + benchH / 2, daisZ - 0.2);
+      dBench.material = lightWood;
+      parent(dBench);
+      // Carved front panel on the bench (decorative)
+      const benchFront = MeshBuilder.CreateBox(`hallBenchFront_${id}`, {
+        width: benchW + 0.1, height: benchH * 0.7, depth: 0.05,
+      }, scene);
+      benchFront.position.set(0, daisH + benchH / 2 - 0.1, daisZ - 0.55);
+      benchFront.material = wood;
+      parent(benchFront);
+      // Marble top
+      const benchTop = MeshBuilder.CreateBox(`hallBenchTop_${id}`, {
+        width: benchW + 0.2, height: 0.08, depth: 0.85,
+      }, scene);
+      benchTop.position.set(0, daisH + benchH + 0.04, daisZ - 0.2);
+      benchTop.material = pbr(scene, `hallMarble_${id}`, new Color3(0.88, 0.85, 0.82), 0.3);
+      parent(benchTop);
+      // 5 official seats behind the bench
+      const officialChairMat = pbr(scene, `hallOfficialChair_${id}`, new Color3(0.5, 0.15, 0.15), 0.6);
+      for (let i = -2; i <= 2; i++) {
+        const cx = i * (benchW / 5.5);
+        const seat = MeshBuilder.CreateBox(`hallOfficialSeat_${id}_${i}`, {
+          width: 0.55, height: 0.45, depth: 0.55,
+        }, scene);
+        seat.position.set(cx, daisH + 0.22, daisZ + 0.35);
+        seat.material = officialChairMat;
+        parent(seat);
+        const back = MeshBuilder.CreateBox(`hallOfficialBack_${id}_${i}`, {
+          width: 0.55, height: 1.1, depth: 0.08,
+        }, scene);
+        back.position.set(cx, daisH + 1.0, daisZ + 0.55);
+        back.material = officialChairMat;
+        parent(back);
+      }
+      // Audience chairs — 4 rows × 6 chairs facing the dais
+      const audienceMat = pbr(scene, `hallAudience_${id}`, new Color3(0.32, 0.28, 0.24), 0.7);
+      const rowGap = 1.0;
+      const seatGap = 0.85;
+      const rowsStartZ = -halfI + 2.5;
+      for (let r = 0; r < 4; r++) {
+        const rz = rowsStartZ + r * rowGap;
+        for (let s = -2.5; s <= 2.5; s += 1) {
+          const sx = s * seatGap;
+          const seat = MeshBuilder.CreateBox(`hallAud_${id}_${r}_${s}`, {
+            width: 0.5, height: 0.4, depth: 0.5,
+          }, scene);
+          seat.position.set(sx, 0.2, rz);
+          seat.material = audienceMat;
+          parent(seat);
+          const back = MeshBuilder.CreateBox(`hallAudB_${id}_${r}_${s}`, {
+            width: 0.5, height: 0.7, depth: 0.06,
+          }, scene);
+          back.position.set(sx, 0.55, rz - 0.22);
+          back.material = audienceMat;
+          parent(back);
         }
       }
-      // Podium
-      const pod = MeshBuilder.CreateBox(`podium_${id}`, { width: 1.4, height: 1.3, depth: 0.8 }, scene);
-      pod.position.set(0, 0.65, halfI - 1.0);
-      pod.material = wood;
-      parent(pod);
+      // Center aisle is preserved by the gap at sx=0.
       break;
     }
     case 'factory': {
-      // Conveyor belt spanning the room
-      const belt = MeshBuilder.CreateBox(`belt_${id}`, { width: 1.0, height: 0.2, depth: inner * 0.7 }, scene);
-      belt.position.set(-1, 0.85, 0);
-      belt.material = metal(scene, `beltMat_${id}`, DARK_STEEL, 0.65);
-      parent(belt);
-      // Conveyor legs
-      for (let i = 0; i < 3; i++) {
-        const leg = MeshBuilder.CreateBox(`beltLeg_${id}_${i}`, { width: 0.15, height: 0.75, depth: 0.15 }, scene);
-        leg.position.set(-1, 0.37, -inner * 0.3 + i * inner * 0.3);
-        leg.material = metal(scene, `beltLegMat_${id}_${i}`, DARK_STEEL, 0.7);
-        parent(leg);
+      // Two parallel conveyor belts running front-to-back, plus machine
+      // blocks bookending each belt (input feeder + output stamper),
+      // a control panel against the side wall, parts bins along the
+      // back wall, and a pallet of crates near the loading dock.
+      const beltMat = metal(scene, `beltMat_${id}`, DARK_STEEL, 0.65);
+      const beltLegMat = metal(scene, `beltLegMat_${id}`, DARK_STEEL, 0.7);
+      const machMat = metal(scene, `machMat_${id}`, STEEL, 0.55);
+      const yellowMat = pbr(scene, `caution_${id}`, new Color3(0.85, 0.65, 0.15), 0.7);
+      const screenMat = pbr(scene, `controlScreen_${id}`, new Color3(0.15, 0.55, 0.7), 0.2, new Color3(0.15, 0.4, 0.5));
+      // Two conveyors, side-by-side
+      for (let b = 0; b < 2; b++) {
+        const bx = -inner * 0.18 + b * (inner * 0.36);
+        const belt = MeshBuilder.CreateBox(`belt_${id}_${b}`, {
+          width: 1.0, height: 0.2, depth: inner * 0.65,
+        }, scene);
+        belt.position.set(bx, 0.85, 0);
+        belt.material = beltMat;
+        parent(belt);
+        for (let i = 0; i < 4; i++) {
+          const leg = MeshBuilder.CreateBox(`beltLeg_${id}_${b}_${i}`, {
+            width: 0.15, height: 0.75, depth: 0.15,
+          }, scene);
+          leg.position.set(bx, 0.37, -inner * 0.3 + i * inner * 0.2);
+          leg.material = beltLegMat;
+          parent(leg);
+        }
+        // Drum/roller at each belt end
+        for (const endZ of [-inner * 0.32, inner * 0.32]) {
+          const drum = MeshBuilder.CreateCylinder(`beltDrum_${id}_${b}_${endZ}`, {
+            diameter: 0.4, height: 1.05, tessellation: 12,
+          }, scene);
+          drum.rotation.z = Math.PI / 2;
+          drum.position.set(bx, 0.85, endZ);
+          drum.material = beltLegMat;
+          parent(drum);
+        }
+        // Stamper machine at one end of each belt
+        const stamper = MeshBuilder.CreateBox(`stamper_${id}_${b}`, {
+          width: 1.6, height: 2.4, depth: 1.4,
+        }, scene);
+        stamper.position.set(bx, 1.2, -inner * 0.4);
+        stamper.material = machMat;
+        parent(stamper);
+        const stampHead = MeshBuilder.CreateBox(`stampHead_${id}_${b}`, {
+          width: 1.0, height: 0.6, depth: 1.0,
+        }, scene);
+        stampHead.position.set(bx, 2.7, -inner * 0.4);
+        stampHead.material = yellowMat;
+        parent(stampHead);
+        // Yellow caution stripe on belt sides
+        const stripe = MeshBuilder.CreateBox(`beltStripe_${id}_${b}`, {
+          width: 1.05, height: 0.05, depth: inner * 0.65,
+        }, scene);
+        stripe.position.set(bx, 0.96, 0);
+        stripe.material = yellowMat;
+        parent(stripe);
       }
-      // Machinery block
-      const mach = MeshBuilder.CreateBox(`mach_${id}`, { width: 2.5, height: 2.2, depth: 2 }, scene);
+      // Big machinery block on right side of the room
+      const mach = MeshBuilder.CreateBox(`mach_${id}`, {
+        width: 2.5, height: 2.2, depth: 2,
+      }, scene);
       mach.position.set(halfI - 1.8, 1.1, halfI * 0.3);
-      mach.material = metal(scene, `machMat_${id}`, STEEL, 0.55);
+      mach.material = machMat;
       parent(mach);
-      // Pipe sticking up
-      const pipe = MeshBuilder.CreateCylinder(`pipe_${id}`, { diameter: 0.5, height: Math.min(2.8, wallHeight - 2.5), tessellation: 10 }, scene);
+      const pipe = MeshBuilder.CreateCylinder(`pipe_${id}`, {
+        diameter: 0.5, height: Math.min(2.8, wallHeight - 2.5), tessellation: 10,
+      }, scene);
       pipe.position.set(halfI - 1.8, 2.2 + Math.min(2.8, wallHeight - 2.5) / 2, halfI * 0.3);
       pipe.material = metal(scene, `pipeMat_${id}`, STEEL, 0.5);
       parent(pipe);
-      // Crates
+      // Control panel — wall-mounted on the right wall
+      const panel = MeshBuilder.CreateBox(`panel_${id}`, {
+        width: 1.6, height: 1.1, depth: 0.2,
+      }, scene);
+      panel.position.set(halfI - 0.15, 1.5, -halfI + 3);
+      panel.material = machMat;
+      parent(panel);
+      const screen = MeshBuilder.CreateBox(`panelScreen_${id}`, {
+        width: 0.9, height: 0.55, depth: 0.05,
+      }, scene);
+      screen.position.set(halfI - 0.27, 1.7, -halfI + 3);
+      screen.material = screenMat;
+      parent(screen);
+      // Parts bins along the back wall
       for (let i = 0; i < 4; i++) {
-        const crate = MeshBuilder.CreateBox(`fCrate_${id}_${i}`, { width: 0.9, height: 0.7, depth: 0.9 }, scene);
+        const bin = MeshBuilder.CreateBox(`partBin_${id}_${i}`, {
+          width: 0.9, height: 0.7, depth: 0.7,
+        }, scene);
+        bin.position.set(-halfI + 1.5 + i * 1.1, 0.35, halfI - 0.6);
+        bin.material = pbr(scene, `partBinMat_${id}_${i}`, new Color3(0.4, 0.35, 0.32), 0.85);
+        parent(bin);
+      }
+      // Pallet of crates near the front-left
+      for (let i = 0; i < 4; i++) {
+        const crate = MeshBuilder.CreateBox(`fCrate_${id}_${i}`, {
+          width: 0.9, height: 0.7, depth: 0.9,
+        }, scene);
         crate.position.set(-halfI + 1.2 + (i % 2) * 1.0, 0.35, -halfI + 1.5 + Math.floor(i / 2) * 1.0);
         crate.material = pbr(scene, `fCrateMat_${id}_${i}`, new Color3(0.55, 0.42, 0.28));
         parent(crate);
       }
+      // Pallet under the crates
+      const pallet = MeshBuilder.CreateBox(`pallet_${id}`, {
+        width: 2.4, height: 0.1, depth: 2.4,
+      }, scene);
+      pallet.position.set(-halfI + 1.7, 0.05, -halfI + 2.0);
+      pallet.material = pbr(scene, `palletMat_${id}`, new Color3(0.6, 0.45, 0.3), 0.9);
+      parent(pallet);
       break;
     }
     case 'bank': {
@@ -346,21 +739,77 @@ export function buildFurniture(
       handle2.rotation.x = Math.PI / 2;
       handle2.material = metal(scene, `vaultHMat_${id}`, GOLD, 0.3);
       parent(handle2);
-      // Teller counter (long, along front)
+      // Teller counter — moved deep into the room in FRONT of the vault.
+      // Was at -halfI + 2.5 (right by the door, blocking the lobby). Now
+      // at halfI - 5 so the player walks the lobby and approaches a row
+      // of tellers backed against the vault wall.
+      const counterZ = halfI - 5;
       const counter = MeshBuilder.CreateBox(`bCounter_${id}`, { width: inner * 0.75, height: 1.1, depth: 1.1 }, scene);
-      counter.position.set(0, 0.55, -halfI + 2.5);
+      counter.position.set(0, 0.55, counterZ);
       counter.material = wood;
       parent(counter);
-      // Marble top
       const top = MeshBuilder.CreateBox(`bTop_${id}`, { width: inner * 0.78, height: 0.12, depth: 1.15 }, scene);
-      top.position.set(0, 1.16, -halfI + 2.5);
+      top.position.set(0, 1.16, counterZ);
       top.material = pbr(scene, `marble_${id}`, new Color3(0.88, 0.85, 0.82), 0.3);
       parent(top);
-      // Safe deposit boxes (grid on side wall)
+      // Cubicle bank behind the counter — 3 tellers separated by short
+      // partition walls. Each cubicle has a desk surface, side dividers,
+      // and a chair.
+      const cubicleZ = counterZ + 1.6;
+      const cubicleW = 1.8;
+      const cubicleH = 1.4;
+      const partitionMat = pbr(scene, `partition_${id}`, new Color3(0.55, 0.45, 0.38), 0.85);
+      const chairMat = pbr(scene, `bankChair_${id}`, new Color3(0.18, 0.18, 0.22), 0.6);
+      for (let i = -1; i <= 1; i++) {
+        const cx = i * (cubicleW + 0.4);
+        // Desk surface
+        const desk = MeshBuilder.CreateBox(`bDesk_${id}_${i}`, {
+          width: cubicleW * 0.85, height: 0.08, depth: 0.7,
+        }, scene);
+        desk.position.set(cx, 0.85, cubicleZ);
+        desk.material = wood;
+        parent(desk);
+        // Desk legs (just two for visual)
+        for (const legX of [-0.6, 0.6]) {
+          const leg = MeshBuilder.CreateBox(`bDeskLeg_${id}_${i}_${legX}`, {
+            width: 0.06, height: 0.85, depth: 0.06,
+          }, scene);
+          leg.position.set(cx + legX * cubicleW * 0.4, 0.425, cubicleZ);
+          leg.material = wood;
+          parent(leg);
+        }
+        // Side partitions between cubicles (only between, not on outermost edges)
+        if (i < 1) {
+          const partX = cx + cubicleW / 2 + 0.2;
+          const partition = MeshBuilder.CreateBox(`bPart_${id}_${i}`, {
+            width: 0.08, height: cubicleH, depth: 1.4,
+          }, scene);
+          partition.position.set(partX, cubicleH / 2 + 0.4, cubicleZ);
+          partition.material = partitionMat;
+          parent(partition);
+        }
+        // Chair behind the desk
+        const chair = MeshBuilder.CreateBox(`bChair_${id}_${i}`, {
+          width: 0.5, height: 0.5, depth: 0.5,
+        }, scene);
+        chair.position.set(cx, 0.45, cubicleZ + 0.65);
+        chair.material = chairMat;
+        parent(chair);
+        // Chair backrest
+        const back = MeshBuilder.CreateBox(`bChairBack_${id}_${i}`, {
+          width: 0.5, height: 0.7, depth: 0.08,
+        }, scene);
+        back.position.set(cx, 0.85, cubicleZ + 0.85);
+        back.material = chairMat;
+        parent(back);
+      }
+      // Safe deposit boxes (grid on side wall) — moved up a row so the
+      // bottom row sits at chest height instead of just-above-floor,
+      // which had been reading as "gold bars on the floor."
       for (let r = 0; r < 4; r++) {
         for (let c = 0; c < 6; c++) {
           const box = MeshBuilder.CreateBox(`safe_${id}_${r}_${c}`, { width: 0.2, height: 0.35, depth: 0.45 }, scene);
-          box.position.set(halfI - 0.25, 0.8 + r * 0.45, -halfI + 2 + c * 0.8);
+          box.position.set(halfI - 0.25, 1.4 + r * 0.45, -halfI + 2 + c * 0.8);
           box.material = metal(scene, `safeMat_${id}_${r}_${c}`, GOLD, 0.4);
           parent(box);
         }
