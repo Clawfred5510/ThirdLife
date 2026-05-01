@@ -21,6 +21,8 @@ import { economy, WORLD_TREASURY_ID } from '../economy';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
 import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
+import { getAllAgents } from '../db';
+import { computeLevel, computeJob } from '../agents-meta';
 import {
   BUILDINGS,
   BuildingType,
@@ -176,14 +178,30 @@ router.get('/world', (_req: Request, res: Response) => {
 });
 
 router.get('/agents', (_req: Request, res: Response) => {
-  const players = getAllPlayers();
-  res.json({
-    agents: players.map(p => ({
-      id: p.id,
-      name: p.name,
-      balance: p.credits,
-    })),
+  // Public list — registered API agents only (humans are excluded).
+  // Each entry has the live computed net worth, level, and job so the
+  // canonical /agents view can render without further calls.
+  const agents = getAllAgents();
+  const out = agents.map((a) => {
+    const nw = getNetWorth(a.id);
+    const parcels = getPlayerParcels(a.id);
+    return {
+      id: a.id,
+      name: a.name,
+      personality: a.personality,
+      strategy: a.strategy,
+      balance: nw?.balance ?? 0,
+      reputation: nw?.reputation ?? 0,
+      land: nw?.parcels ?? 0,
+      properties: nw?.buildings ?? 0,
+      net_worth: nw?.net_worth ?? 0,
+      level: computeLevel(nw?.net_worth ?? 0),
+      job: computeJob(parcels),
+      autopilot_enabled: a.autopilot_enabled === 1,
+      created_at: a.created_at,
+    };
   });
+  res.json({ agents: out });
 });
 
 router.get('/agents/me', authAgent, (req: Request, res: Response) => {
@@ -212,8 +230,18 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
   const id = req.params.id as string;
   const resources = getPlayerResources(id);
   const parcels = getPlayerParcels(id);
+  const nw = getNetWorth(id);
+  const recentEvents = getEvents(50, { playerId: id });
   res.json({
     id,
+    name: nw?.name ?? id,
+    balance: nw?.balance ?? 0,
+    reputation: nw?.reputation ?? 0,
+    net_worth: nw?.net_worth ?? 0,
+    land_value: nw?.land_value ?? 0,
+    property_value: nw?.property_value ?? 0,
+    level: computeLevel(nw?.net_worth ?? 0),
+    job: computeJob(parcels),
     resources,
     parcels: parcels.length,
     buildings: parcels.filter(p => (p as any).building_type).length,
@@ -222,6 +250,7 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
       building_type: (p as any).building_type,
       business_name: p.business_name,
     })),
+    recent_events: recentEvents,
   });
 });
 

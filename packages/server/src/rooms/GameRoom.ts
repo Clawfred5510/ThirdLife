@@ -40,8 +40,10 @@ import {
   addEvent,
   getEvents,
   getAuthSessionPlayerId,
+  tickReputation,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
+import { runAutopilotPass } from '../autopilot';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -610,6 +612,16 @@ export class GameRoom extends Room<GameState> {
       // counter. recordGdp() calls anywhere in the codebase have been
       // accumulating into the running tick — this rolls them over.
       advanceWorldTick();
+
+      // Phase B autopilot — every registered agent with autopilot
+      // enabled acts according to its personality + strategy. Wrapped
+      // in try/catch by runAutopilotPass per-agent.
+      runAutopilotPass();
+
+      // Phase B.2 reputation: each owned shop consumes 1 luxury; owner
+      // gains +1 reputation per consumed unit. Done after autopilot so
+      // freshly-bought luxury counts.
+      tickReputation();
 
       interface OwnerBucket {
         produce: { food: number; materials: number; energy: number; luxury: number };

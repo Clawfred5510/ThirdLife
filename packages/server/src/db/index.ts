@@ -67,6 +67,10 @@ interface DBBackend {
   getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }): Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }>;
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void;
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
+  getAllAgents(): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  /** Reputation tick: every owned shop consumes 1 luxury, owner gains
+   *  +1 reputation per consumed unit. Returns a per-owner summary. */
+  tickReputation(): Array<{ owner_id: string; consumed: number }>;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   tradeSellResources(
@@ -222,6 +226,10 @@ class SQLiteDatabase implements DBBackend {
         created_at TEXT DEFAULT (datetime('now'))
       );
     `);
+    // Phase B autopilot — when set, the server runs the agent's
+    // personality routine each income tick.
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN autopilot_enabled INTEGER DEFAULT 1`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN last_autopilot_tick INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
 
     // Wallet auth — short-lived nonces (one per challenge) + long-lived
     // session tokens. Address is always stored lowercased.
@@ -598,6 +606,38 @@ class SQLiteDatabase implements DBBackend {
     return row ?? null;
   }
 
+  getAllAgents() {
+    return this.db.prepare(
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at FROM agents`,
+    ).all() as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  }
+
+  tickReputation(): Array<{ owner_id: string; consumed: number }> {
+    // Aggregate shop count per owner, then deduct min(luxury, shopCount)
+    // from each owner's luxury and add the same amount to reputation.
+    const owners = this.db.prepare(`
+      SELECT owner_id, COUNT(*) AS shop_count FROM parcels
+      WHERE owner_id IS NOT NULL AND building_type = 'shop'
+      GROUP BY owner_id
+    `).all() as Array<{ owner_id: string; shop_count: number }>;
+    if (owners.length === 0) return [];
+
+    const summary: Array<{ owner_id: string; consumed: number }> = [];
+    const tx = this.db.transaction((rows: typeof owners) => {
+      for (const row of rows) {
+        const player = this.db.prepare('SELECT luxury, reputation FROM players WHERE id = ?').get(row.owner_id) as { luxury: number; reputation: number } | undefined;
+        if (!player) continue;
+        const consumed = Math.min(Math.floor(player.luxury), row.shop_count);
+        if (consumed <= 0) continue;
+        this.db.prepare('UPDATE players SET luxury = luxury - ?, reputation = reputation + ? WHERE id = ?')
+          .run(consumed, consumed, row.owner_id);
+        summary.push({ owner_id: row.owner_id, consumed });
+      }
+    });
+    tx(owners);
+    return summary;
+  }
+
   createAuthNonce(address: string, nonce: string, expiresAt: number): void {
     // Best-effort cleanup of expired nonces — keeps the table from growing
     // unboundedly under sustained challenge spam.
@@ -911,15 +951,40 @@ class MemoryDB implements DBBackend {
     return arr.slice(-limit).reverse();
   }
 
-  private agents = new Map<string, { id: string; name: string; apiKey: string }>();
+  private agents = new Map<string, { id: string; name: string; personality: string; strategy: string; apiKey: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>();
 
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
-    this.agents.set(apiKey, { id, name, apiKey });
+    this.agents.set(apiKey, { id, name, personality, strategy, apiKey, autopilot_enabled: 1, last_autopilot_tick: 0, created_at: new Date().toISOString() });
     this.players.set(id, { id, name, credits: 50, reputation: 0, x: 0, y: 0, z: -80, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
-    return this.agents.get(apiKey) ?? null;
+    const a = this.agents.get(apiKey);
+    return a ? { id: a.id, name: a.name } : null;
+  }
+
+  getAllAgents() {
+    return Array.from(this.agents.values()).map(({ apiKey, ...rest }) => rest);
+  }
+
+  tickReputation(): Array<{ owner_id: string; consumed: number }> {
+    const shopCounts = new Map<string, number>();
+    for (const p of this.parcels.values()) {
+      if (!p.owner_id || (p as { building_type?: string }).building_type !== 'shop') continue;
+      shopCounts.set(p.owner_id, (shopCounts.get(p.owner_id) ?? 0) + 1);
+    }
+    const summary: Array<{ owner_id: string; consumed: number }> = [];
+    for (const [ownerId, shopCount] of shopCounts) {
+      const player = this.players.get(ownerId) as (PlayerRow & { luxury?: number }) | undefined;
+      if (!player) continue;
+      const luxury = player.luxury ?? 0;
+      const consumed = Math.min(Math.floor(luxury), shopCount);
+      if (consumed <= 0) continue;
+      player.luxury = luxury - consumed;
+      player.reputation += consumed;
+      summary.push({ owner_id: ownerId, consumed });
+    }
+    return summary;
   }
 
   // Wallet auth — kept in memory; loses state on restart, fine for fallback.
@@ -1060,6 +1125,8 @@ export function getEvents(limit?: number, opts?: { severity?: string; type?: str
 }
 export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string) { backend.registerAgent(id, name, personality, strategy, apiKey); }
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
+export function getAllAgents() { return backend.getAllAgents(); }
+export function tickReputation() { return backend.tickReputation(); }
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function tradeSellResources(
