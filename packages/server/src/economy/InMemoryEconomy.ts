@@ -1,0 +1,82 @@
+import {
+  getOrCreatePlayer,
+  getPlayerCredits,
+  updatePlayerCredits,
+  playerExists,
+  addEvent,
+} from '../db';
+import { TRANSFER_FEE_BPS, BPS_DENOMINATOR } from '@gamestu/shared';
+import { IEconomy, WORLD_TREASURY_ID } from './IEconomy';
+
+/**
+ * Default economy backend — credits live in the players table credits
+ * column, mutated via the existing db helpers. Fees flow to a reserved
+ * WORLD_TREASURY player record (auto-created on first use).
+ */
+export class InMemoryEconomy implements IEconomy {
+  private treasuryReady = false;
+
+  private ensureTreasury(): void {
+    if (this.treasuryReady) return;
+    if (!playerExists(WORLD_TREASURY_ID)) {
+      getOrCreatePlayer(WORLD_TREASURY_ID, 'World Treasury');
+    }
+    this.treasuryReady = true;
+  }
+
+  async getBalance(playerId: string): Promise<number> {
+    return getPlayerCredits(playerId);
+  }
+
+  async credit(playerId: string, amount: number, reason: string): Promise<void> {
+    if (amount <= 0) return;
+    const current = getPlayerCredits(playerId);
+    updatePlayerCredits(playerId, current + amount);
+    addEvent('credit', playerId, { amount, reason });
+  }
+
+  async debit(
+    playerId: string,
+    amount: number,
+    reason: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (amount <= 0) return { ok: false, reason: 'invalid_amount' };
+    const current = getPlayerCredits(playerId);
+    if (current < amount) return { ok: false, reason: 'insufficient_balance' };
+    updatePlayerCredits(playerId, current - amount);
+    addEvent('debit', playerId, { amount, reason });
+    return { ok: true };
+  }
+
+  async transfer(
+    fromId: string,
+    toId: string,
+    amount: number,
+    reason: string,
+  ): Promise<{ ok: boolean; reason?: string; fee?: number }> {
+    this.ensureTreasury();
+    if (amount <= 0 || !Number.isFinite(amount)) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+    if (fromId === toId) return { ok: false, reason: 'self_transfer' };
+    if (!playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+
+    const fee = Math.floor((amount * TRANSFER_FEE_BPS) / BPS_DENOMINATOR);
+    const total = amount + fee;
+    const fromBal = getPlayerCredits(fromId);
+    if (fromBal < total) return { ok: false, reason: 'insufficient_balance' };
+
+    // Settle: deduct (amount + fee) from sender, credit recipient with
+    // amount, credit treasury with fee. All three writes in sequence;
+    // SQLite WAL means partial-failure recovery is on the next read.
+    updatePlayerCredits(fromId, fromBal - total);
+    const toBal = getPlayerCredits(toId);
+    updatePlayerCredits(toId, toBal + amount);
+    if (fee > 0) {
+      const treasury = getPlayerCredits(WORLD_TREASURY_ID);
+      updatePlayerCredits(WORLD_TREASURY_ID, treasury + fee);
+    }
+    addEvent('transfer', fromId, { to: toId, amount, fee, reason });
+    return { ok: true, fee };
+  }
+}

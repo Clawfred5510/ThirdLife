@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { onPlayerAdd, onPlayerRemove, getRoom } from '../../network/Client';
+import { apiGet } from '../../network/api';
+
+interface WorldInfo { tick: number; gdp: number; }
 
 export const HUD: React.FC = () => {
   const [playerCount, setPlayerCount] = useState(0);
   const [connected, setConnected] = useState(false);
+  const [world, setWorld] = useState<WorldInfo>({ tick: 0, gdp: 0 });
 
   useEffect(() => {
-    // Check connection status periodically
     const interval = setInterval(() => {
       const room = getRoom();
       setConnected(room !== null);
@@ -20,8 +23,17 @@ export const HUD: React.FC = () => {
       setPlayerCount((prev) => Math.max(0, prev - 1));
     });
 
+    const loadWorld = () => {
+      apiGet<WorldInfo>('/world')
+        .then((w) => setWorld({ tick: w.tick ?? 0, gdp: w.gdp ?? 0 }))
+        .catch(() => {});
+    };
+    loadWorld();
+    const worldInterval = setInterval(loadWorld, 15_000);
+
     return () => {
       clearInterval(interval);
+      clearInterval(worldInterval);
       unsubAdd();
       unsubRemove();
     };
@@ -54,6 +66,9 @@ export const HUD: React.FC = () => {
         <span style={{ opacity: 0.8 }}>{connected ? 'Connected' : 'Disconnected'}</span>
       </div>
       <p style={{ margin: '4px 0', opacity: 0.8 }}>Players: {playerCount}</p>
+      <p style={{ margin: '4px 0', opacity: 0.8, fontVariantNumeric: 'tabular-nums' }}>
+        Tick #{world.tick} · GDP {world.gdp.toLocaleString()} $AMETA
+      </p>
     </div>
   );
 };

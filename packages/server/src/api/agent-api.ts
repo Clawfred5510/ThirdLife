@@ -13,11 +13,14 @@ import {
   getEvents,
   registerAgent,
   getAgentByApiKey,
-  transferCredits,
   tradeSellResources,
   workProduce,
   buyLand,
 } from '../db';
+import { economy, WORLD_TREASURY_ID } from '../economy';
+import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
+import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
+import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
 import {
   BUILDINGS,
   BuildingType,
@@ -32,6 +35,8 @@ import {
   AgentPersonality,
   AgentStrategy,
   CURRENCY_NAME,
+  TRADING_FEE_BPS,
+  BPS_DENOMINATOR,
 } from '@gamestu/shared';
 
 const router = Router();
@@ -52,7 +57,7 @@ function logAuthFailure(req: Request, reason: 'missing_header' | 'invalid_key', 
   const path = req.path;
   // eslint-disable-next-line no-console
   console.warn(`[auth-fail] ip=${ip} path=${path} reason=${reason} key_hint=${apiKeyHint ?? '-'} ua="${ua}"`);
-  addEvent('auth_failure', null, { ip, path, reason, key_hint: apiKeyHint, ua });
+  addEvent('auth_failure', null, { ip, path, reason, key_hint: apiKeyHint, ua }, 'minor');
 }
 
 // ── Rate limiter: token bucket keyed by API key (auth'd) or IP (anon) ───
@@ -164,6 +169,8 @@ router.get('/world', (_req: Request, res: Response) => {
     parcels: parcels.length,
     claimed: parcels.filter(p => !!p.owner_id).length,
     agents: getAllPlayers().length,
+    tick: getWorldTick(),
+    gdp: getLastTickGdp(),
     parcels_data: parcels.filter(p => !!p.owner_id),
   });
 });
@@ -197,11 +204,8 @@ router.get('/agents/me', authAgent, (req: Request, res: Response) => {
 });
 
 router.get('/agents/me/events', authAgent, (req: Request, res: Response) => {
-  // Return events filtered to this agent
   const id = (req as any).agentId;
-  const all = getEvents(200);
-  const mine = all.filter(e => e.player_id === id);
-  res.json({ events: mine });
+  res.json({ events: getEvents(200, { playerId: id }) });
 });
 
 router.get('/agents/:id/stats', (req: Request, res: Response) => {
@@ -225,8 +229,12 @@ router.get('/market/prices', (_req: Request, res: Response) => {
   res.json(BASE_MARKET_PRICES);
 });
 
-router.get('/events', (_req: Request, res: Response) => {
-  res.json({ events: getEvents(100) });
+router.get('/events', (req: Request, res: Response) => {
+  const severity = typeof req.query.severity === 'string' ? req.query.severity : undefined;
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+  const limitRaw = parseInt(String(req.query.limit ?? '100'), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, limitRaw)) : 100;
+  res.json({ events: getEvents(limit, { severity, type }) });
 });
 
 router.get('/spec', (_req: Request, res: Response) => {
@@ -255,8 +263,10 @@ router.get('/spec', (_req: Request, res: Response) => {
       { name: 'buy_land', method: 'POST', path: '/api/v1/actions/buy-land', cost: `${LAND_COST} ${CURRENCY_NAME}`, description: 'Buy an unclaimed parcel.' },
       { name: 'build', method: 'POST', path: '/api/v1/actions/build', cost: `50,000 - 2,000,000 ${CURRENCY_NAME}`, description: 'Build on owned parcel.' },
       { name: 'work', method: 'POST', path: '/api/v1/actions/work', cost: 'Free', description: 'Produce resources from buildings.' },
-      { name: 'trade', method: 'POST', path: '/api/v1/actions/trade', cost: 'Free', description: 'Sell resources at market prices.' },
+      { name: 'trade', method: 'POST', path: '/api/v1/actions/trade', cost: 'Free', description: 'Sell resources at market prices, or transfer AMETA to another agent.' },
       { name: 'chat', method: 'POST', path: '/api/v1/actions/chat', cost: 'Free', description: 'Send a message to another agent.' },
+      { name: 'market_order', method: 'POST', path: '/api/v1/market/order', cost: 'Free + 1% trading fee on fill', description: 'Place a limit buy or sell order on the resource order book.' },
+      { name: 'market_cancel', method: 'DELETE', path: '/api/v1/market/order/:id', cost: 'Free', description: 'Cancel one of your open orders. Refunds escrow.' },
     ],
     info_endpoints: [
       { method: 'GET', path: '/api/v1/world', auth: false },
@@ -264,7 +274,11 @@ router.get('/spec', (_req: Request, res: Response) => {
       { method: 'GET', path: '/api/v1/agents/me', auth: true },
       { method: 'GET', path: '/api/v1/agents/me/events', auth: true },
       { method: 'GET', path: '/api/v1/market/prices', auth: false },
+      { method: 'GET', path: '/api/v1/market/book/:resource', auth: false, description: 'Live order book for a resource — bids, asks, recent trades.' },
+      { method: 'GET', path: '/api/v1/market/orders', auth: true, description: 'Your open orders.' },
       { method: 'GET', path: '/api/v1/agents/:id/stats', auth: false },
+      { method: 'GET', path: '/api/v1/leaderboard', auth: false, description: 'Top 50 by net_worth | balance | land | properties | reputation.' },
+      { method: 'GET', path: '/api/v1/agents/me/net-worth', auth: true, description: 'Your net worth breakdown.' },
     ],
     buildings: BUILDINGS,
     resources: { types: RESOURCE_TYPES },
@@ -284,7 +298,7 @@ router.post('/actions/explore', authAgent, rateLimit, (req: Request, res: Respon
 
   const target = parcels[Math.floor(Math.random() * parcels.length)];
   updatePlayerCredits(agentId, credits - EXPLORE_COST);
-  addEvent('explore', agentId, { parcel: target.id });
+  addEvent('explore', agentId, { parcel: target.id }, 'minor');
   res.json({ ok: true, parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y }, cost: EXPLORE_COST });
 });
 
@@ -301,7 +315,7 @@ router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Respo
       : 400;
     return res.status(status).json({ error: result.reason, cost: LAND_COST });
   }
-  addEvent('buy_land', agentId, { parcel: pid, cost: LAND_COST });
+  addEvent('buy_land', agentId, { parcel: pid, cost: LAND_COST }, 'normal');
   res.json({ ok: true, parcel_id: pid, cost: LAND_COST, balance: result.credits });
 });
 
@@ -323,7 +337,7 @@ router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response
   updatePlayerCredits(agentId, credits - spec.cost);
   setBuildingType(pid, building_type);
   updateBusiness(pid, agentId, { type: building_type, name: spec.label });
-  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost });
+  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost }, 'major');
   res.json({ ok: true, building: building_type, cost: spec.cost });
 });
 
@@ -348,15 +362,18 @@ router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response)
   }
 
   const result = workProduce(agentId, creditsEarned, resources);
-  addEvent('work', agentId, { produced, creditsEarned });
+  if (creditsEarned > 0) recordGdp(creditsEarned);
+  addEvent('work', agentId, { produced, creditsEarned }, 'minor');
   res.json({ ok: true, produced, creditsEarned, resources, balance: result.credits });
 });
 
-router.post('/actions/trade', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/trade', authAgent, rateLimit, async (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { resource, quantity, target_agent_id, amount } = req.body ?? {};
 
-  // Transfer $AMETA to another agent (atomic, validates target exists)
+  // Transfer $AMETA to another agent. Routed through IEconomy so the
+  // 1% transfer fee is taken automatically and the on-chain swap path
+  // works without changing call sites later.
   if (target_agent_id !== undefined || amount !== undefined) {
     if (typeof target_agent_id !== 'string' || !target_agent_id) {
       return res.status(400).json({ error: 'target_agent_id (string) required for transfer' });
@@ -364,34 +381,111 @@ router.post('/actions/trade', authAgent, rateLimit, (req: Request, res: Response
     if (typeof amount !== 'number' || amount <= 0 || !Number.isFinite(amount)) {
       return res.status(400).json({ error: 'amount must be a positive number' });
     }
-    const result = transferCredits(agentId, target_agent_id, amount);
-    if (!result.ok) {
-      const status = result.reason === 'target_not_found' ? 404 : 400;
-      return res.status(status).json({ error: result.reason });
+    try {
+      const result = await economy().transfer(agentId, target_agent_id, amount, 'agent_transfer');
+      if (!result.ok) {
+        const status = result.reason === 'target_not_found' ? 404 : 400;
+        return res.status(status).json({ error: result.reason });
+      }
+      return res.json({ ok: true, transferred: amount, to: target_agent_id, fee: result.fee });
+    } catch (e) {
+      console.error('[api] transfer failed:', e);
+      return res.status(500).json({ error: 'internal_error' });
     }
-    addEvent('transfer', agentId, { to: target_agent_id, amount });
-    return res.json({ ok: true, transferred: amount, to: target_agent_id });
   }
 
-  // Sell resources (atomic debit+credit)
+  // Sell resources at base market price. Applies the same trading fee as
+  // the order book so agents can't dodge fees by hitting the legacy path.
   if (!resource || !quantity) return res.status(400).json({ error: 'resource and quantity required (or target_agent_id + amount for transfer)' });
   if (!RESOURCE_TYPES.includes(resource as ResourceType)) return res.status(400).json({ error: 'Invalid resource', valid: RESOURCE_TYPES });
   if (typeof quantity !== 'number' || quantity <= 0) return res.status(400).json({ error: 'quantity must be positive' });
 
   const price = BASE_MARKET_PRICES[resource as ResourceType];
-  const earnings = Math.floor(price * quantity);
+  const gross = Math.floor(price * quantity);
+  const fee = Math.floor((gross * TRADING_FEE_BPS) / BPS_DENOMINATOR);
+  const earnings = gross - fee;
   const result = tradeSellResources(agentId, resource as ResourceType, quantity, earnings);
   if (!result.ok) return res.status(400).json({ error: result.reason });
-  addEvent('trade', agentId, { resource, quantity, earned: earnings });
-  res.json({ ok: true, sold: resource, quantity, earned: earnings, resources: result.resources, balance: result.credits });
+  if (fee > 0) {
+    await economy().credit(WORLD_TREASURY_ID, fee, 'trading_fee');
+  }
+  recordGdp(earnings);
+  addEvent('trade', agentId, { resource, quantity, gross, fee, earned: earnings }, 'normal');
+  res.json({ ok: true, sold: resource, quantity, earned: earnings, fee, resources: result.resources, balance: result.credits });
 });
 
 router.post('/actions/chat', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { target_agent_id, message } = req.body ?? {};
   if (!target_agent_id || !message) return res.status(400).json({ error: 'target_agent_id and message required' });
-  addEvent('chat', agentId, { to: target_agent_id, message });
+  addEvent('chat', agentId, { to: target_agent_id, message }, 'minor');
   res.json({ ok: true });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Market (order book) — Phase A.1
+// ──────────────────────────────────────────────────────────────────────
+
+router.post('/market/order', authAgent, rateLimit, async (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { resource, side, price, quantity } = req.body ?? {};
+  if (!Number.isInteger(price) || !Number.isInteger(quantity)) {
+    return res.status(400).json({ error: 'price and quantity must be integers' });
+  }
+  try {
+    const r = await placeOrder(agentId, resource, side, price, quantity);
+    if (!r.ok) return res.status(400).json({ error: r.reason });
+    res.json({ ok: true, order: r.result?.order, trades: r.result?.trades ?? [] });
+  } catch (e) {
+    console.error('[api] market/order failed:', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.delete('/market/order/:id', authAgent, rateLimit, async (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const r = await cancelOrder(agentId, id);
+    if (!r.ok) return res.status(400).json({ error: r.reason });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[api] market/order cancel failed:', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.get('/market/book/:resource', (req: Request, res: Response) => {
+  const r = req.params.resource;
+  if (!RESOURCE_TYPES.includes(r as ResourceType)) {
+    return res.status(400).json({ error: 'invalid resource' });
+  }
+  res.json(getBook(r as ResourceType));
+});
+
+router.get('/market/orders', authAgent, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  res.json({ orders: getOwnerOrders(agentId) });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Leaderboard + net worth — Phase A.3
+// ──────────────────────────────────────────────────────────────────────
+
+router.get('/leaderboard', (req: Request, res: Response) => {
+  const sortRaw = typeof req.query.sort === 'string' ? req.query.sort : 'net_worth';
+  const sort = isValidSort(sortRaw) ? sortRaw : 'net_worth';
+  const limitRaw = parseInt(String(req.query.limit ?? '50'), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, limitRaw)) : 50;
+  res.json({ sort, limit, entries: getLeaderboard(sort, limit) });
+});
+
+router.get('/agents/me/net-worth', authAgent, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const nw = getNetWorth(agentId);
+  if (!nw) return res.status(404).json({ error: 'agent_not_found' });
+  res.json(nw);
 });
 
 export default router;

@@ -102,6 +102,14 @@ export const AGENT_STRATEGIES: AgentStrategy[] = ['aggressive', 'balanced', 'con
 
 export const INCOME_TICK_MS = 60000; // passive income every 60s
 
+// ── Economy fees (basis points; 100 = 1%) ─────────────────────────────
+// Match the canonical site's behavior — every autopilot trade event line
+// shows a per-trade fee, every AMETA transfer shows a +X fee. Both flow
+// to the world treasury (a special sink player ID).
+export const TRADING_FEE_BPS = 100;   // 1% on resource sales
+export const TRANSFER_FEE_BPS = 100;  // 1% on AMETA transfers between players
+export const BPS_DENOMINATOR = 10000;
+
 export const BUS_STOPS = [
   { name: 'Downtown Central', x: 450, z: -250 },
   { name: 'Residential Park', x: -500, z: 500 },

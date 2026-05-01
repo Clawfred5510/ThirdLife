@@ -41,6 +41,7 @@ import {
   getEvents,
   getAuthSessionPlayerId,
 } from '../db';
+import { advanceWorldTick, recordGdp } from '../world';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -208,7 +209,7 @@ export class GameRoom extends Room<GameState> {
       });
       addEvent('claim_and_build', ownerId, {
         parcel: data.parcelId, building: data.building_type, cost: spec.cost + 150000,
-      });
+      }, 'major');
       console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + 150000} $AMETA)`);
     });
 
@@ -269,7 +270,7 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.buildingType,
       });
-      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost });
+      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost }, 'major');
       console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
     });
 
@@ -308,7 +309,7 @@ export class GameRoom extends Room<GameState> {
       updatePlayerResources(ownerId, resources);
       client.send(MessageType.WORK_RESULT, { produced, creditsEarned, resources });
       client.send(MessageType.RESOURCE_UPDATE, resources);
-      addEvent('work', ownerId, { produced, creditsEarned });
+      addEvent('work', ownerId, { produced, creditsEarned }, 'minor');
     });
 
     // ---- TRADE: sell resources at market prices ----
@@ -333,7 +334,7 @@ export class GameRoom extends Room<GameState> {
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       client.send(MessageType.RESOURCE_UPDATE, resources);
       client.send(MessageType.TRADE_RESULT, { sold: data.resource, quantity: data.quantity, earned: earnings });
-      addEvent('trade', ownerId, { resource: data.resource, quantity: data.quantity, earned: earnings });
+      addEvent('trade', ownerId, { resource: data.resource, quantity: data.quantity, earned: earnings }, 'normal');
     });
 
     // ---- MARKET_PRICES: return current prices ----
@@ -361,7 +362,7 @@ export class GameRoom extends Room<GameState> {
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       client.send(MessageType.EXPLORE, { parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y } });
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
-      addEvent('explore', ownerId, { parcel: target.id });
+      addEvent('explore', ownerId, { parcel: target.id }, 'minor');
     });
 
     // ---- EVENTS: return recent events ----
@@ -605,6 +606,10 @@ export class GameRoom extends Room<GameState> {
     this.lastRevenueTick += deltaTime;
     if (this.lastRevenueTick >= INCOME_TICK_MS) {
       this.lastRevenueTick = 0;
+      // Snapshot the GDP from the just-completed tick + bump the
+      // counter. recordGdp() calls anywhere in the codebase have been
+      // accumulating into the running tick — this rolls them over.
+      advanceWorldTick();
 
       interface OwnerBucket {
         produce: { food: number; materials: number; energy: number; luxury: number };
@@ -672,6 +677,7 @@ export class GameRoom extends Room<GameState> {
           const newCredits = player.credits + paidIncome;
           updatePlayerCredits(ownerId, newCredits);
           player.credits = newCredits;
+          recordGdp(paidIncome);
         }
 
         // Push state to the connected client

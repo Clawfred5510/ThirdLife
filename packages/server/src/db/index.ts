@@ -63,8 +63,8 @@ interface DBBackend {
   updatePlayerResources(id: string, resources: { food: number; materials: number; energy: number; luxury: number }): void;
   setBuildingType(parcelId: number, buildingType: string): void;
   getPlayerParcels(playerId: string): ParcelRow[];
-  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void;
-  getEvents(limit?: number): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }>;
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity?: string): void;
+  getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }): Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }>;
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void;
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
   playerExists(id: string): boolean;
@@ -104,7 +104,7 @@ interface DBBackend {
 // ── SQLite implementation ──────────────────────────────────────────────────
 
 class SQLiteDatabase implements DBBackend {
-  private db: any; // better-sqlite3 Database
+  db: any; // better-sqlite3 Database — exposed for the market module's raw queries
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -197,12 +197,19 @@ class SQLiteDatabase implements DBBackend {
         type TEXT NOT NULL,
         player_id TEXT,
         data TEXT,
+        severity TEXT DEFAULT 'normal',
         created_at TEXT DEFAULT (datetime('now'))
       );
     `);
+    // Additive migration for existing DBs that pre-date the severity column.
+    try {
+      this.db.exec(`ALTER TABLE events ADD COLUMN severity TEXT DEFAULT 'normal'`);
+    } catch (_) { /* exists */ }
 
     // Speed up the passive income tick which scans owner_id per income tick.
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_parcels_owner ON parcels(owner_id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity, id DESC)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, id DESC)');
 
     // API agents (registered via REST)
     this.db.exec(`
@@ -232,6 +239,40 @@ class SQLiteDatabase implements DBBackend {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_player ON auth_sessions(player_id);
+    `);
+
+    // Market order book + trade history. Resource is one of
+    // food/materials/energy/luxury; side is buy|sell; status is
+    // open|filled|cancelled. `filled` tracks partial fills.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS market_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource TEXT NOT NULL,
+        side TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        price INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        filled INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (owner_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_orders_book ON market_orders(resource, side, status, price);
+      CREATE INDEX IF NOT EXISTS idx_orders_owner ON market_orders(owner_id, status);
+
+      CREATE TABLE IF NOT EXISTS market_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource TEXT NOT NULL,
+        buyer_id TEXT NOT NULL,
+        seller_id TEXT NOT NULL,
+        price INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        fee INTEGER NOT NULL,
+        executed_at INTEGER NOT NULL,
+        FOREIGN KEY (buyer_id) REFERENCES players(id),
+        FOREIGN KEY (seller_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_trades_resource ON market_trades(resource, executed_at DESC);
     `);
   }
 
@@ -532,12 +573,18 @@ class SQLiteDatabase implements DBBackend {
     return this.db.prepare('SELECT * FROM parcels WHERE owner_id = ?').all(playerId) as ParcelRow[];
   }
 
-  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void {
-    this.db.prepare('INSERT INTO events (type, player_id, data) VALUES (?, ?, ?)').run(type, playerId, JSON.stringify(data));
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity: string = 'normal'): void {
+    this.db.prepare('INSERT INTO events (type, player_id, data, severity) VALUES (?, ?, ?, ?)').run(type, playerId, JSON.stringify(data), severity);
   }
 
-  getEvents(limit: number = 50): Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }> {
-    return this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit) as any[];
+  getEvents(limit: number = 50, opts?: { severity?: string; type?: string; playerId?: string }): Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.severity) { where.push('severity = ?'); params.push(opts.severity); }
+    if (opts?.type)     { where.push('type = ?');     params.push(opts.type); }
+    if (opts?.playerId) { where.push('player_id = ?'); params.push(opts.playerId); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM events ${whereSql} ORDER BY id DESC LIMIT ?`).all(...params, limit) as any[];
   }
 
   registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
@@ -848,15 +895,21 @@ class MemoryDB implements DBBackend {
     return Array.from(this.parcels.values()).filter(p => p.owner_id === playerId);
   }
 
-  private events: Array<{ id: number; type: string; player_id: string | null; data: string; created_at: string }> = [];
+  private events: Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }> = [];
   private eventId = 0;
 
-  addEvent(type: string, playerId: string | null, data: Record<string, unknown>): void {
-    this.events.push({ id: ++this.eventId, type, player_id: playerId, data: JSON.stringify(data), created_at: new Date().toISOString() });
+  addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity: string = 'normal'): void {
+    this.events.push({ id: ++this.eventId, type, player_id: playerId, data: JSON.stringify(data), severity, created_at: new Date().toISOString() });
     if (this.events.length > 500) this.events.shift();
   }
 
-  getEvents(limit: number = 50) { return this.events.slice(-limit).reverse(); }
+  getEvents(limit: number = 50, opts?: { severity?: string; type?: string; playerId?: string }) {
+    let arr = this.events;
+    if (opts?.severity) arr = arr.filter((e) => e.severity === opts.severity);
+    if (opts?.type)     arr = arr.filter((e) => e.type === opts.type);
+    if (opts?.playerId) arr = arr.filter((e) => e.player_id === opts.playerId);
+    return arr.slice(-limit).reverse();
+  }
 
   private agents = new Map<string, { id: string; name: string; apiKey: string }>();
 
@@ -918,6 +971,15 @@ try {
 } catch (err) {
   console.warn('[db] better-sqlite3 failed to load, falling back to in-memory Map:', (err as Error).message);
   backend = new MemoryDB();
+}
+
+// Reserved sink player for fees, taxes, treasury payouts. Created
+// once per process with a zero starting balance (no STARTING_BALANCE
+// gift). Duplicated from economy/IEconomy.ts to avoid an import cycle.
+const WORLD_TREASURY_ID_BOOT = '__world_treasury__';
+if (!backend.playerExists(WORLD_TREASURY_ID_BOOT)) {
+  backend.getOrCreatePlayer(WORLD_TREASURY_ID_BOOT, 'World Treasury');
+  backend.updatePlayerCredits(WORLD_TREASURY_ID_BOOT, 0);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -990,8 +1052,12 @@ export function getPlayerResources(id: string) { return backend.getPlayerResourc
 export function updatePlayerResources(id: string, r: { food: number; materials: number; energy: number; luxury: number }) { backend.updatePlayerResources(id, r); }
 export function setBuildingType(parcelId: number, buildingType: string) { backend.setBuildingType(parcelId, buildingType); }
 export function getPlayerParcels(playerId: string) { return backend.getPlayerParcels(playerId); }
-export function addEvent(type: string, playerId: string | null, data: Record<string, unknown>) { backend.addEvent(type, playerId, data); }
-export function getEvents(limit?: number) { return backend.getEvents(limit); }
+export function addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity?: string) {
+  backend.addEvent(type, playerId, data, severity);
+}
+export function getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }) {
+  return backend.getEvents(limit, opts);
+}
 export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string) { backend.registerAgent(id, name, personality, strategy, apiKey); }
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
 export function playerExists(id: string) { return backend.playerExists(id); }
@@ -1026,4 +1092,18 @@ export function getAuthSessionPlayerId(token: string) {
 }
 export function revokeAuthSession(token: string) {
   backend.revokeAuthSession(token);
+}
+
+/**
+ * Raw better-sqlite3 handle. Used only by the market module, which needs
+ * direct prepare/transaction access for the FIFO match engine. Throws
+ * when the in-memory fallback is active (better-sqlite3 not available) —
+ * the market requires SQLite.
+ */
+export function getRawDb(): import('better-sqlite3').Database {
+  const sqlite = backend as Partial<SQLiteDatabase>;
+  if (!sqlite.db) {
+    throw new Error('getRawDb() requires the SQLite backend; better-sqlite3 is not loaded.');
+  }
+  return sqlite.db;
 }
