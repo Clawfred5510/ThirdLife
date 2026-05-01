@@ -71,6 +71,11 @@ interface DBBackend {
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
    *  +1 reputation per consumed unit. Returns a per-owner summary. */
   tickReputation(): Array<{ owner_id: string; consumed: number }>;
+  /** Phase E.1 — list bots associated with a wallet. */
+  getWalletBots(walletAddress: string): Array<{ bot_id: string; name: string; slot_index: number }>;
+  /** Phase E.1 — register a new bot under a wallet. Returns the slot
+   *  index used (1..10) or null if the wallet is already at 10. */
+  createWalletBot(walletAddress: string, botId: string, name: string): number | null;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   tradeSellResources(
@@ -302,6 +307,52 @@ class SQLiteDatabase implements DBBackend {
       );
       CREATE INDEX IF NOT EXISTS idx_trades_resource ON market_trades(resource, executed_at DESC);
     `);
+
+    // Phase E.3 — governance / decree system
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS decrees (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposer_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        action_params TEXT NOT NULL,           -- JSON
+        proposed_at_tick INTEGER NOT NULL,
+        vote_window_ticks INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', -- active|passed|rejected|executed
+        resolved_at_tick INTEGER,
+        FOREIGN KEY (proposer_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_decrees_status ON decrees(status, id DESC);
+
+      CREATE TABLE IF NOT EXISTS decree_votes (
+        decree_id INTEGER NOT NULL,
+        voter_id TEXT NOT NULL,
+        weight INTEGER NOT NULL,
+        choice INTEGER NOT NULL,                -- 0 = no, 1 = yes
+        PRIMARY KEY (decree_id, voter_id),
+        FOREIGN KEY (decree_id) REFERENCES decrees(id),
+        FOREIGN KEY (voter_id) REFERENCES players(id)
+      );
+    `);
+
+    // Phase E.1 — wallet → multiple bots (children)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS wallet_bots (
+        wallet_address TEXT NOT NULL,
+        bot_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (wallet_address, bot_id),
+        FOREIGN KEY (bot_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wallet_bots_addr ON wallet_bots(wallet_address);
+    `);
+
+    // Phase E.2 — X (Twitter) verification scaffolding on agents.
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_verified INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_handle TEXT`); } catch (_) { /* exists */ }
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }
@@ -630,6 +681,26 @@ class SQLiteDatabase implements DBBackend {
     return this.db.prepare(
       `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at FROM agents`,
     ).all() as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  }
+
+  getWalletBots(walletAddress: string) {
+    return this.db.prepare(
+      `SELECT bot_id, name, slot_index FROM wallet_bots WHERE wallet_address = ? ORDER BY slot_index ASC`,
+    ).all(walletAddress.toLowerCase()) as Array<{ bot_id: string; name: string; slot_index: number }>;
+  }
+
+  createWalletBot(walletAddress: string, botId: string, name: string): number | null {
+    const addr = walletAddress.toLowerCase();
+    const existing = this.getWalletBots(addr);
+    if (existing.length >= 10) return null;
+    // First unused slot in 1..10
+    const taken = new Set(existing.map((e) => e.slot_index));
+    let slot = 1;
+    while (slot <= 10 && taken.has(slot)) slot += 1;
+    this.db.prepare(
+      `INSERT INTO wallet_bots (wallet_address, bot_id, name, slot_index) VALUES (?, ?, ?, ?)`,
+    ).run(addr, botId, name, slot);
+    return slot;
   }
 
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
@@ -987,6 +1058,24 @@ class MemoryDB implements DBBackend {
     return Array.from(this.agents.values()).map(({ apiKey, ...rest }) => rest);
   }
 
+  private walletBots = new Map<string, Array<{ bot_id: string; name: string; slot_index: number }>>();
+
+  getWalletBots(walletAddress: string) {
+    return this.walletBots.get(walletAddress.toLowerCase()) ?? [];
+  }
+
+  createWalletBot(walletAddress: string, botId: string, name: string): number | null {
+    const addr = walletAddress.toLowerCase();
+    const list = this.walletBots.get(addr) ?? [];
+    if (list.length >= 10) return null;
+    const taken = new Set(list.map((e) => e.slot_index));
+    let slot = 1;
+    while (slot <= 10 && taken.has(slot)) slot += 1;
+    list.push({ bot_id: botId, name, slot_index: slot });
+    this.walletBots.set(addr, list);
+    return slot;
+  }
+
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
     const shopCounts = new Map<string, number>();
     for (const p of this.parcels.values()) {
@@ -1147,6 +1236,10 @@ export function registerAgent(id: string, name: string, personality: string, str
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
 export function getAllAgents() { return backend.getAllAgents(); }
 export function tickReputation() { return backend.tickReputation(); }
+export function getWalletBots(walletAddress: string) { return backend.getWalletBots(walletAddress); }
+export function createWalletBot(walletAddress: string, botId: string, name: string) {
+  return backend.createWalletBot(walletAddress, botId, name);
+}
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function tradeSellResources(

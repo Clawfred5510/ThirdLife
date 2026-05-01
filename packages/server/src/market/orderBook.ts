@@ -11,7 +11,13 @@ import {
 } from '../db';
 import { economy, WORLD_TREASURY_ID } from '../economy';
 import { recordGdp } from '../world';
+import { getRuntimeTradingFeeBps } from '../governance';
 import { MarketOrder, MarketTrade, BookSnapshot, MatchResult, Side } from './types';
+
+function effectiveTradingFeeBps(): number {
+  const override = getRuntimeTradingFeeBps();
+  return override ?? TRADING_FEE_BPS;
+}
 
 interface MarketOrderRow {
   id: number;
@@ -213,7 +219,7 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       const seller = isBuy ? cand.owner_id : inbound.owner_id;
 
       const grossPayout = tradePrice * matchQty;
-      const fee = Math.floor((grossPayout * TRADING_FEE_BPS) / BPS_DENOMINATOR);
+      const fee = Math.floor((grossPayout * effectiveTradingFeeBps()) / BPS_DENOMINATOR);
       const sellerEarn = grossPayout - fee;
 
       // Buyer receives the resource.

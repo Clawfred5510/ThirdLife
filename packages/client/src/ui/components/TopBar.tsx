@@ -6,7 +6,7 @@ import {
   zoneForGrid, isPremiumParcel,
 } from '@gamestu/shared';
 
-type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | null;
+type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance' | null;
 
 // ── Shared types ──────────────────────────────────────────────────────
 
@@ -88,6 +88,7 @@ export const TopBar: React.FC = () => {
         <DockButton label="📈 Market" active={active === 'market'} onClick={() => toggle('market')} aria="Toggle market" />
         <DockButton label="🏢 Properties" active={active === 'properties'} onClick={() => toggle('properties')} aria="Toggle properties" />
         <DockButton label="🗺️ World" active={active === 'world2d'} onClick={() => toggle('world2d')} aria="Toggle 2D world map" />
+        <DockButton label="🗳️ Decrees" active={active === 'governance'} onClick={() => toggle('governance')} aria="Toggle governance" />
         <DockButton label="📜 Events" active={active === 'events'} onClick={() => toggle('events')} aria="Toggle event log" />
       </div>
       {active && (
@@ -96,6 +97,7 @@ export const TopBar: React.FC = () => {
           {active === 'market' && <MarketBody />}
           {active === 'properties' && <PropertiesBody />}
           {active === 'world2d' && <World2DBody />}
+          {active === 'governance' && <GovernanceBody />}
           {active === 'events' && <EventBody />}
         </div>
       )}
@@ -329,6 +331,79 @@ const LANDMARK_GLYPH: Record<string, string> = {
   town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
 };
 
+interface DecreeRow {
+  id: number;
+  proposer_id: string;
+  subject: string;
+  body: string;
+  action_type: string;
+  action_params: unknown;
+  proposed_at_tick: number;
+  vote_window_ticks: number;
+  status: 'active' | 'passed' | 'rejected' | 'executed';
+  resolved_at_tick: number | null;
+}
+
+const STATUS_COLOR: Record<DecreeRow['status'], string> = {
+  active: '#fbbf24', passed: '#22c55e', rejected: '#ef4444', executed: '#a855f7',
+};
+
+const GovernanceBody: React.FC = () => {
+  const [activeDecrees, setActiveDecrees] = useState<DecreeRow[]>([]);
+  const [recentDecrees, setRecentDecrees] = useState<DecreeRow[]>([]);
+  const [tab, setTab] = useState<'active' | 'recent'>('active');
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      apiGet<{ decrees: DecreeRow[] }>('/governance/active')
+        .then((r) => { if (!cancelled) setActiveDecrees(r.decrees); })
+        .catch(() => {});
+      apiGet<{ decrees: DecreeRow[] }>('/governance/recent')
+        .then((r) => { if (!cancelled) setRecentDecrees(r.decrees); })
+        .catch(() => {});
+    };
+    load();
+    const i = setInterval(load, 12_000);
+    return () => { cancelled = true; clearInterval(i); };
+  }, []);
+
+  const list = tab === 'active' ? activeDecrees : recentDecrees;
+
+  return (
+    <>
+      <div style={S.tabRow}>
+        <button onClick={() => setTab('active')} style={{ ...S.tab, ...(tab === 'active' ? S.tabActive : {}) }}>
+          Active
+        </button>
+        <button onClick={() => setTab('recent')} style={{ ...S.tab, ...(tab === 'recent' ? S.tabActive : {}) }}>
+          Recent
+        </button>
+      </div>
+      <div style={S.list}>
+        {list.length === 0 ? (
+          <div style={S.empty}>{tab === 'active' ? 'No open decrees' : 'No decree history'}</div>
+        ) : (
+          list.slice(0, 30).map((d) => (
+            <div key={d.id} style={S.decreeRow}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ ...S.decreeStatus, color: STATUS_COLOR[d.status] }}>{d.status}</span>
+                <span style={S.decreeSubject}>{d.subject}</span>
+              </div>
+              <div style={S.decreeMeta}>
+                #{d.id} · {d.action_type} · window {d.vote_window_ticks}t · proposer {d.proposer_id.slice(0, 8)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      <div style={S.foot}>
+        Propose / vote via <code>POST /api/v1/governance/propose</code> or <code>/vote</code>.
+      </div>
+    </>
+  );
+};
+
 interface WorldParcelLite { id: number; grid_x: number; grid_y: number; color: string; }
 
 const World2DBody: React.FC = () => {
@@ -477,4 +552,8 @@ const S: Record<string, React.CSSProperties> = {
   zoneLegend: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, fontSize: 9, color: '#8b8b9a' },
   legendItem: { display: 'inline-flex', alignItems: 'center', gap: 3, textTransform: 'capitalize' },
   legendSwatch: { display: 'inline-block', width: 8, height: 8, borderRadius: 2 },
+  decreeRow: { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 6px', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(255,255,255,0.04)' },
+  decreeStatus: { fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, minWidth: 56 },
+  decreeSubject: { fontSize: 12, color: '#e4e4ef', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  decreeMeta: { fontSize: 10, color: '#5b5b6a', marginLeft: 62 },
 };

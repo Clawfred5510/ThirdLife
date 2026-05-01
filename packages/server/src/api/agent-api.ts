@@ -34,6 +34,14 @@ import {
   buildingHasUnits,
 } from '../properties';
 import {
+  proposeDecree,
+  castVote,
+  getActiveDecrees,
+  getRecentDecrees,
+  getVotes,
+  isValidActionType,
+} from '../governance';
+import {
   BUILDINGS,
   BuildingType,
   BASE_MARKET_PRICES,
@@ -580,6 +588,83 @@ router.post('/actions/buy-property', authAgent, rateLimit, async (req: Request, 
     console.error('[api] buy-property failed:', e);
     res.status(500).json({ error: 'internal_error' });
   }
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Governance / Decrees — Phase E.3
+// ──────────────────────────────────────────────────────────────────────
+
+router.post('/governance/propose', authAgent, rateLimit, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { subject, body, action_type, action_params, vote_window_ticks } = req.body ?? {};
+  if (typeof action_type !== 'string' || !isValidActionType(action_type)) {
+    return res.status(400).json({ error: 'invalid action_type' });
+  }
+  const r = proposeDecree(
+    agentId, String(subject ?? ''), String(body ?? ''),
+    action_type, action_params ?? {},
+    typeof vote_window_ticks === 'number' ? vote_window_ticks : undefined,
+  );
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  res.json({ ok: true, id: r.id });
+});
+
+router.post('/governance/vote', authAgent, rateLimit, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const { decree_id, choice } = req.body ?? {};
+  const c = choice === 1 || choice === true || choice === 'yes' ? 1 : 0;
+  const r = castVote(agentId, Number(decree_id), c as 0 | 1);
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  res.json({ ok: true, weight: r.weight, choice: c });
+});
+
+router.get('/governance/active', (_req: Request, res: Response) => {
+  const decrees = getActiveDecrees().map((d) => ({
+    ...d,
+    action_params: safeJson(d.action_params),
+    votes: getVotes(d.id),
+  }));
+  res.json({ decrees });
+});
+
+router.get('/governance/recent', (_req: Request, res: Response) => {
+  const decrees = getRecentDecrees().map((d) => ({
+    ...d,
+    action_params: safeJson(d.action_params),
+  }));
+  res.json({ decrees });
+});
+
+function safeJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return s; }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase E.2 — X (Twitter) verification stub.
+// Real flow needs the X API v2 OAuth + tweet-content lookup. Until the
+// keys land, expose a /me/x-verify endpoint that records a handle but
+// flags x_verified = 0 (unverified) so the upgrade is a small change
+// to call the X API instead of trusting the input.
+// ──────────────────────────────────────────────────────────────────────
+
+import { getRawDb as _rawDb } from '../db';
+
+router.post('/agents/me/x-verify', authAgent, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const handle = String((req.body ?? {}).handle ?? '').trim().replace(/^@/, '');
+  if (!handle || handle.length > 30 || !/^[A-Za-z0-9_]+$/.test(handle)) {
+    return res.status(400).json({ error: 'invalid_handle' });
+  }
+  // Stub — record handle as pending; x_verified stays 0 until the real
+  // X API flow lands.
+  _rawDb().prepare('UPDATE agents SET x_handle = ?, x_verified = 0 WHERE id = ?').run(handle, agentId);
+  res.json({ ok: true, handle, verified: false, note: 'X API integration is pending — the recorded handle is unverified for now.' });
+});
+
+router.get('/agents/me/x-status', authAgent, (req: Request, res: Response) => {
+  const agentId = (req as any).agentId;
+  const row = _rawDb().prepare('SELECT x_handle, x_verified FROM agents WHERE id = ?').get(agentId) as { x_handle: string | null; x_verified: number } | undefined;
+  res.json({ handle: row?.x_handle ?? null, verified: row?.x_verified === 1 });
 });
 
 export default router;

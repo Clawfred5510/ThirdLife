@@ -45,6 +45,8 @@ import {
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
 import { generateUnitsForParcel, buildingHasUnits, tickPropertyIncome, backfillSubUnits } from '../properties';
+import { resolveDecreesTick } from '../governance';
+import { getWorldTick } from '../world';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
@@ -641,6 +643,12 @@ export class GameRoom extends Room<GameState> {
       // Phase C.4: per-unit passive income to sub-unit owners. GDP
       // accumulator already records the total inside tickPropertyIncome.
       tickPropertyIncome();
+
+      // Phase E.3: resolve any decree whose voting window has elapsed.
+      // Best-effort — never throws into the tick.
+      resolveDecreesTick(getWorldTick()).catch((err) => {
+        console.error('[governance] resolve failed:', err);
+      });
 
       interface OwnerBucket {
         produce: { food: number; materials: number; energy: number; luxury: number };
