@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { apiGet } from '../../network/api';
 import { RESOURCE_TYPES, ResourceType } from '@gamestu/shared';
 
-type ActivePanel = 'leaderboard' | 'market' | 'events' | null;
+type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | null;
 
 // ── Shared types ──────────────────────────────────────────────────────
 
@@ -26,6 +26,13 @@ interface EventRow {
   data: string; severity: string; created_at: string;
 }
 type Severity = 'all' | 'epic' | 'major' | 'normal' | 'minor';
+
+interface PropertyRow {
+  id: number; parcel_id: number; unit_type: 'studio' | 'office' | 'penthouse';
+  floor: number; unit_index: number;
+  owner_id: string | null; list_price: number | null; income_per_tick: number;
+}
+type PropertyFilter = 'for_sale' | 'all';
 
 const SORT_LABEL: Record<LeaderboardSort, string> = {
   net_worth: 'Net Worth', balance: 'Balance', land: 'Land',
@@ -75,12 +82,14 @@ export const TopBar: React.FC = () => {
       <div style={S.btnRow}>
         <DockButton label="🏆 Leaderboard" active={active === 'leaderboard'} onClick={() => toggle('leaderboard')} aria="Toggle leaderboard" />
         <DockButton label="📈 Market" active={active === 'market'} onClick={() => toggle('market')} aria="Toggle market" />
+        <DockButton label="🏢 Properties" active={active === 'properties'} onClick={() => toggle('properties')} aria="Toggle properties" />
         <DockButton label="📜 Events" active={active === 'events'} onClick={() => toggle('events')} aria="Toggle event log" />
       </div>
       {active && (
         <div style={S.panel} role="dialog" aria-label={active}>
           {active === 'leaderboard' && <LeaderboardBody />}
           {active === 'market' && <MarketBody />}
+          {active === 'properties' && <PropertiesBody />}
           {active === 'events' && <EventBody />}
         </div>
       )}
@@ -254,6 +263,62 @@ const EventBody: React.FC = () => {
   );
 };
 
+const UNIT_ICON: Record<PropertyRow['unit_type'], string> = {
+  studio: '🏠', office: '🏢', penthouse: '👑',
+};
+
+const PropertiesBody: React.FC = () => {
+  const [filter, setFilter] = useState<PropertyFilter>('for_sale');
+  const [props, setProps] = useState<PropertyRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      const url = filter === 'for_sale' ? '/properties?for_sale=true' : '/properties';
+      apiGet<{ properties: PropertyRow[] }>(url)
+        .then((r) => { if (!cancelled) setProps(r.properties); })
+        .catch(() => {});
+    };
+    load();
+    const i = setInterval(load, 6000);
+    return () => { cancelled = true; clearInterval(i); };
+  }, [filter]);
+
+  return (
+    <>
+      <div style={S.tabRow}>
+        <button onClick={() => setFilter('for_sale')} style={{ ...S.tab, ...(filter === 'for_sale' ? S.tabActive : {}) }}>
+          For sale
+        </button>
+        <button onClick={() => setFilter('all')} style={{ ...S.tab, ...(filter === 'all' ? S.tabActive : {}) }}>
+          Recent
+        </button>
+      </div>
+      <div style={S.list}>
+        {props.length === 0 ? (
+          <div style={S.empty}>{filter === 'for_sale' ? 'No units listed' : 'No units yet'}</div>
+        ) : (
+          props.slice(0, 60).map((p) => (
+            <div key={p.id} style={S.row}>
+              <span style={S.unitIcon}>{UNIT_ICON[p.unit_type]}</span>
+              <span style={S.unitMeta}>
+                {p.unit_type} · F{p.floor}#{p.unit_index} · parcel {p.parcel_id}
+              </span>
+              <span style={S.unitInc}>+{p.income_per_tick}/t</span>
+              {p.list_price !== null && (
+                <span style={S.unitPrice}>{formatAmeta(p.list_price)}</span>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <div style={S.foot}>
+        Buy / list / unlist via <code>POST /api/v1/actions/buy-property</code> (etc).
+      </div>
+    </>
+  );
+};
+
 const S: Record<string, React.CSSProperties> = {
   dock: {
     position: 'absolute', top: 60, right: 16, pointerEvents: 'auto',
@@ -292,5 +357,9 @@ const S: Record<string, React.CSSProperties> = {
   trades: { display: 'flex', flexDirection: 'column', gap: 2 },
   trade: { fontSize: 11, fontVariantNumeric: 'tabular-nums', padding: '1px 4px' },
   empty: { fontSize: 11, color: '#5b5b6a', padding: '6px', textAlign: 'center' },
-  foot: { marginTop: 10, fontSize: 10, color: '#5b5b6a', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 6 },
+  foot: { marginTop: 10, fontSize: 10, color: '#5b5b6a', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: 6 },
+  unitIcon: { fontSize: 14, width: 20, textAlign: 'center' },
+  unitMeta: { flex: 1, fontSize: 12, color: '#e4e4ef', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  unitInc: { fontSize: 11, color: '#22c55e', fontVariantNumeric: 'tabular-nums' },
+  unitPrice: { fontSize: 12, color: '#fbbf24', fontVariantNumeric: 'tabular-nums', minWidth: 50, textAlign: 'right' },
 };

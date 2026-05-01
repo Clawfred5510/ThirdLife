@@ -83,21 +83,27 @@ export function buildOffice(
     exteriorCasters.push(seg);
   }
 
-  // ── MID-HEIGHT GLASS BAND (curtain-wall reference) ──────────────────
-  const bandY = wallH * 0.45;
+  // ── PER-FLOOR GLASS CURTAIN-WALL BANDS (Phase C: 3 floors) ──────────
+  // Two horizontal bands divide the tower into 3 floors. Each band is
+  // a thin glass strip wrapping the perimeter — reads as the floor
+  // separator + window strip on a corporate curtain-wall office.
+  const floors = 3;
   const bandH = 1.2;
-  for (const [bw, bd, bx, bz] of [
-    [towerW * 0.95, 0.2, 0, -towerD / 2],
-    [towerW * 0.95, 0.2, 0, towerD / 2],
-    [0.2, towerD * 0.95, -towerW / 2, 0],
-    [0.2, towerD * 0.95, towerW / 2, 0],
-  ] as const) {
-    const band = MeshBuilder.CreateBox(`glassBand_${id}_${bx}_${bz}`, {
-      width: bw, height: bandH, depth: bd,
-    }, scene);
-    band.parent = body;
-    band.position.set(bx, bandY, bz);
-    band.material = glassMat;
+  for (let f = 1; f < floors; f++) {
+    const bandY = (wallH / floors) * f;
+    for (const [bw, bd, bx, bz] of [
+      [towerW * 0.95, 0.2, 0, -towerD / 2],
+      [towerW * 0.95, 0.2, 0, towerD / 2],
+      [0.2, towerD * 0.95, -towerW / 2, 0],
+      [0.2, towerD * 0.95, towerW / 2, 0],
+    ] as const) {
+      const band = MeshBuilder.CreateBox(`officeBand_${id}_${f}_${bx}_${bz}`, {
+        width: bw, height: bandH, depth: bd,
+      }, scene);
+      band.parent = body;
+      band.position.set(bx, bandY, bz);
+      band.material = glassMat;
+    }
   }
 
   // ── ROOFTOP MECHANICAL PENTHOUSE ────────────────────────────────────

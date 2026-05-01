@@ -59,6 +59,38 @@ export function buildApartment(
     wallMat, trimMat,
   );
 
+  // ── FLOOR-DIVIDER CORNICE BANDS (Phase C) ───────────────────────────
+  // Visually splits the wall into 3 floors. Each band is a thin
+  // light-colored strip running around the perimeter at the boundary
+  // between floors. Reads as "this is a 3-storey building" without
+  // making it skyscraper-tall.
+  const floors = 3;
+  for (let f = 1; f < floors; f++) {
+    const bandY = (wallH / floors) * f;
+    const bandThick = 0.18;
+    const bandDepth = 0.25;
+    // Front + back bands
+    for (const z2 of [-buildingD / 2 - bandDepth / 2, buildingD / 2 + bandDepth / 2]) {
+      const band = MeshBuilder.CreateBox(`aptBand_${id}_${f}_${z2 < 0 ? 'F' : 'B'}`, {
+        width: buildingW + bandDepth, height: bandThick, depth: bandDepth,
+      }, scene);
+      band.parent = body;
+      band.position.set(0, bandY, z2);
+      band.material = corniceMat;
+      exteriorCasters.push(band);
+    }
+    // Left + right bands
+    for (const x2 of [-buildingW / 2 - bandDepth / 2, buildingW / 2 + bandDepth / 2]) {
+      const band = MeshBuilder.CreateBox(`aptBand_${id}_${f}_${x2 < 0 ? 'L' : 'R'}`, {
+        width: bandDepth, height: bandThick, depth: buildingD + bandDepth,
+      }, scene);
+      band.parent = body;
+      band.position.set(x2, bandY, 0);
+      band.material = corniceMat;
+      exteriorCasters.push(band);
+    }
+  }
+
   // ── FLAT ROOF ───────────────────────────────────────────────────────
   const slab = MeshBuilder.CreateBox(`aptRoof_${id}`, {
     width: buildingW + 0.5, height: 0.4, depth: buildingD + 0.5,
