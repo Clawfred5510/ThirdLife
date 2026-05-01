@@ -881,19 +881,13 @@ export class MainScene {
         }
       }
 
-      // Snap only on catastrophic desync for the local player — and only
-      // when we actually have a server session (offline mode leaves the
-      // server-target frozen at spawn, which would yank the player back
-      // after every short walk).
-      const activeSid = getSessionId();
-      if (activeSid && sessionId === activeSid) {
-        const dx = player.x - remote.root.position.x;
-        const dz = player.z - remote.root.position.z;
-        if (dx * dx + dz * dz > 25 * 25) {
-          remote.root.position.x = player.x;
-          remote.root.position.z = player.z;
-        }
-      }
+      // (No snap here for the local player. Reconciliation is owned by
+      // applyLocalPrediction, which fires every render frame with a
+      // generous 60u catastrophic-only threshold. There USED to be a
+      // duplicate 25u snap in this method that ran every PLAYER_STATE
+      // broadcast (10 Hz) — caused the random "teleport during movement"
+      // the user reported. updateRemotePlayerTarget now only updates the
+      // interpolation target.)
     }
   }
 
