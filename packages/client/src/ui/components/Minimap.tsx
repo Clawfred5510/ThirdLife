@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useCallback } from 'react';
-import { WORLD_HALF } from '@gamestu/shared';
+import {
+  WORLD_HALF, GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
+  zoneForGrid, isPremiumParcel,
+} from '@gamestu/shared';
 import {
   onPlayerAdd,
   onPlayerRemove,
@@ -28,6 +31,62 @@ function worldToMinimap(wx: number, wz: number): [number, number] {
   return [mx, my];
 }
 
+function gridToMinimap(gx: number, gy: number): [number, number] {
+  const wx = gx * MINIMAP_STRIDE - WORLD_HALF + 20;
+  const wz = gy * MINIMAP_STRIDE - WORLD_HALF + 20;
+  return worldToMinimap(wx, wz);
+}
+
+/** One-shot pre-rendered zone overlay. Rebuilt only on size change. */
+let zoneOverlay: HTMLCanvasElement | null = null;
+function getZoneOverlay(): HTMLCanvasElement {
+  if (zoneOverlay) return zoneOverlay;
+  const c = document.createElement('canvas');
+  c.width = SIZE;
+  c.height = SIZE;
+  const ctx = c.getContext('2d');
+  if (!ctx) return c;
+  const cellPx = (MINIMAP_STRIDE / (WORLD_HALF * 2)) * SIZE;
+  ctx.globalAlpha = 0.25;
+  for (let gx = 0; gx < GRID_COLS; gx++) {
+    for (let gy = 0; gy < GRID_ROWS; gy++) {
+      const [cx, cy] = gridToMinimap(gx, gy);
+      ctx.fillStyle = ZONE_COLORS[zoneForGrid(gx, gy)];
+      ctx.fillRect(cx - cellPx / 2, cy - cellPx / 2, cellPx, cellPx);
+    }
+  }
+  zoneOverlay = c;
+  return zoneOverlay;
+}
+
+/** One-shot pre-rendered premium-parcel gold-border overlay. */
+let premiumOverlay: HTMLCanvasElement | null = null;
+function getPremiumOverlay(): HTMLCanvasElement {
+  if (premiumOverlay) return premiumOverlay;
+  const c = document.createElement('canvas');
+  c.width = SIZE;
+  c.height = SIZE;
+  const ctx = c.getContext('2d');
+  if (!ctx) return c;
+  const cellPx = (MINIMAP_STRIDE / (WORLD_HALF * 2)) * SIZE;
+  ctx.strokeStyle = '#FFD24A';
+  ctx.lineWidth = 1;
+  for (let gx = 0; gx < GRID_COLS; gx++) {
+    for (let gy = 0; gy < GRID_ROWS; gy++) {
+      const id = gx * GRID_COLS + gy;
+      if (!isPremiumParcel(id)) continue;
+      const [cx, cy] = gridToMinimap(gx, gy);
+      ctx.strokeRect(cx - cellPx / 2 + 0.5, cy - cellPx / 2 + 0.5, cellPx - 1, cellPx - 1);
+    }
+  }
+  premiumOverlay = c;
+  return premiumOverlay;
+}
+
+const LANDMARK_GLYPH: Record<string, string> = {
+  town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
+};
+
 export const Minimap: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playersRef = useRef<Map<string, PlayerSnapshot>>(new Map());
@@ -47,6 +106,12 @@ export const Minimap: React.FC = () => {
     // ── Layer 1: Background ───────────────────────────────────────────────
     ctx.fillStyle = 'rgba(10, 12, 16, 0.78)';
     ctx.fillRect(0, 0, SIZE, SIZE);
+
+    // ── Layer 1b: Zone tint overlay (Phase D) ─────────────────────────────
+    ctx.drawImage(getZoneOverlay(), 0, 0);
+
+    // ── Layer 1c: Premium parcel gold borders ─────────────────────────────
+    ctx.drawImage(getPremiumOverlay(), 0, 0);
 
     // ── Layer 2: Parcel grid lines ────────────────────────────────────────
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
@@ -80,17 +145,22 @@ export const Minimap: React.FC = () => {
     }
     ctx.globalAlpha = prevAlpha;
 
-    // ── Layer 4: Rocket landmark (always at canvas center) ────────────────
-    ctx.fillStyle = '#FFFFFF';
-    // Body: 3×8 rectangle centered at (75,75), spanning y 71→79
-    ctx.fillRect(73.5, 71, 3, 8);
-    // Cap: triangle with apex at (75, 67), base from (71.5, 71) to (78.5, 71)
-    ctx.beginPath();
-    ctx.moveTo(75, 67);
-    ctx.lineTo(71.5, 71);
-    ctx.lineTo(78.5, 71);
-    ctx.closePath();
-    ctx.fill();
+    // ── Layer 4: Landmarks (Phase D) ──────────────────────────────────────
+    // The town-hall (rocket centerpiece) is one of the LANDMARKS now;
+    // each renders as a glyph at its parcel center.
+    ctx.font = 'bold 9px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const lm of LANDMARKS) {
+      const gx = Math.floor(lm.parcelId / GRID_COLS);
+      const gy = lm.parcelId % GRID_COLS;
+      const [cx, cy] = gridToMinimap(gx, gy);
+      const glyph = LANDMARK_GLYPH[lm.type] ?? '◆';
+      ctx.fillStyle = lm.type === 'town_hall' ? '#FFFFFF' : '#FFE08A';
+      ctx.fillText(glyph, cx, cy);
+    }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'top';
 
     // ── Layer 5: Remote players ───────────────────────────────────────────
     const myId = getSessionId();

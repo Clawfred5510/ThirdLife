@@ -16,21 +16,147 @@ export const EXPLORE_COST = 69;
 export const GRID_COLS = 45;
 export const GRID_ROWS = 45;
 
+// ── Phase D world map: zones + landmarks + premium parcels ────────────
+
+export type Zone =
+  | 'downtown' | 'commercial' | 'residential' | 'industrial' | 'tech'
+  | 'agricultural' | 'waterfront' | 'park' | 'public' | 'wilderness';
+
+export const ZONE_COLORS: Record<Zone, string> = {
+  downtown:     '#ffb86b',
+  commercial:   '#fde047',
+  residential:  '#86efac',
+  industrial:   '#a3a3a3',
+  tech:         '#a78bfa',
+  agricultural: '#65a30d',
+  waterfront:   '#38bdf8',
+  park:         '#22c55e',
+  public:       '#94a3b8',
+  wilderness:   '#3f3f46',
+};
+
+export interface LandmarkSpec {
+  id: string;
+  type: 'town_hall' | 'plaza' | 'monument' | 'gate' | 'park' | 'harbor';
+  parcelId: number;
+  name: string;
+  description: string;
+}
+
+const gridId = (gx: number, gy: number): number => gx * GRID_COLS + gy;
+
+/** Landmarks anchored to specific parcels. Their parcel IDs are also
+ *  reserved (unclaimable). The center-of-map town hall is the existing
+ *  rocket centerpiece. */
+export const LANDMARKS: readonly LandmarkSpec[] = [
+  { id: 'town_hall_central', type: 'town_hall', parcelId: gridId(22, 22), name: 'Town Hall (Rocket Plaza)',
+    description: 'The seat of the world — a soaring rocket centerpiece. Civic ceremonies happen here.' },
+  { id: 'gate_north', type: 'gate', parcelId: gridId(22, 0),
+    name: 'North Gate', description: 'Ceremonial entrance from the north.' },
+  { id: 'gate_south', type: 'gate', parcelId: gridId(22, 44),
+    name: 'South Gate', description: 'Southern entrance to the city.' },
+  { id: 'monument_e', type: 'monument', parcelId: gridId(38, 22),
+    name: 'Founders Monument', description: 'Bronze obelisk honoring the first settlers.' },
+  { id: 'park_w', type: 'park', parcelId: gridId(6, 22),
+    name: 'Lakeside Park', description: 'Open green for picnics and celebrations.' },
+  { id: 'harbor_sw', type: 'harbor', parcelId: gridId(2, 42),
+    name: 'Harbor', description: 'Working docks at the southwest waterfront.' },
+];
+
 /**
- * Parcels reserved for world landmarks (e.g. the rocket centerpiece). The
- * server rejects claim attempts on these IDs and the client should hide
- * their parcel markers / claim UI. Center cell of the 45×45 grid is
- * (22, 22) → id = 22*45 + 22 = 1012, which sits at world origin where
- * the rocket lives.
+ * Parcels reserved for world landmarks. Server rejects claim attempts on
+ * these IDs; client hides their parcel markers / claim UI.
  */
-export const RESERVED_PARCEL_IDS: readonly number[] = [22 * GRID_COLS + 22];
+export const RESERVED_PARCEL_IDS: readonly number[] = LANDMARKS.map((l) => l.parcelId);
+
+/** Per-zone building cost multiplier — downtown costs more, residential
+ *  is cheaper. Multiplier of 1.0 means no change. */
+export const ZONE_COST_MULTIPLIER: Record<Zone, number> = {
+  downtown:     1.20,
+  commercial:   1.10,
+  residential:  0.90,
+  industrial:   1.00,
+  tech:         1.05,
+  agricultural: 0.85,
+  waterfront:   1.05,
+  park:         1.00,
+  public:       1.00,
+  wilderness:   0.80,
+};
+
+/** Per-zone income multiplier on building income tick. */
+export const ZONE_INCOME_MULTIPLIER: Record<Zone, number> = {
+  downtown:     1.20,
+  commercial:   1.10,
+  residential:  1.00,
+  industrial:   1.05,
+  tech:         1.15,
+  agricultural: 1.00,
+  waterfront:   1.10,
+  park:         0.90,
+  public:       1.00,
+  wilderness:   0.85,
+};
+
+/** Premium-parcel income bonus stacks on top of the zone multiplier. */
+export const PREMIUM_INCOME_BONUS = 1.15;
+
+/**
+ * Static zone classifier from grid position. Center 5×5 = downtown,
+ * surrounding ring = commercial, then residential/industrial/etc.
+ * Pure function, no DB lookup — both server and client compute
+ * identically.
+ */
+export function zoneForGrid(gx: number, gy: number): Zone {
+  const cx = Math.floor(GRID_COLS / 2);
+  const cy = Math.floor(GRID_ROWS / 2);
+  const dx = Math.abs(gx - cx);
+  const dy = Math.abs(gy - cy);
+  const ring = Math.max(dx, dy);
+
+  if (ring <= 2) return 'downtown';
+  if (ring <= 5) return 'commercial';
+  if (ring <= 8) return 'tech';
+  if (ring <= 12) return 'residential';
+
+  // Outer ring sectors — split by quadrant for variety.
+  const isLeft = gx < cx;
+  const isTop = gy < cy;
+  if (gy === 0 || gy === GRID_ROWS - 1 || gx === 0 || gx === GRID_COLS - 1) {
+    if (gy === GRID_ROWS - 1 && isLeft) return 'waterfront';
+    if (gy === 0) return 'public';
+  }
+  if (ring <= 17) {
+    if (isTop && isLeft) return 'park';
+    if (isTop) return 'industrial';
+    if (isLeft) return 'agricultural';
+    return 'commercial';
+  }
+  return 'wilderness';
+}
+
+/** Stable premium-parcel set: ~3% of parcels, deterministic from id.
+ *  These get a +15% income modifier (gold-bordered on the minimap). */
+export function isPremiumParcel(parcelId: number): boolean {
+  // Hash mixing — picks a deterministic ~3% of ids without an explicit list.
+  // Quick rule: id whose digits sum is a multiple of 13 (yields ~7% which
+  // we further filter by parity).
+  if (RESERVED_PARCEL_IDS.includes(parcelId)) return false;
+  const h = ((parcelId * 2654435761) >>> 0) % 100;
+  return h < 3;
+}
 
 // ── Building types ──────────────────────────────────────────────────────
 
 export type BuildingType =
   | 'apartment' | 'house' | 'shop' | 'farm'
   | 'market' | 'office' | 'mine' | 'hall'
-  | 'factory' | 'bank';
+  | 'factory' | 'bank'
+  // Phase D extended types — cosmetic + income tiers above the
+  // original 10. Building meshes fall back to a generic procedural
+  // box if a type-specific module isn't yet implemented.
+  | 'skyscraper' | 'mall' | 'stadium'
+  | 'hospital' | 'library' | 'station' | 'club';
 
 export type ResourceType = 'food' | 'materials' | 'energy' | 'luxury';
 
@@ -54,6 +180,14 @@ export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
   hall:      { type: 'hall',      cost: 400000,  income: 40,  label: 'Hall' },
   factory:   { type: 'factory',   cost: 500000,  income: 0, produces: 'energy',    amount: 1.0,  label: 'Factory' },
   bank:      { type: 'bank',      cost: 2000000, income: 200, label: 'Bank' },
+  // Phase D extended types
+  skyscraper:{ type: 'skyscraper',cost: 5000000, income: 500, label: 'Skyscraper' },
+  mall:      { type: 'mall',      cost: 3000000, income: 300, label: 'Mall' },
+  stadium:   { type: 'stadium',   cost: 4000000, income: 250, label: 'Stadium' },
+  hospital:  { type: 'hospital',  cost: 1500000, income: 100, label: 'Hospital' },
+  library:   { type: 'library',   cost: 800000,  income: 60,  label: 'Library' },
+  station:   { type: 'station',   cost: 600000,  income: 50,  label: 'Station' },
+  club:      { type: 'club',      cost: 1000000, income: 80,  label: 'Club' },
 };
 
 export const BUILDING_LIST: BuildingSpec[] = Object.values(BUILDINGS);
@@ -86,6 +220,14 @@ export const TICK_PRODUCTION: Record<BuildingType, { resource: ResourceType; rat
   hall: null,
   factory: { resource: 'energy', rate: 4 },
   bank: null,
+  // Phase D extended types — pure income, no resource production.
+  skyscraper: null,
+  mall: null,
+  stadium: null,
+  hospital: null,
+  library: null,
+  station: null,
+  club: null,
 };
 
 /** Food each active agent eats per tick. */

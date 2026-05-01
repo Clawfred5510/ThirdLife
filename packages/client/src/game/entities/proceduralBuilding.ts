@@ -837,6 +837,17 @@ export const BUILDING_SPECS: Record<string, BuildingSpec> = {
   hall:      { footprint: 36, footprintZ: 30, wallHeight: 9,  roofPeak: 4.5, wallThickness: 0.5, doorWidth: 3.6, doorHeight: 3.6, wallColor: '#D8C9A8', roofColor: '#7A8090', trimColor: '#EDE9DE', roofType: 'pyramid', towerCount: 4, towerRole: 'column' },
   factory:   { footprint: 36, footprintZ: 32, wallHeight: 8,  roofPeak: 2.5, wallThickness: 0.6, doorWidth: 5.0, doorHeight: 3.8, wallColor: '#5A5F6B', roofColor: '#7A8090', trimColor: '#3A2418', roofType: 'sawtooth' },
   bank:      { footprint: 34, wallHeight: 9,  roofPeak: 4.5, wallThickness: 0.6, doorWidth: 3.4, doorHeight: 3.6, wallColor: '#D8C9A8', roofColor: '#B0AA8E', trimColor: '#F5C842', roofType: 'dome', towerCount: 2, towerRole: 'turret' },
+  // Phase D extended types — scale-only visual specs; fall through to
+  // the monolithic procedural fallback at the top of buildProceduralBuilding.
+  // Each module-specific bespoke build can land later without breaking
+  // the existing parcel pipeline.
+  skyscraper:{ footprint: 32, wallHeight: 22, roofPeak: 0.0, wallThickness: 0.6, doorWidth: 3.0, doorHeight: 3.4, wallColor: '#5A6878', roofColor: '#2A2F38', trimColor: '#A8B0BC', roofType: 'flat', hasParapet: true },
+  mall:      { footprint: 38, footprintZ: 30, wallHeight: 7,  roofPeak: 0.0, wallThickness: 0.5, doorWidth: 5.0, doorHeight: 3.6, wallColor: '#C9A96E', roofColor: '#5A5F6B', trimColor: '#EDE9DE', roofType: 'flat', signageStyle: 'marquee' },
+  stadium:   { footprint: 38, footprintZ: 32, wallHeight: 11, roofPeak: 0.0, wallThickness: 0.6, doorWidth: 6.0, doorHeight: 4.0, wallColor: '#7A7E88', roofColor: '#4A4E58', trimColor: '#EDE9DE', roofType: 'dome', hasParapet: true },
+  hospital:  { footprint: 32, footprintZ: 28, wallHeight: 9,  roofPeak: 0.0, wallThickness: 0.5, doorWidth: 4.0, doorHeight: 3.4, wallColor: '#EDE9DE', roofColor: '#B0AA8E', trimColor: '#E84A4A', roofType: 'flat', hasParapet: true },
+  library:   { footprint: 30, wallHeight: 8,  roofPeak: 4.0, wallThickness: 0.5, doorWidth: 3.2, doorHeight: 3.4, wallColor: '#C9A96E', roofColor: '#5A4030', trimColor: '#EDE9DE', roofType: 'gable', towerCount: 2, towerRole: 'column' },
+  station:   { footprint: 30, footprintZ: 24, wallHeight: 7,  roofPeak: 0.0, wallThickness: 0.5, doorWidth: 4.0, doorHeight: 3.6, wallColor: '#7A8FA8', roofColor: '#4A4E58', trimColor: '#EDE9DE', roofType: 'flat', hasParapet: true },
+  club:      { footprint: 28, wallHeight: 7,  roofPeak: 0.0, wallThickness: 0.5, doorWidth: 2.6, doorHeight: 3.0, wallColor: '#3A2A4A', roofColor: '#2A1F38', trimColor: '#D870A0', roofType: 'flat', hasParapet: true },
 };
 
 export const DEFAULT_BUILDING_SPEC: BuildingSpec = BUILDING_SPECS.apartment;

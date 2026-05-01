@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { apiGet } from '../../network/api';
-import { RESOURCE_TYPES, ResourceType } from '@gamestu/shared';
+import {
+  RESOURCE_TYPES, ResourceType,
+  GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
+  zoneForGrid, isPremiumParcel,
+} from '@gamestu/shared';
 
-type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | null;
+type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | null;
 
 // ── Shared types ──────────────────────────────────────────────────────
 
@@ -83,6 +87,7 @@ export const TopBar: React.FC = () => {
         <DockButton label="🏆 Leaderboard" active={active === 'leaderboard'} onClick={() => toggle('leaderboard')} aria="Toggle leaderboard" />
         <DockButton label="📈 Market" active={active === 'market'} onClick={() => toggle('market')} aria="Toggle market" />
         <DockButton label="🏢 Properties" active={active === 'properties'} onClick={() => toggle('properties')} aria="Toggle properties" />
+        <DockButton label="🗺️ World" active={active === 'world2d'} onClick={() => toggle('world2d')} aria="Toggle 2D world map" />
         <DockButton label="📜 Events" active={active === 'events'} onClick={() => toggle('events')} aria="Toggle event log" />
       </div>
       {active && (
@@ -90,6 +95,7 @@ export const TopBar: React.FC = () => {
           {active === 'leaderboard' && <LeaderboardBody />}
           {active === 'market' && <MarketBody />}
           {active === 'properties' && <PropertiesBody />}
+          {active === 'world2d' && <World2DBody />}
           {active === 'events' && <EventBody />}
         </div>
       )}
@@ -319,6 +325,112 @@ const PropertiesBody: React.FC = () => {
   );
 };
 
+const LANDMARK_GLYPH: Record<string, string> = {
+  town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
+};
+
+interface WorldParcelLite { id: number; grid_x: number; grid_y: number; color: string; }
+
+const World2DBody: React.FC = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [parcels, setParcels] = useState<WorldParcelLite[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      apiGet<{ parcels_data: WorldParcelLite[] }>('/world')
+        .then((w) => { if (!cancelled) setParcels(w.parcels_data ?? []); })
+        .catch(() => {});
+    load();
+    const i = setInterval(load, 15_000);
+    return () => { cancelled = true; clearInterval(i); };
+  }, []);
+
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    const W = c.width, H = c.height;
+    const cellW = W / GRID_COLS;
+    const cellH = H / GRID_ROWS;
+
+    ctx.fillStyle = '#0c0e18';
+    ctx.fillRect(0, 0, W, H);
+
+    // Zone tints
+    ctx.globalAlpha = 0.35;
+    for (let gx = 0; gx < GRID_COLS; gx++) {
+      for (let gy = 0; gy < GRID_ROWS; gy++) {
+        ctx.fillStyle = ZONE_COLORS[zoneForGrid(gx, gy)];
+        ctx.fillRect(gx * cellW, gy * cellH, cellW, cellH);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Premium gold borders
+    ctx.strokeStyle = '#FFD24A';
+    ctx.lineWidth = 1;
+    for (let gx = 0; gx < GRID_COLS; gx++) {
+      for (let gy = 0; gy < GRID_ROWS; gy++) {
+        if (!isPremiumParcel(gx * GRID_COLS + gy)) continue;
+        ctx.strokeRect(gx * cellW + 0.5, gy * cellH + 0.5, cellW - 1, cellH - 1);
+      }
+    }
+
+    // Claimed parcels
+    for (const p of parcels) {
+      ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#4a90d9';
+      ctx.fillRect(p.grid_x * cellW + 1, p.grid_y * cellH + 1, cellW - 2, cellH - 2);
+    }
+
+    // Grid lines (light)
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 0.5;
+    for (let gx = 0; gx <= GRID_COLS; gx += 5) {
+      ctx.beginPath();
+      ctx.moveTo(gx * cellW, 0); ctx.lineTo(gx * cellW, H); ctx.stroke();
+    }
+    for (let gy = 0; gy <= GRID_ROWS; gy += 5) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy * cellH); ctx.lineTo(W, gy * cellH); ctx.stroke();
+    }
+
+    // Landmarks
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 14px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const lm of LANDMARKS) {
+      const gx = Math.floor(lm.parcelId / GRID_COLS);
+      const gy = lm.parcelId % GRID_COLS;
+      const x = gx * cellW + cellW / 2;
+      const y = gy * cellH + cellH / 2;
+      ctx.fillStyle = lm.type === 'town_hall' ? '#FFFFFF' : '#FFE08A';
+      ctx.fillText(LANDMARK_GLYPH[lm.type] ?? '◆', x, y);
+    }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'top';
+  }, [parcels]);
+
+  return (
+    <>
+      <div style={{ fontSize: 11, color: '#8b8b9a', marginBottom: 6 }}>
+        45×45 grid · {parcels.length} claimed parcels
+      </div>
+      <canvas ref={canvasRef} width={320} height={320} style={{ width: '100%', borderRadius: 4 }} />
+      <div style={S.zoneLegend}>
+        {(Object.keys(ZONE_COLORS) as Array<keyof typeof ZONE_COLORS>).map((z) => (
+          <span key={z} style={S.legendItem}>
+            <span style={{ ...S.legendSwatch, background: ZONE_COLORS[z] }} />
+            {z}
+          </span>
+        ))}
+      </div>
+    </>
+  );
+};
+
 const S: Record<string, React.CSSProperties> = {
   dock: {
     position: 'absolute', top: 60, right: 16, pointerEvents: 'auto',
@@ -362,4 +474,7 @@ const S: Record<string, React.CSSProperties> = {
   unitMeta: { flex: 1, fontSize: 12, color: '#e4e4ef', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   unitInc: { fontSize: 11, color: '#22c55e', fontVariantNumeric: 'tabular-nums' },
   unitPrice: { fontSize: 12, color: '#fbbf24', fontVariantNumeric: 'tabular-nums', minWidth: 50, textAlign: 'right' },
+  zoneLegend: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, fontSize: 9, color: '#8b8b9a' },
+  legendItem: { display: 'inline-flex', alignItems: 'center', gap: 3, textTransform: 'capitalize' },
+  legendSwatch: { display: 'inline-block', width: 8, height: 8, borderRadius: 2 },
 };
