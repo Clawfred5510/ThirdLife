@@ -24,11 +24,12 @@ export interface FurnitureBundle {
   root: TransformNode;
 }
 
-function pbr(scene: Scene, name: string, color: Color3, roughness = 0.8): PBRMetallicRoughnessMaterial {
+function pbr(scene: Scene, name: string, color: Color3, roughness = 0.8, emissive?: Color3): PBRMetallicRoughnessMaterial {
   const m = new PBRMetallicRoughnessMaterial(name, scene);
   m.baseColor = color;
   m.metallic = 0;
   m.roughness = roughness;
+  if (emissive) m.emissiveColor = emissive;
   return m;
 }
 
