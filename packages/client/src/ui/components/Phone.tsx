@@ -6,7 +6,24 @@ import {
   zoneForGrid, isPremiumParcel,
 } from '@gamestu/shared';
 
-type ActivePanel = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance' | null;
+type AppId = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance';
+type ActiveApp = AppId | null;
+
+interface AppDef {
+  id: AppId;
+  label: string;
+  icon: string;
+  color: string;
+}
+
+const APPS: AppDef[] = [
+  { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#fbbf24' },
+  { id: 'market',      label: 'Market',      icon: '📈', color: '#22c55e' },
+  { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#60a5fa' },
+  { id: 'world2d',     label: 'World',       icon: '🗺️', color: '#a78bfa' },
+  { id: 'governance',  label: 'Decrees',     icon: '🗳️', color: '#f97316' },
+  { id: 'events',      label: 'Events',      icon: '📜', color: '#94a3b8' },
+];
 
 // ── Shared types ──────────────────────────────────────────────────────
 
@@ -75,46 +92,128 @@ function summarizeEvent(e: EventRow): string {
   }
 }
 
-// ── TopBar root ───────────────────────────────────────────────────────
+// ── Phone root ────────────────────────────────────────────────────────
+//
+// A single iPhone-style device sits at the bottom-right of the screen.
+// The phone icon button toggles the device open/closed. When open the
+// home screen shows an app grid; tapping an app pushes it onto the
+// screen. A home indicator (or the back arrow in the app header) goes
+// back to the home grid.
 
-export const TopBar: React.FC = () => {
-  const [active, setActive] = useState<ActivePanel>(null);
-  const toggle = (p: ActivePanel) => setActive((cur) => (cur === p ? null : p));
+export const Phone: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [activeApp, setActiveApp] = useState<ActiveApp>(null);
+  const [now, setNow] = useState(() => new Date());
+
+  // Status-bar clock — pure cosmetic, ticks once per minute.
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const close = () => { setOpen(false); setActiveApp(null); };
+  const goHome = () => setActiveApp(null);
+
+  const activeAppDef = activeApp ? APPS.find((a) => a.id === activeApp) ?? null : null;
 
   return (
-    <div style={S.dock}>
-      <div style={S.btnRow}>
-        <DockButton label="🏆 Leaderboard" active={active === 'leaderboard'} onClick={() => toggle('leaderboard')} aria="Toggle leaderboard" />
-        <DockButton label="📈 Market" active={active === 'market'} onClick={() => toggle('market')} aria="Toggle market" />
-        <DockButton label="🏢 Properties" active={active === 'properties'} onClick={() => toggle('properties')} aria="Toggle properties" />
-        <DockButton label="🗺️ World" active={active === 'world2d'} onClick={() => toggle('world2d')} aria="Toggle 2D world map" />
-        <DockButton label="🗳️ Decrees" active={active === 'governance'} onClick={() => toggle('governance')} aria="Toggle governance" />
-        <DockButton label="📜 Events" active={active === 'events'} onClick={() => toggle('events')} aria="Toggle event log" />
-      </div>
-      {active && (
-        <div style={S.panel} role="dialog" aria-label={active}>
-          {active === 'leaderboard' && <LeaderboardBody />}
-          {active === 'market' && <MarketBody />}
-          {active === 'properties' && <PropertiesBody />}
-          {active === 'world2d' && <World2DBody />}
-          {active === 'governance' && <GovernanceBody />}
-          {active === 'events' && <EventBody />}
+    <>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ ...S.fab, ...(open ? S.fabActive : {}) }}
+        aria-label="Toggle phone"
+        aria-pressed={open}
+      >
+        <span style={S.fabIcon}>📱</span>
+      </button>
+
+      {open && (
+        <div style={S.phoneFrame} role="dialog" aria-label="Phone">
+          {/* Bezel */}
+          <div style={S.phoneScreen}>
+            {/* Status bar */}
+            <div style={S.statusBar}>
+              <span style={S.statusTime}>
+                {now.getHours().toString().padStart(2, '0')}:{now.getMinutes().toString().padStart(2, '0')}
+              </span>
+              <span style={S.notch} />
+              <span style={S.statusRight}>● ●● ▮</span>
+            </div>
+
+            {/* Screen content */}
+            <div style={S.screenContent}>
+              {!activeApp ? (
+                <HomeScreen onLaunch={(id) => setActiveApp(id)} />
+              ) : (
+                <AppView app={activeAppDef!} onBack={goHome} />
+              )}
+            </div>
+
+            {/* Home indicator */}
+            <button
+              onClick={activeApp ? goHome : close}
+              style={S.homeIndicator}
+              aria-label={activeApp ? 'Back to home screen' : 'Close phone'}
+            >
+              <span style={S.homeBar} />
+            </button>
+          </div>
         </div>
       )}
+    </>
+  );
+};
+
+// ── Phone home screen — app grid ──────────────────────────────────────
+
+const HomeScreen: React.FC<{ onLaunch: (id: AppId) => void }> = ({ onLaunch }) => {
+  return (
+    <div style={S.homeWallpaper}>
+      <div style={S.homeTitle}>ThirdLife</div>
+      <div style={S.appGrid}>
+        {APPS.map((app) => (
+          <button
+            key={app.id}
+            onClick={() => onLaunch(app.id)}
+            style={S.appTileBtn}
+            aria-label={`Open ${app.label}`}
+          >
+            <div style={{ ...S.appIcon, background: app.color }}>
+              <span style={S.appEmoji}>{app.icon}</span>
+            </div>
+            <span style={S.appLabel}>{app.label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 };
 
-const DockButton: React.FC<{ label: string; active: boolean; onClick: () => void; aria: string }> = ({ label, active, onClick, aria }) => (
-  <button
-    style={{ ...S.btn, ...(active ? S.btnActive : {}) }}
-    onClick={onClick}
-    aria-label={aria}
-    aria-pressed={active}
-  >
-    {label}
-  </button>
-);
+// ── App container — header + body ─────────────────────────────────────
+
+const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack }) => {
+  return (
+    <div style={S.appView}>
+      <div style={S.appHeader}>
+        <button onClick={onBack} style={S.backBtn} aria-label="Back to home screen">
+          ←
+        </button>
+        <span style={S.appHeaderTitle}>
+          <span style={S.appHeaderIcon}>{app.icon}</span> {app.label}
+        </span>
+        <span style={{ width: 28 }} />
+      </div>
+      <div style={S.appBody}>
+        {app.id === 'leaderboard' && <LeaderboardBody />}
+        {app.id === 'market' && <MarketBody />}
+        {app.id === 'properties' && <PropertiesBody />}
+        {app.id === 'world2d' && <World2DBody />}
+        {app.id === 'governance' && <GovernanceBody />}
+        {app.id === 'events' && <EventBody />}
+      </div>
+    </div>
+  );
+};
 
 // ── Panels ────────────────────────────────────────────────────────────
 
@@ -507,22 +606,111 @@ const World2DBody: React.FC = () => {
 };
 
 const S: Record<string, React.CSSProperties> = {
-  dock: {
-    position: 'absolute', top: 60, right: 16, pointerEvents: 'auto',
-    zIndex: 11, fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column',
-    alignItems: 'flex-end', gap: 6,
+  // ── Floating phone-icon FAB ──────────────────────────────────────────
+  fab: {
+    position: 'absolute', bottom: 16, right: 16, zIndex: 12,
+    width: 56, height: 56, borderRadius: 28,
+    background: 'rgba(12,14,24,0.92)', color: '#e4e4ef',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(255,255,255,0.18)',
+    cursor: 'pointer', pointerEvents: 'auto',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+    fontFamily: 'sans-serif',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
-  btnRow: { display: 'flex', gap: 6 },
-  btn: {
-    background: 'rgba(12,14,24,0.85)', color: '#e4e4ef',
-    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(255,255,255,0.12)', borderRadius: 8,
-    padding: '6px 12px', fontSize: 13, cursor: 'pointer',
+  fabActive: { background: 'rgba(99,102,241,0.85)', borderColor: 'rgba(255,255,255,0.4)' },
+  fabIcon: { fontSize: 26 },
+
+  // ── Phone frame ──────────────────────────────────────────────────────
+  phoneFrame: {
+    position: 'absolute', bottom: 88, right: 16, zIndex: 13,
+    width: 320, height: 580,
+    background: '#1a1d2e',
+    borderRadius: 38,
+    padding: 8,
+    boxShadow: '0 8px 40px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(255,255,255,0.05)',
+    pointerEvents: 'auto',
+    fontFamily: 'sans-serif',
   },
-  btnActive: { background: 'rgba(255,255,255,0.08)', borderColor: 'rgba(255,255,255,0.2)' },
-  panel: {
-    width: 340, background: 'rgba(12,14,24,0.92)', color: '#e4e4ef',
-    border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: 10,
+  phoneScreen: {
+    width: '100%', height: '100%',
+    background: '#0c0e18',
+    borderRadius: 30,
+    overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
+    color: '#e4e4ef',
   },
+
+  // ── Status bar / notch ──────────────────────────────────────────────
+  statusBar: {
+    height: 28, padding: '4px 16px',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    fontSize: 11, color: '#e4e4ef', position: 'relative',
+  },
+  statusTime: { fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 30 },
+  notch: {
+    position: 'absolute', top: 4, left: '50%', transform: 'translateX(-50%)',
+    width: 80, height: 18, background: '#000', borderRadius: 12,
+  },
+  statusRight: { fontFamily: 'monospace', fontSize: 9, color: '#8b8b9a', minWidth: 30, textAlign: 'right' },
+
+  // ── Screen content + home indicator ─────────────────────────────────
+  screenContent: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+  homeIndicator: {
+    height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+  },
+  homeBar: {
+    width: 100, height: 4, borderRadius: 2,
+    background: 'rgba(255,255,255,0.4)',
+  },
+
+  // ── Home wallpaper ──────────────────────────────────────────────────
+  homeWallpaper: {
+    flex: 1, padding: '20px 16px',
+    background: 'linear-gradient(160deg, #1e3a8a 0%, #6b21a8 60%, #be185d 100%)',
+    display: 'flex', flexDirection: 'column',
+  },
+  homeTitle: {
+    fontSize: 14, color: 'rgba(255,255,255,0.85)',
+    textAlign: 'center', marginBottom: 16,
+    textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+    letterSpacing: 0.5,
+  },
+  appGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
+    justifyItems: 'center',
+  },
+  appTileBtn: {
+    background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+    width: 72,
+  },
+  appIcon: {
+    width: 60, height: 60, borderRadius: 14,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+  },
+  appEmoji: { fontSize: 28, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' },
+  appLabel: { fontSize: 10, color: '#fff', textAlign: 'center', textShadow: '0 1px 2px rgba(0,0,0,0.5)' },
+
+  // ── App view (post-launch) ──────────────────────────────────────────
+  appView: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  appHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '8px 12px',
+    background: 'rgba(20,24,40,0.95)',
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  backBtn: {
+    width: 28, height: 28, borderRadius: 14,
+    background: 'rgba(255,255,255,0.06)', color: '#e4e4ef',
+    border: 'none', cursor: 'pointer', fontSize: 16,
+  },
+  appHeaderTitle: { fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 },
+  appHeaderIcon: { fontSize: 14 },
+  appBody: { flex: 1, overflowY: 'auto', padding: 10 },
+
+  // ── Body inner styles (existing — used by panel bodies) ─────────────
   tabRow: { display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' },
   tab: {
     flex: '1 1 auto', minWidth: 50, fontSize: 11, padding: '4px 6px',

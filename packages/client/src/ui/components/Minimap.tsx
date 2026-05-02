@@ -296,20 +296,34 @@ export const Minimap: React.FC = () => {
     };
   }, [draw]);
 
+  const openBigMap = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('tl-open-bigmap'));
+  }, []);
+
   return (
-    <canvas
-      ref={canvasRef}
-      width={SIZE}
-      height={SIZE}
+    <button
+      onClick={openBigMap}
+      aria-label="Open full world map"
       style={{
         position: 'absolute',
         top: 16,
         right: 16,
         width: SIZE,
         height: SIZE,
+        padding: 0,
+        border: '1px solid rgba(255,255,255,0.18)',
         borderRadius: 4,
-        pointerEvents: 'none',
+        background: 'transparent',
+        cursor: 'pointer',
+        pointerEvents: 'auto',
       }}
-    />
+    >
+      <canvas
+        ref={canvasRef}
+        width={SIZE}
+        height={SIZE}
+        style={{ display: 'block', width: SIZE, height: SIZE, borderRadius: 4 }}
+      />
+    </button>
   );
 };

@@ -9,7 +9,8 @@ import { ParcelPanel } from './components/ParcelPanel';
 import { GameMenu } from './components/GameMenu';
 import { CharacterCreator } from './components/CharacterCreator';
 import { ResourceBar } from './components/ResourceBar';
-import { TopBar } from './components/TopBar';
+import { Phone } from './components/Phone';
+import { BigMap } from './components/BigMap';
 import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
 
@@ -28,10 +29,11 @@ export const App: React.FC = () => {
       <HUD />
       <ResourceBar />
       <Wallet />
-      <TopBar />
+      <Phone />
       <ChatPanel />
       <Toast />
       <Minimap />
+      <BigMap />
       <ParcelPanel />
       <GameMenu />
       <CharacterCreator />
