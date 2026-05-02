@@ -16,13 +16,15 @@ interface AppDef {
   color: string;
 }
 
+// Palette pulled from gamedesigns/ — terra cotta, ochre, forest green,
+// teal, sandstone, slate. Warm, painterly, no neon.
 const APPS: AppDef[] = [
-  { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#fbbf24' },
-  { id: 'market',      label: 'Market',      icon: '📈', color: '#22c55e' },
-  { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#60a5fa' },
-  { id: 'world2d',     label: 'World',       icon: '🗺️', color: '#a78bfa' },
-  { id: 'governance',  label: 'Decrees',     icon: '🗳️', color: '#f97316' },
-  { id: 'events',      label: 'Events',      icon: '📜', color: '#94a3b8' },
+  { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#D89438' }, // ochre
+  { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
+  { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#B5563A' }, // brick
+  { id: 'world2d',     label: 'Map',         icon: '🗺️', color: '#2A5560' }, // teal
+  { id: 'governance',  label: 'Decrees',     icon: '🗳️', color: '#7A4F2E' }, // wood
+  { id: 'events',      label: 'Events',      icon: '📜', color: '#D8C4A0' }, // sandstone
 ];
 
 // ── Shared types ──────────────────────────────────────────────────────
@@ -63,7 +65,7 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   all: 'All', epic: 'Epic', major: 'Major', normal: 'Normal', minor: 'Minor',
 };
 const SEVERITY_COLOR: Record<string, string> = {
-  epic: '#a855f7', major: '#22c55e', normal: '#e4e4ef', minor: '#8b8b9a',
+  epic: '#D89438', major: '#3F7A3D', normal: '#F5E6D0', minor: '#A89378',
 };
 const RES_ICON: Record<ResourceType, string> = {
   food: '🌾', materials: '⛏️', energy: '⚡', luxury: '💎',
@@ -444,7 +446,7 @@ interface DecreeRow {
 }
 
 const STATUS_COLOR: Record<DecreeRow['status'], string> = {
-  active: '#fbbf24', passed: '#22c55e', rejected: '#ef4444', executed: '#a855f7',
+  active: '#D89438', passed: '#3F7A3D', rejected: '#B5563A', executed: '#7A4F2E',
 };
 
 const GovernanceBody: React.FC = () => {
@@ -610,34 +612,34 @@ const S: Record<string, React.CSSProperties> = {
   fab: {
     position: 'absolute', bottom: 16, right: 16, zIndex: 12,
     width: 56, height: 56, borderRadius: 28,
-    background: 'rgba(12,14,24,0.92)', color: '#e4e4ef',
-    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(255,255,255,0.18)',
+    background: '#2A1F18', color: '#F5E6D0',
+    borderWidth: 2, borderStyle: 'solid', borderColor: '#D89438',
     cursor: 'pointer', pointerEvents: 'auto',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)',
     fontFamily: 'sans-serif',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
-  fabActive: { background: 'rgba(99,102,241,0.85)', borderColor: 'rgba(255,255,255,0.4)' },
+  fabActive: { background: '#3F7A3D', borderColor: '#F5E6D0' },
   fabIcon: { fontSize: 26 },
 
   // ── Phone frame ──────────────────────────────────────────────────────
   phoneFrame: {
     position: 'absolute', bottom: 88, right: 16, zIndex: 13,
     width: 320, height: 580,
-    background: '#1a1d2e',
+    background: '#1A1410',
     borderRadius: 38,
     padding: 8,
-    boxShadow: '0 8px 40px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(255,255,255,0.05)',
+    boxShadow: '0 8px 40px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(216,148,56,0.18)',
     pointerEvents: 'auto',
     fontFamily: 'sans-serif',
   },
   phoneScreen: {
     width: '100%', height: '100%',
-    background: '#0c0e18',
+    background: '#1F1812',
     borderRadius: 30,
     overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
-    color: '#e4e4ef',
+    color: '#F5E6D0',
   },
 
   // ── Status bar / notch ──────────────────────────────────────────────
@@ -646,12 +648,12 @@ const S: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     fontSize: 11, color: '#e4e4ef', position: 'relative',
   },
-  statusTime: { fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 30 },
+  statusTime: { fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 30, color: '#F5E6D0' },
   notch: {
     position: 'absolute', top: 4, left: '50%', transform: 'translateX(-50%)',
-    width: 80, height: 18, background: '#000', borderRadius: 12,
+    width: 80, height: 18, background: '#0E0A07', borderRadius: 12,
   },
-  statusRight: { fontFamily: 'monospace', fontSize: 9, color: '#8b8b9a', minWidth: 30, textAlign: 'right' },
+  statusRight: { fontFamily: 'monospace', fontSize: 9, color: '#A89378', minWidth: 30, textAlign: 'right' },
 
   // ── Screen content + home indicator ─────────────────────────────────
   screenContent: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
@@ -664,17 +666,19 @@ const S: Record<string, React.CSSProperties> = {
     background: 'rgba(255,255,255,0.4)',
   },
 
-  // ── Home wallpaper ──────────────────────────────────────────────────
+  // ── Home wallpaper — warm dusk gradient over a textured tan ─────────
   homeWallpaper: {
     flex: 1, padding: '20px 16px',
-    background: 'linear-gradient(160deg, #1e3a8a 0%, #6b21a8 60%, #be185d 100%)',
+    background: 'linear-gradient(165deg, #3F2A1B 0%, #6B4226 50%, #B5563A 100%)',
     display: 'flex', flexDirection: 'column',
   },
   homeTitle: {
-    fontSize: 14, color: 'rgba(255,255,255,0.85)',
+    fontSize: 15, color: '#F5E6D0',
     textAlign: 'center', marginBottom: 16,
-    textShadow: '0 1px 2px rgba(0,0,0,0.4)',
-    letterSpacing: 0.5,
+    textShadow: '0 1px 3px rgba(0,0,0,0.6)',
+    letterSpacing: 1,
+    fontFamily: 'Georgia, "Source Serif", serif',
+    fontWeight: 600,
   },
   appGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
@@ -688,60 +692,69 @@ const S: Record<string, React.CSSProperties> = {
   appIcon: {
     width: 60, height: 60, borderRadius: 14,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+    boxShadow: '0 3px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.18)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(0,0,0,0.25)',
   },
-  appEmoji: { fontSize: 28, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' },
-  appLabel: { fontSize: 10, color: '#fff', textAlign: 'center', textShadow: '0 1px 2px rgba(0,0,0,0.5)' },
+  appEmoji: { fontSize: 28, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))' },
+  appLabel: { fontSize: 10, color: '#F5E6D0', textAlign: 'center', textShadow: '0 1px 2px rgba(0,0,0,0.6)' },
 
   // ── App view (post-launch) ──────────────────────────────────────────
   appView: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   appHeader: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '8px 12px',
-    background: 'rgba(20,24,40,0.95)',
-    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(255,255,255,0.06)',
+    background: '#2A1F18',
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(216,148,56,0.20)',
   },
   backBtn: {
     width: 28, height: 28, borderRadius: 14,
-    background: 'rgba(255,255,255,0.06)', color: '#e4e4ef',
+    background: 'rgba(245,230,208,0.10)', color: '#F5E6D0',
     border: 'none', cursor: 'pointer', fontSize: 16,
   },
-  appHeaderTitle: { fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 },
+  appHeaderTitle: {
+    fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6,
+    color: '#F5E6D0',
+    fontFamily: 'Georgia, "Source Serif", serif',
+  },
   appHeaderIcon: { fontSize: 14 },
-  appBody: { flex: 1, overflowY: 'auto', padding: 10 },
+  appBody: {
+    flex: 1, overflowY: 'auto', padding: 10,
+    background: '#1F1812',
+    color: '#F5E6D0',
+  },
 
   // ── Body inner styles (existing — used by panel bodies) ─────────────
   tabRow: { display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' },
   tab: {
     flex: '1 1 auto', minWidth: 50, fontSize: 11, padding: '4px 6px',
-    background: 'transparent', color: '#8b8b9a',
-    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(255,255,255,0.08)', borderRadius: 6, cursor: 'pointer',
+    background: 'transparent', color: '#A89378',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.18)', borderRadius: 6, cursor: 'pointer',
     textTransform: 'capitalize' as const,
   },
-  tabActive: { color: '#e4e4ef', background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.2)' },
+  tabActive: { color: '#F5E6D0', background: 'rgba(216,148,56,0.18)', borderColor: '#D89438' },
   list: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, overflowY: 'auto' },
   row: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '2px 4px' },
-  rank: { width: 24, color: '#8b8b9a', fontVariantNumeric: 'tabular-nums' },
+  rank: { width: 24, color: '#A89378', fontVariantNumeric: 'tabular-nums' },
   name: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  valueG: { fontVariantNumeric: 'tabular-nums', color: '#22c55e' },
+  valueG: { fontVariantNumeric: 'tabular-nums', color: '#D89438' },
   badge: { width: 6, height: 6, borderRadius: '50%', flexShrink: 0 },
-  text: { color: '#e4e4ef', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  text: { color: '#F5E6D0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   cols: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 },
-  colHeader: { fontSize: 11, color: '#8b8b9a', marginTop: 4, marginBottom: 4 },
+  colHeader: { fontSize: 11, color: '#A89378', marginTop: 4, marginBottom: 4, fontFamily: 'Georgia, serif' },
   level: { display: 'flex', justifyContent: 'space-between', fontSize: 12, fontVariantNumeric: 'tabular-nums', padding: '2px 4px' },
   trades: { display: 'flex', flexDirection: 'column', gap: 2 },
   trade: { fontSize: 11, fontVariantNumeric: 'tabular-nums', padding: '1px 4px' },
-  empty: { fontSize: 11, color: '#5b5b6a', padding: '6px', textAlign: 'center' },
-  foot: { marginTop: 10, fontSize: 10, color: '#5b5b6a', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: 6 },
+  empty: { fontSize: 11, color: '#7A6850', padding: '6px', textAlign: 'center' },
+  foot: { marginTop: 10, fontSize: 10, color: '#7A6850', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(216,148,56,0.12)', paddingTop: 6 },
   unitIcon: { fontSize: 14, width: 20, textAlign: 'center' },
-  unitMeta: { flex: 1, fontSize: 12, color: '#e4e4ef', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  unitInc: { fontSize: 11, color: '#22c55e', fontVariantNumeric: 'tabular-nums' },
-  unitPrice: { fontSize: 12, color: '#fbbf24', fontVariantNumeric: 'tabular-nums', minWidth: 50, textAlign: 'right' },
-  zoneLegend: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, fontSize: 9, color: '#8b8b9a' },
+  unitMeta: { flex: 1, fontSize: 12, color: '#F5E6D0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  unitInc: { fontSize: 11, color: '#3F7A3D', fontVariantNumeric: 'tabular-nums' },
+  unitPrice: { fontSize: 12, color: '#D89438', fontVariantNumeric: 'tabular-nums', minWidth: 50, textAlign: 'right' },
+  zoneLegend: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, fontSize: 9, color: '#A89378' },
   legendItem: { display: 'inline-flex', alignItems: 'center', gap: 3, textTransform: 'capitalize' },
   legendSwatch: { display: 'inline-block', width: 8, height: 8, borderRadius: 2 },
-  decreeRow: { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 6px', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(255,255,255,0.04)' },
+  decreeRow: { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 6px', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(216,148,56,0.08)' },
   decreeStatus: { fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, minWidth: 56 },
-  decreeSubject: { fontSize: 12, color: '#e4e4ef', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  decreeMeta: { fontSize: 10, color: '#5b5b6a', marginLeft: 62 },
+  decreeSubject: { fontSize: 12, color: '#F5E6D0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  decreeMeta: { fontSize: 10, color: '#7A6850', marginLeft: 62 },
 };

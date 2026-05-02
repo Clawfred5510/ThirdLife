@@ -164,16 +164,32 @@ export const BigMap: React.FC = () => {
       ctx.fill();
     }
 
-    // Local player — cursor-pointer style arrow with name label
+    // Local player — same triangle indicator as the minimap, scaled
+    // up so it reads at this zoom.
     const me = getLocalPlayer();
     if (me) {
       const [px, py] = worldToCanvas(me.x, me.z, W, H);
-      drawCursorPointer(ctx, px, py, me.rotation ?? 0);
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('You', px, py - 18);
-      ctx.textAlign = 'start';
+      const yaw = me.rotation ?? 0;
+      const halfSize = 12;
+      const apexX = px + halfSize * Math.sin(yaw);
+      const apexY = py - halfSize * Math.cos(yaw);
+      const leftAngle = yaw + 2.5;
+      const rightAngle = yaw - 2.5;
+      const baseX1 = px + halfSize * Math.sin(leftAngle);
+      const baseY1 = py - halfSize * Math.cos(leftAngle);
+      const baseX2 = px + halfSize * Math.sin(rightAngle);
+      const baseY2 = py - halfSize * Math.cos(rightAngle);
+
+      ctx.beginPath();
+      ctx.moveTo(apexX, apexY);
+      ctx.lineTo(baseX1, baseY1);
+      ctx.lineTo(baseX2, baseY2);
+      ctx.closePath();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
 
     // Compass
@@ -181,35 +197,6 @@ export const BigMap: React.FC = () => {
     ctx.font = 'bold 14px monospace';
     ctx.textBaseline = 'top';
     ctx.fillText('N', 8, 8);
-  }
-
-  /** Draw a classic mouse-cursor-style arrow at (px,py), rotated to
-   *  match the player's facing yaw. Filled white with a black outline
-   *  so it reads on any background. */
-  function drawCursorPointer(ctx: CanvasRenderingContext2D, px: number, py: number, yaw: number) {
-    ctx.save();
-    ctx.translate(px, py);
-    // Player rotation=0 means forward = +Z. With the canvas Z-flipped,
-    // forward becomes canvas-up. Rotate the cursor so its tip points
-    // along the player's heading.
-    ctx.rotate(yaw);
-    // Cursor shape — sharp tip up and to the left of origin, body
-    // extending down and right (classic OS pointer silhouette).
-    ctx.beginPath();
-    ctx.moveTo(0, -14);          // tip
-    ctx.lineTo(8, 4);            // shoulder right
-    ctx.lineTo(2, 4);            // tail base inner
-    ctx.lineTo(6, 13);           // tail tip
-    ctx.lineTo(2, 15);           // tail tip outer
-    ctx.lineTo(-2, 7);           // tail base outer
-    ctx.lineTo(-6, 11);          // shoulder left
-    ctx.closePath();
-    ctx.fillStyle = '#fff';
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = '#000';
-    ctx.stroke();
-    ctx.restore();
   }
 
   if (!open) return null;
@@ -242,21 +229,21 @@ const S: Record<string, React.CSSProperties> = {
     pointerEvents: 'auto', fontFamily: 'sans-serif',
   },
   modal: {
-    background: '#0c0e18', color: '#e4e4ef',
+    background: '#1F1812', color: '#F5E6D0',
     borderRadius: 12, padding: 16,
     maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)',
-    boxShadow: '0 12px 60px rgba(0,0,0,0.7)',
+    boxShadow: '0 12px 60px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(216,148,56,0.20)',
     display: 'flex', flexDirection: 'column', gap: 8,
   },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 14, fontWeight: 600 },
+  title: { fontSize: 16, fontWeight: 600, fontFamily: 'Georgia, "Source Serif", serif', color: '#F5E6D0' },
   closeBtn: {
     width: 28, height: 28, borderRadius: 14,
-    background: 'rgba(255,255,255,0.06)', color: '#e4e4ef',
+    background: 'rgba(245,230,208,0.10)', color: '#F5E6D0',
     border: 'none', cursor: 'pointer', fontSize: 14,
   },
   canvas: { width: 'min(80vh, 720px)', height: 'min(80vh, 720px)', borderRadius: 8 },
-  legend: { display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, color: '#8b8b9a' },
+  legend: { display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, color: '#A89378' },
   legendItem: { display: 'inline-flex', alignItems: 'center', gap: 4, textTransform: 'capitalize' },
   legendSwatch: { display: 'inline-block', width: 10, height: 10, borderRadius: 2 },
 };

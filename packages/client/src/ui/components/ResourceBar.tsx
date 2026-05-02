@@ -32,11 +32,12 @@ export const ResourceBar: React.FC = () => {
 const S: Record<string, React.CSSProperties> = {
   bar: {
     position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
-    display: 'flex', gap: 12, background: 'rgba(12,14,24,0.85)',
-    border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
+    display: 'flex', gap: 12, background: 'rgba(31,24,18,0.92)',
+    border: '1px solid rgba(216,148,56,0.25)', borderRadius: 10,
     padding: '6px 16px', pointerEvents: 'auto', zIndex: 10, fontFamily: 'sans-serif',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.4), inset 0 1px 0 rgba(245,230,208,0.06)',
   },
   item: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 },
-  val: { fontWeight: 600, color: '#e4e4ef' },
-  label: { fontSize: 10, color: '#8b8b9a', textTransform: 'capitalize' as const },
+  val: { fontWeight: 600, color: '#F5E6D0', fontVariantNumeric: 'tabular-nums' },
+  label: { fontSize: 10, color: '#A89378', textTransform: 'capitalize' as const },
 };
