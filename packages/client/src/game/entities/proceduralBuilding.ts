@@ -20,7 +20,6 @@ import { buildMarket } from './buildings/market';
 import { buildShop } from './buildings/shop';
 import { buildOffice } from './buildings/office';
 import { buildApartment } from './buildings/apartment';
-import { buildSpriteBuilding, hasSpriteAsset } from './buildings/sprite';
 
 /**
  * Procedural building generator with per-type signature silhouettes.
@@ -121,15 +120,8 @@ export function buildProceduralBuilding(
   buildingType: string = 'apartment',
   businessName?: string,
 ): BuildingOutput {
-  // Painted-diorama path: every type with a hand-painted PNG asset
-  // renders as a Y-billboard sprite for the cozy aesthetic. Falls
-  // through to the legacy procedural meshes for types without art.
-  if (hasSpriteAsset(buildingType)) {
-    return buildSpriteBuilding(scene, id, position, spec, buildingType);
-  }
-
-  // Legacy procedural fallback (still wired for the Phase D extended
-  // types: skyscraper, mall, stadium, hospital, library, station, club).
+  // Every type now has its own module; dispatch accordingly. The
+  // monolithic fallback below is only hit for unknown building types.
   if (buildingType === 'farm')      return buildFarm(scene, id, position, spec);
   if (buildingType === 'house')     return buildHouse(scene, id, position, spec);
   if (buildingType === 'bank')      return buildBank(scene, id, position, spec);

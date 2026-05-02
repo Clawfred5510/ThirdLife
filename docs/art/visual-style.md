@@ -95,13 +95,18 @@ The 3D world sets the rules — UI follows.
 
 ## Implementation strategy
 
-For ThirdLife's Babylon.js world, the practical path to this look (without months of bespoke 3D modeling) is **camera-aligned billboard sprites**:
-1. Pre-rendered painted PNG per building type (the `gamedesigns/` assets).
-2. Render each parcel building as a textured quad rotated to face the player camera.
-3. Keep a small invisible collision box at the base for movement physics.
-4. Avatars + ground plane stay fully 3D.
+The target is **true 3D meshes** in the cozy-diorama style — generated through Meshy.AI (or an equivalent text/image-to-3D tool) using the `gamedesigns/` reference renders as the visual brief.
 
-This delivers the painted aesthetic at full quality with near-zero modeling cost. When bespoke 3D modeling is funded later, individual building types can be swapped one at a time without touching anything else.
+Workflow:
+1. Use each `gamedesigns/<type>.png` as the input image for Meshy.AI's image-to-3D mode.
+2. Export the resulting mesh as `.glb` (PBR textures baked in).
+3. Drop the file under `packages/client/public/assets/models/<type>.glb`.
+4. Wire it into the building dispatcher via `SceneLoader.ImportMeshAsync` — one entry per type.
+5. Keep the bespoke procedural meshes that already exist as the fallback while individual types are converted; replace one at a time.
+
+A flat-image billboard fallback was tried briefly and abandoned — the quads orient awkwardly under Babylon's Y-billboard mode and the result feels like a pasted poster rather than a building. Stay 3D.
+
+Until the .glb assets land, the existing per-type procedural meshes (apartment.ts, bank.ts, factory.ts, ...) remain the source of truth. They should be incrementally improved toward the diorama palette + detail-density rule above as a stopgap.
 
 ## Anti-goals
 
