@@ -20,7 +20,11 @@ import { buildMarket } from './buildings/market';
 import { buildShop } from './buildings/shop';
 import { buildOffice } from './buildings/office';
 import { buildApartment } from './buildings/apartment';
-import { buildGlbBuilding, hasGlbAsset } from './buildings/glb';
+// GLB (Meshy) building path is paused until the assets are re-exported
+// from Meshy with the textured / PBR option. The module + assets stay
+// under /assets/models/buildings/; re-enable by uncommenting the
+// import + dispatch below.
+// import { buildGlbBuilding, hasGlbAsset } from './buildings/glb';
 
 /**
  * Procedural building generator with per-type signature silhouettes.
@@ -121,13 +125,11 @@ export function buildProceduralBuilding(
   buildingType: string = 'apartment',
   businessName?: string,
 ): BuildingOutput {
-  // GLB-backed (Meshy) painted-diorama buildings: types with a real
-  // 3D asset under /assets/models/buildings/ load + instantiate from
-  // the .glb. Procedural meshes remain the fallback for any type
-  // without an asset yet (currently: market + Phase D extended).
-  if (hasGlbAsset(buildingType)) {
-    return buildGlbBuilding(scene, id, position, spec, buildingType);
-  }
+  // GLB (Meshy) path paused — see import comment above. Re-enable by
+  // uncommenting:
+  //   if (hasGlbAsset(buildingType)) {
+  //     return buildGlbBuilding(scene, id, position, spec, buildingType);
+  //   }
 
   // Every type now has its own module; dispatch accordingly. The
   // monolithic fallback below is only hit for unknown building types.
