@@ -1,39 +1,36 @@
 import {
-  Scene, Vector3, TransformNode, AssetContainer, SceneLoader,
+  Scene, Vector3, TransformNode, MeshBuilder, AssetContainer, SceneLoader,
   AbstractMesh, Mesh, StandardMaterial, Color3, VertexBuffer, VertexData,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
-import { BuildingSpec, BuildingOutput, mat, buildInteriorShell } from './shared';
-import { BUILDING_SPECS, DEFAULT_BUILDING_SPEC } from '../proceduralBuilding';
+import { BuildingSpec, BuildingOutput } from './shared';
 
 /**
  * GLB-backed building renderer (Meshy.AI assets).
  *
- * Two design constraints driving this module:
+ * The current Meshy exports are GEOMETRY-ONLY — no materials, textures,
+ * or normals (verified per-file: materials=0, textures=0, images=0,
+ * single POSITION attribute per primitive). Until the user re-exports
+ * from Meshy with the textured / PBR option enabled, this loader
+ * applies a fallback paint job so each building reads as its painted
+ * reference image:
  *
- * 1. Current Meshy exports are GEOMETRY-ONLY — no materials, textures,
- *    or normals. The loader paints each mesh with a StandardMaterial
- *    coloured from BUILDING_SPECS[type].wallColor and computes flat
- *    normals so the lighting actually has something to work with. When
- *    the user re-exports from Meshy with the textured / PBR option,
- *    the GLBs will already have materials and the fallback paint is
- *    a no-op (we only paint meshes that arrive without a material).
+ *  1. Compute flat normals (so the lighting model has something to
+ *     work with).
+ *  2. Bake vertex colours based on Y position — wall colour for
+ *     vertices below a per-type split fraction, roof colour above.
+ *     The result is a 2-tone painted look that approximates each
+ *     building's signature wall + roof distinction (red barn + green
+ *     gambrel, yellow house + slate gable, brick apartment + slate,
+ *     etc.). The actual colours come from the gamedesigns/<type>.png
+ *     reference set; tuned by eye.
+ *  3. Apply a single material that consumes those vertex colours.
  *
- * 2. The GLBs are solid shells — no interior space. The original
- *    procedural buildings had walk-in interiors with a doorway,
- *    ceiling, and floor. We restore that experience by spawning the
- *    standard interior shell at the parcel position UNDER the GLB.
- *    Collision lives on the shell walls (with the doorway gap), so
- *    the player walks toward the building, finds the door, and enters.
- *    Once inside, the fade-when-inside mechanic dims the GLB meshes
- *    (they're listed as roofMeshes) revealing the procedural interior.
- *
- * Hierarchy:
- *   root           — at parcel center, no scaling
- *   ├─ shell       — interior walls / floor / ceiling (procedural)
- *   └─ glbWrap     — empty TransformNode that holds the loaded GLB.
- *                    Only this node gets the fit-to-footprint scale,
- *                    so the procedural shell stays at its native size.
+ * No interior shell. The GLB is treated as a solid object — player
+ * collides with a tight box at the building footprint and walks
+ * around it. Per-building bespoke walkable areas (e.g. only the
+ * mine shaft on the mine, only the storefront on a shop) are a
+ * separate future pass driven by the visual reference.
  */
 
 const ASSET_BY_TYPE: Record<string, string> = {
@@ -48,10 +45,44 @@ const ASSET_BY_TYPE: Record<string, string> = {
   shop:      'shop.glb',
 };
 
+interface PaintRecipe {
+  /** Hex colour of the wall / lower portion of the building. */
+  wall: string;
+  /** Hex colour of the roof / upper portion. */
+  roof: string;
+  /** Fraction of building height where wall transitions to roof.
+   *  0.7 = lower 70% is wall colour, upper 30% is roof. */
+  split: number;
+  /** Optional rotation around Y axis applied to the GLB to face the
+   *  parcel road. Most assets export facing -Z; tweak per-type if a
+   *  given Meshy export is rotated weirdly. Radians. */
+  yawOffset?: number;
+}
+
+// Colours read directly off the gamedesigns/<type>.png references.
+const PAINT_BY_TYPE: Record<string, PaintRecipe> = {
+  // Two-storey brick apartment: terra-cotta walls, dark slate parapet.
+  apartment:  { wall: '#A6543A', roof: '#2D3138', split: 0.78 },
+  // Neoclassical bank: cream sandstone with charcoal roof + pediment.
+  bank:       { wall: '#D7C4A2', roof: '#26201A', split: 0.74 },
+  // Brick factory with sawtooth roof + chimneys.
+  factory:    { wall: '#B5563A', roof: '#2C2520', split: 0.62 },
+  // Red barn with green gambrel roof — the gambrel is huge so split low.
+  farm:       { wall: '#9C3C28', roof: '#3D7C3F', split: 0.45 },
+  // City hall: cream sandstone with brick accents, dark roof.
+  hall:       { wall: '#D7C4A2', roof: '#26201A', split: 0.74 },
+  // Yellow clapboard suburban house with steep slate gable.
+  house:      { wall: '#E2A130', roof: '#384357', split: 0.55 },
+  // Wood + stone mine pithead with teal-green roof.
+  mine:       { wall: '#6F4626', roof: '#3F7A6B', split: 0.55 },
+  // Beige stone office with dark parapet.
+  office:     { wall: '#A8A498', roof: '#26201A', split: 0.78 },
+  // Yellow shop walls with dark trim band at the top.
+  shop:       { wall: '#E2A130', roof: '#2C2520', split: 0.80 },
+};
+
 const PARCEL_FOOTPRINT = 32;
-// Shell sits inside the GLB silhouette so its walls don't peek out
-// from behind the painted exterior. 22u square is comfortable interior.
-const SHELL_FOOTPRINT = 22;
+const COLLIDER_HEIGHT = 8;
 
 const containers = new Map<string, AssetContainer>();
 const loading = new Map<string, Promise<AssetContainer>>();
@@ -88,7 +119,7 @@ export function buildGlbBuilding(
   spec: BuildingSpec,
   type: string,
 ): BuildingOutput {
-  void spec; // shell pulls its own spec from BUILDING_SPECS
+  void spec;
 
   const root = new TransformNode(`glb_${type}_${id}`, scene);
   root.position.copyFrom(position);
@@ -96,84 +127,130 @@ export function buildGlbBuilding(
   const filename = ASSET_BY_TYPE[type];
   if (!filename) throw new Error(`buildGlbBuilding: no GLB mapped for type '${type}'`);
 
-  // ── Procedural interior shell (synchronous) ──────────────────────────
-  const shellSpec: BuildingSpec = BUILDING_SPECS[type] ?? DEFAULT_BUILDING_SPEC;
-  const wallMat = mat(scene, `glbWall-${type}`, shellSpec.wallColor, 0.85);
-  const trimMat = mat(scene, `glbTrim-${type}`, shellSpec.trimColor, 0.65);
+  // Tight invisible collision box at the building footprint. Player
+  // walks around the building; nothing inside to enter for now.
+  const collider = MeshBuilder.CreateBox(`glbCol_${type}_${id}`, {
+    width: PARCEL_FOOTPRINT * 0.78,
+    height: COLLIDER_HEIGHT,
+    depth: PARCEL_FOOTPRINT * 0.78,
+  }, scene);
+  collider.parent = root;
+  collider.position.y = COLLIDER_HEIGHT / 2;
+  collider.isVisible = false;
+  collider.checkCollisions = true;
+  collider.isPickable = true;
 
-  const exteriorCasters: AbstractMesh[] = [];
-  const collisionWalls: AbstractMesh[] = [];
-  const roofMeshes: AbstractMesh[] = []; // mutated below + by .then()
-
-  const shell = buildInteriorShell(
-    scene, id, root, shellSpec,
-    SHELL_FOOTPRINT, SHELL_FOOTPRINT,
-    exteriorCasters, collisionWalls,
-    wallMat, trimMat,
-  );
-  // The shell ceiling fades when the player is inside, same as before.
-  roofMeshes.push(shell.ceiling);
-
-  // Outer-shell walls (the ones surrounding the doorway) need to fade
-  // along with the GLB so the player isn't staring at a procedural
-  // wall while the painted exterior is dimmed. Take everything pushed
-  // by buildInteriorShell into exteriorCasters and add to roofMeshes.
-  for (const m of exteriorCasters) roofMeshes.push(m);
-
-  // ── GLB exterior (asynchronous) ──────────────────────────────────────
-  // Wrapped in its own node so fit-to-footprint scaling doesn't touch
-  // the procedural shell's geometry (which has its own native scale).
+  // GLB lives under its own wrap so fit-to-footprint scaling doesn't
+  // touch the collider.
   const glbWrap = new TransformNode(`glbWrap_${type}_${id}`, scene);
   glbWrap.parent = root;
 
   const parcelX = position.x;
   const parcelZ = position.z;
+  const recipe = PAINT_BY_TYPE[type];
 
   loadContainer(scene, filename).then((container) => {
     const inst = container.instantiateModelsToScene(undefined, false);
     for (const node of inst.rootNodes) node.parent = glbWrap;
 
-    const newMeshes = glbWrap.getChildMeshes(false);
-    for (const m of newMeshes) {
-      ensureNormals(m);
-      if (!m.material) m.material = paintFor(scene, type, shellSpec);
-      m.checkCollisions = false;     // collision is via shell walls
-      m.isPickable = true;           // parcel pick still works
-      m.receiveShadows = true;
-      roofMeshes.push(m);            // fade when player is inside
-    }
+    const meshes = glbWrap.getChildMeshes(false);
+    fitToFootprintWrap(glbWrap, meshes, PARCEL_FOOTPRINT, parcelX, parcelZ);
+    if (recipe?.yawOffset) glbWrap.rotation.y = recipe.yawOffset;
 
-    fitToFootprintWrap(glbWrap, newMeshes, PARCEL_FOOTPRINT, parcelX, parcelZ);
+    // Re-measure post-scale so we know the world-Y range for the
+    // wall→roof colour split.
+    const yRange = computeWorldYRange(meshes);
+
+    const sharedMat = vertexColorMatFor(scene, type);
+    for (const m of meshes) {
+      ensureNormals(m);
+      if (m instanceof Mesh && recipe && yRange) {
+        applyTwoToneVertexColors(m, recipe, yRange);
+      }
+      m.material = sharedMat;
+      m.checkCollisions = false;
+      m.isPickable = true;
+      m.receiveShadows = true;
+    }
   }).catch((err) => {
     console.error(`[buildings] failed to load ${filename}:`, err);
   });
 
   return {
     root,
-    exteriorCasters,
-    collisionWalls,
-    roofMeshes,
+    exteriorCasters: [],   // shadow casting deferred — would need post-load registration
+    collisionWalls: [collider],
+    roofMeshes: [],        // no interior to fade into
     centerXZ: [position.x, position.z],
-    halfExtentsXZ: [SHELL_FOOTPRINT / 2, SHELL_FOOTPRINT / 2],
-    interiorHeight: shellSpec.wallHeight,
+    halfExtentsXZ: [PARCEL_FOOTPRINT / 2, PARCEL_FOOTPRINT / 2],
+    interiorHeight: 0,
   };
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Helpers
+// Materials + vertex colors
 // ──────────────────────────────────────────────────────────────────────
 
-const paintCache = new Map<string, StandardMaterial>();
+const matCache = new Map<string, StandardMaterial>();
 
-function paintFor(scene: Scene, type: string, spec: BuildingSpec): StandardMaterial {
-  const cached = paintCache.get(type);
+/**
+ * Per-type material that renders vertex colours. Diffuse stays white
+ * so vertex colours come through unchanged; specular is muted to keep
+ * the look matte; small emissive lift so the shadow side still reads.
+ */
+function vertexColorMatFor(scene: Scene, type: string): StandardMaterial {
+  const cached = matCache.get(type);
   if (cached) return cached;
-  const m = new StandardMaterial(`glbPaint-${type}`, scene);
-  m.diffuseColor = Color3.FromHexString(spec.wallColor);
-  m.specularColor = new Color3(0.04, 0.04, 0.04);     // matte, not plastic
-  m.emissiveColor = Color3.FromHexString(spec.wallColor).scale(0.18); // ambient lift on shadow side
-  paintCache.set(type, m);
+  const m = new StandardMaterial(`glbVcol-${type}`, scene);
+  m.diffuseColor = new Color3(1, 1, 1);
+  m.specularColor = new Color3(0.04, 0.04, 0.04);
+  m.emissiveColor = new Color3(0.10, 0.09, 0.07);
+  matCache.set(type, m);
   return m;
+}
+
+function applyTwoToneVertexColors(mesh: Mesh, recipe: PaintRecipe, yRange: { min: number; max: number }): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!positions) return;
+  const wall = Color3.FromHexString(recipe.wall);
+  const roof = Color3.FromHexString(recipe.roof);
+  const range = yRange.max - yRange.min;
+  if (range <= 0) return;
+
+  const splitWorldY = yRange.min + range * recipe.split;
+
+  // Convert split from world Y → mesh-local Y by reading the mesh's
+  // world matrix and transforming back.
+  const worldMatrix = mesh.computeWorldMatrix(true);
+  const inv = worldMatrix.clone().invert();
+
+  const colors = new Float32Array((positions.length / 3) * 4);
+  for (let i = 0, c = 0; i < positions.length; i += 3, c += 4) {
+    // Transform local vertex to world to compare against splitWorldY.
+    const lx = positions[i], ly = positions[i + 1], lz = positions[i + 2];
+    const wy = lx * worldMatrix.m[1] + ly * worldMatrix.m[5] + lz * worldMatrix.m[9] + worldMatrix.m[13];
+    const isRoof = wy > splitWorldY;
+    const rgb = isRoof ? roof : wall;
+    colors[c]     = rgb.r;
+    colors[c + 1] = rgb.g;
+    colors[c + 2] = rgb.b;
+    colors[c + 3] = 1;
+  }
+  mesh.setVerticesData(VertexBuffer.ColorKind, colors);
+  mesh.useVertexColors = true;
+  void inv;
+}
+
+function computeWorldYRange(meshes: AbstractMesh[]): { min: number; max: number } | null {
+  if (meshes.length === 0) return null;
+  let min = Infinity, max = -Infinity;
+  for (const m of meshes) {
+    m.computeWorldMatrix(true);
+    const bb = m.getBoundingInfo().boundingBox;
+    min = Math.min(min, bb.minimumWorld.y);
+    max = Math.max(max, bb.maximumWorld.y);
+  }
+  return { min, max };
 }
 
 function ensureNormals(mesh: AbstractMesh): void {
@@ -188,12 +265,11 @@ function ensureNormals(mesh: AbstractMesh): void {
 }
 
 /**
- * Scale + center the GLB sub-tree (glbWrap) so its painted silhouette
- * spans `target` units along its longest XZ side, with the centroid at
- * (parcelX, parcelZ) in WORLD space and the bottom at y = 0.
- *
- * Two passes: measure unscaled bbox → apply scale → measure scaled
- * bbox → shift glbWrap.position to land the centroid + ground line.
+ * Two-pass normalization on glbWrap. Pass 1 measures unscaled XZ
+ * extent and picks a uniform scale so the longest XZ side equals
+ * `target`. Pass 2 measures post-scale and shifts wrap.position so
+ * the model centroid sits at (parcelX, parcelZ) and the bottom is
+ * at y = 0.
  */
 function fitToFootprintWrap(
   wrap: TransformNode,
@@ -229,9 +305,6 @@ function fitToFootprintWrap(
   const m2 = measure();
   const cx = (m2.minX + m2.maxX) / 2;
   const cz = (m2.minZ + m2.maxZ) / 2;
-  // World-space targets — translate wrap (in world, since its parent
-  // root isn't moving here) by the delta between current centroid and
-  // desired (parcelX, 0, parcelZ).
   wrap.position.x += parcelX - cx;
   wrap.position.z += parcelZ - cz;
   wrap.position.y -= m2.minY;
@@ -241,6 +314,6 @@ export function resetGlbCacheForTesting(): void {
   containers.forEach((c) => c.dispose());
   containers.clear();
   loading.clear();
-  paintCache.forEach((m) => m.dispose());
-  paintCache.clear();
+  matCache.forEach((m) => m.dispose());
+  matCache.clear();
 }
