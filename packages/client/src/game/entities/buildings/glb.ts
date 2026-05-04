@@ -1,31 +1,39 @@
 import {
-  Scene, Vector3, TransformNode, MeshBuilder,
-  AssetContainer, SceneLoader, AbstractMesh,
+  Scene, Vector3, TransformNode, AssetContainer, SceneLoader,
+  AbstractMesh, Mesh, StandardMaterial, Color3, VertexBuffer, VertexData,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
-import { BuildingSpec, BuildingOutput } from './shared';
+import { BuildingSpec, BuildingOutput, mat, buildInteriorShell } from './shared';
+import { BUILDING_SPECS, DEFAULT_BUILDING_SPEC } from '../proceduralBuilding';
 
 /**
- * GLB-backed building renderer.
+ * GLB-backed building renderer (Meshy.AI assets).
  *
- * Each entry in ASSET_BY_TYPE points at a Meshy.AI export sitting at
- * /assets/models/buildings/<file>. We load each file once into a cached
- * AssetContainer and instantiate fresh copies into the world via
- * instantiateModelsToScene() — this is the cheapest way to spawn many
- * copies of the same model in Babylon (instances share geometry +
- * materials with the template).
+ * Two design constraints driving this module:
  *
- * After instantiation, fitToFootprint() normalizes the model: scaled
- * uniformly so its longest XZ side equals PARCEL_FOOTPRINT, then
- * shifted so the bbox center sits at the parcel center and the bottom
- * sits on the ground. Meshy exports come at unpredictable scales, so
- * this normalization is mandatory rather than optional.
+ * 1. Current Meshy exports are GEOMETRY-ONLY — no materials, textures,
+ *    or normals. The loader paints each mesh with a StandardMaterial
+ *    coloured from BUILDING_SPECS[type].wallColor and computes flat
+ *    normals so the lighting actually has something to work with. When
+ *    the user re-exports from Meshy with the textured / PBR option,
+ *    the GLBs will already have materials and the fallback paint is
+ *    a no-op (we only paint meshes that arrive without a material).
  *
- * Async path: the building factory currently returns synchronously, so
- * we return an empty BuildingOutput immediately (with a small invisible
- * collision box) and the visible meshes pop in once the GLB resolves.
- * No shadows on GLB buildings for now — keeps the loader simple; can
- * be added later by calling addShadowCaster() inside the .then().
+ * 2. The GLBs are solid shells — no interior space. The original
+ *    procedural buildings had walk-in interiors with a doorway,
+ *    ceiling, and floor. We restore that experience by spawning the
+ *    standard interior shell at the parcel position UNDER the GLB.
+ *    Collision lives on the shell walls (with the doorway gap), so
+ *    the player walks toward the building, finds the door, and enters.
+ *    Once inside, the fade-when-inside mechanic dims the GLB meshes
+ *    (they're listed as roofMeshes) revealing the procedural interior.
+ *
+ * Hierarchy:
+ *   root           — at parcel center, no scaling
+ *   ├─ shell       — interior walls / floor / ceiling (procedural)
+ *   └─ glbWrap     — empty TransformNode that holds the loaded GLB.
+ *                    Only this node gets the fit-to-footprint scale,
+ *                    so the procedural shell stays at its native size.
  */
 
 const ASSET_BY_TYPE: Record<string, string> = {
@@ -38,11 +46,12 @@ const ASSET_BY_TYPE: Record<string, string> = {
   mine:      'mine.glb',
   office:    'office.glb',
   shop:      'shop.glb',
-  // No market.glb / powerplant unmapped — fall through to procedural.
 };
 
 const PARCEL_FOOTPRINT = 32;
-const COLLIDER_HEIGHT = 8;
+// Shell sits inside the GLB silhouette so its walls don't peek out
+// from behind the painted exterior. 22u square is comfortable interior.
+const SHELL_FOOTPRINT = 22;
 
 const containers = new Map<string, AssetContainer>();
 const loading = new Map<string, Promise<AssetContainer>>();
@@ -79,64 +88,115 @@ export function buildGlbBuilding(
   spec: BuildingSpec,
   type: string,
 ): BuildingOutput {
+  void spec; // shell pulls its own spec from BUILDING_SPECS
+
   const root = new TransformNode(`glb_${type}_${id}`, scene);
   root.position.copyFrom(position);
 
   const filename = ASSET_BY_TYPE[type];
   if (!filename) throw new Error(`buildGlbBuilding: no GLB mapped for type '${type}'`);
 
-  const collider = MeshBuilder.CreateBox(`glbCol_${type}_${id}`, {
-    width: PARCEL_FOOTPRINT * 0.75,
-    height: COLLIDER_HEIGHT,
-    depth: PARCEL_FOOTPRINT * 0.75,
-  }, scene);
-  collider.parent = root;
-  collider.position.y = COLLIDER_HEIGHT / 2;
-  collider.isVisible = false;
-  collider.checkCollisions = true;
-  collider.isPickable = true;
+  // ── Procedural interior shell (synchronous) ──────────────────────────
+  const shellSpec: BuildingSpec = BUILDING_SPECS[type] ?? DEFAULT_BUILDING_SPEC;
+  const wallMat = mat(scene, `glbWall-${type}`, shellSpec.wallColor, 0.85);
+  const trimMat = mat(scene, `glbTrim-${type}`, shellSpec.trimColor, 0.65);
 
-  // Capture parcel-anchor for the post-load fit pass — we recenter the
-  // model around this XZ regardless of where Meshy put the origin.
+  const exteriorCasters: AbstractMesh[] = [];
+  const collisionWalls: AbstractMesh[] = [];
+  const roofMeshes: AbstractMesh[] = []; // mutated below + by .then()
+
+  const shell = buildInteriorShell(
+    scene, id, root, shellSpec,
+    SHELL_FOOTPRINT, SHELL_FOOTPRINT,
+    exteriorCasters, collisionWalls,
+    wallMat, trimMat,
+  );
+  // The shell ceiling fades when the player is inside, same as before.
+  roofMeshes.push(shell.ceiling);
+
+  // Outer-shell walls (the ones surrounding the doorway) need to fade
+  // along with the GLB so the player isn't staring at a procedural
+  // wall while the painted exterior is dimmed. Take everything pushed
+  // by buildInteriorShell into exteriorCasters and add to roofMeshes.
+  for (const m of exteriorCasters) roofMeshes.push(m);
+
+  // ── GLB exterior (asynchronous) ──────────────────────────────────────
+  // Wrapped in its own node so fit-to-footprint scaling doesn't touch
+  // the procedural shell's geometry (which has its own native scale).
+  const glbWrap = new TransformNode(`glbWrap_${type}_${id}`, scene);
+  glbWrap.parent = root;
+
   const parcelX = position.x;
   const parcelZ = position.z;
 
   loadContainer(scene, filename).then((container) => {
     const inst = container.instantiateModelsToScene(undefined, false);
-    for (const node of inst.rootNodes) node.parent = root;
-    // Make non-collider geometry non-colliding (the box is the only
-    // collision surface). Keep them pickable so parcel clicks work.
-    const meshes = root.getChildMeshes(false).filter((m) => m !== collider);
-    for (const m of meshes) {
-      m.checkCollisions = false;
-      m.isPickable = true;
+    for (const node of inst.rootNodes) node.parent = glbWrap;
+
+    const newMeshes = glbWrap.getChildMeshes(false);
+    for (const m of newMeshes) {
+      ensureNormals(m);
+      if (!m.material) m.material = paintFor(scene, type, shellSpec);
+      m.checkCollisions = false;     // collision is via shell walls
+      m.isPickable = true;           // parcel pick still works
+      m.receiveShadows = true;
+      roofMeshes.push(m);            // fade when player is inside
     }
-    fitToFootprint(root, meshes, PARCEL_FOOTPRINT, parcelX, parcelZ);
+
+    fitToFootprintWrap(glbWrap, newMeshes, PARCEL_FOOTPRINT, parcelX, parcelZ);
   }).catch((err) => {
     console.error(`[buildings] failed to load ${filename}:`, err);
   });
 
-  void spec; // visual scale is handled by fitToFootprint, not the legacy spec
-
   return {
     root,
-    exteriorCasters: [],     // shadows are handled later — see module note
-    collisionWalls: [collider],
-    roofMeshes: [],          // GLB buildings have no interior to fade into
+    exteriorCasters,
+    collisionWalls,
+    roofMeshes,
     centerXZ: [position.x, position.z],
-    halfExtentsXZ: [PARCEL_FOOTPRINT / 2, PARCEL_FOOTPRINT / 2],
-    interiorHeight: 0,
+    halfExtentsXZ: [SHELL_FOOTPRINT / 2, SHELL_FOOTPRINT / 2],
+    interiorHeight: shellSpec.wallHeight,
   };
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────
+
+const paintCache = new Map<string, StandardMaterial>();
+
+function paintFor(scene: Scene, type: string, spec: BuildingSpec): StandardMaterial {
+  const cached = paintCache.get(type);
+  if (cached) return cached;
+  const m = new StandardMaterial(`glbPaint-${type}`, scene);
+  m.diffuseColor = Color3.FromHexString(spec.wallColor);
+  m.specularColor = new Color3(0.04, 0.04, 0.04);     // matte, not plastic
+  m.emissiveColor = Color3.FromHexString(spec.wallColor).scale(0.18); // ambient lift on shadow side
+  paintCache.set(type, m);
+  return m;
+}
+
+function ensureNormals(mesh: AbstractMesh): void {
+  if (!(mesh instanceof Mesh)) return;
+  if (mesh.isVerticesDataPresent(VertexBuffer.NormalKind)) return;
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const indices = mesh.getIndices();
+  if (!positions || !indices) return;
+  const normals: number[] = [];
+  VertexData.ComputeNormals(positions, indices, normals);
+  mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+}
+
 /**
- * Two-pass normalization. Pass 1 measures unscaled XZ extent and picks
- * a uniform scale; Pass 2 measures the post-scale bounding box and
- * shifts root.position so the model's XZ centroid sits at (parcelX,
- * parcelZ) and the bottom rests at y = 0.
+ * Scale + center the GLB sub-tree (glbWrap) so its painted silhouette
+ * spans `target` units along its longest XZ side, with the centroid at
+ * (parcelX, parcelZ) in WORLD space and the bottom at y = 0.
+ *
+ * Two passes: measure unscaled bbox → apply scale → measure scaled
+ * bbox → shift glbWrap.position to land the centroid + ground line.
  */
-function fitToFootprint(
-  root: TransformNode,
+function fitToFootprintWrap(
+  wrap: TransformNode,
   meshes: AbstractMesh[],
   target: number,
   parcelX: number,
@@ -164,19 +224,23 @@ function fitToFootprint(
   const sizeXZ = Math.max(m1.maxX - m1.minX, m1.maxZ - m1.minZ);
   if (sizeXZ <= 0) return;
   const scale = target / sizeXZ;
-  root.scaling = new Vector3(scale, scale, scale);
+  wrap.scaling = new Vector3(scale, scale, scale);
 
   const m2 = measure();
   const cx = (m2.minX + m2.maxX) / 2;
   const cz = (m2.minZ + m2.maxZ) / 2;
-  root.position.x += parcelX - cx;
-  root.position.z += parcelZ - cz;
-  root.position.y -= m2.minY;
+  // World-space targets — translate wrap (in world, since its parent
+  // root isn't moving here) by the delta between current centroid and
+  // desired (parcelX, 0, parcelZ).
+  wrap.position.x += parcelX - cx;
+  wrap.position.z += parcelZ - cz;
+  wrap.position.y -= m2.minY;
 }
 
-/** Test/dev helper — clears the loaded container cache. */
 export function resetGlbCacheForTesting(): void {
   containers.forEach((c) => c.dispose());
   containers.clear();
   loading.clear();
+  paintCache.forEach((m) => m.dispose());
+  paintCache.clear();
 }
