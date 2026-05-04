@@ -40,14 +40,16 @@ export function buildFactory(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const wallMat = mat(scene, 'fac-wall', '#7A7A80', 0.88);
+  // Painted to match gamedesigns/factory.png: red-brick walls, charcoal
+  // sawtooth roof, beige stack chimneys, deep-teal glass band.
+  const wallMat = mat(scene, 'fac-wall', '#B5563A', 0.88);
   const trimMat = mat(scene, 'fac-trim', '#2A2A2E', 0.6);
-  const roofMat = mat(scene, 'fac-roof', '#4A4E58', 0.72);
-  const metalMat = mat(scene, 'fac-metal', '#8A8A8E', 0.5, { metallic: 0.5 });
+  const roofMat = mat(scene, 'fac-roof', '#2C2520', 0.72);
+  const metalMat = mat(scene, 'fac-metal', '#C9B796', 0.5, { metallic: 0.3 });
   const rustMat = mat(scene, 'rust', '#8A5A3A', 0.75, { metallic: 0.3 });
   const concreteMat = mat(scene, 'concrete', '#A0A0A0', 0.9);
   const crateMat = mat(scene, 'crate-wood', '#9A6A3A', 0.85);
-  const glassBand = mat(scene, 'fac-glass', '#A8C8D8', 0.2, { alpha: 0.5, emissive: new Color3(0.2, 0.3, 0.4) });
+  const glassBand = mat(scene, 'fac-glass', '#2A5560', 0.2, { alpha: 0.5, emissive: new Color3(0.10, 0.20, 0.25) });
 
   const body = new TransformNode(`facBody_${id}`, scene);
   body.parent = root;

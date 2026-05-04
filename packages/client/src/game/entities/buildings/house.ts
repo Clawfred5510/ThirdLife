@@ -50,13 +50,15 @@ export function buildHouse(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  // Materials
-  const wallMat = mat(scene, 'cottage-wall', '#F0E4C8', 0.9);
-  const trimMat = mat(scene, 'cottage-trim', '#8B5A3C', 0.6);
+  // Painted to match gamedesigns/house.png: yellow clapboard walls,
+  // slate-navy gable roof (replaces the old terracotta), white trim
+  // for porch posts, brick chimney.
+  const wallMat = mat(scene, 'cottage-wall', '#E2A130', 0.9);
+  const trimMat = mat(scene, 'cottage-trim', '#F5F0E5', 0.55);
   // Role name contains 'roof' so the shared mat() helper disables backface
   // culling (roof primitives are vertex-data slopes that get viewed from
   // both sides; with culling on, the back panel disappears at low angles).
-  const roofMat = mat(scene, 'roof-terracotta', '#B04A2A', 0.75);
+  const roofMat = mat(scene, 'roof-terracotta', '#384357', 0.7);
   const brickMat = mat(scene, 'brick', '#8A4A38', 0.88);
   const woodMat = mat(scene, 'wood-trim', '#C49A6C', 0.7);
   const pathMat = mat(scene, 'stone-path', '#B5AE9A', 0.9);

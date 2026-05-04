@@ -40,10 +40,13 @@ export function buildShop(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const wallMat = mat(scene, 'shop-wall', '#F0C850', 0.85);
-  const trimMat = mat(scene, 'shop-trim', '#3A1F14', 0.6);
+  // Painted to match gamedesigns/store.png: warm yellow walls, FOREST
+  // GREEN trim/cornice (replaces the old dark-brown trim), red-orange
+  // striped awning roof, deep-teal glass, dark wood.
+  const wallMat = mat(scene, 'shop-wall', '#E2A130', 0.85);
+  const trimMat = mat(scene, 'shop-trim', '#3D7C3F', 0.6);
   const roofMat = mat(scene, 'shop-roof', '#B04830', 0.7);
-  const glassMat = mat(scene, 'shop-glass', '#BADCE8', 0.15, { alpha: 0.5, emissive: new Color3(0.35, 0.45, 0.55) });
+  const glassMat = mat(scene, 'shop-glass', '#2A5560', 0.15, { alpha: 0.5, emissive: new Color3(0.10, 0.20, 0.25) });
   const woodMat = mat(scene, 'shop-wood', '#7A4A30', 0.85);
   const signWhite = mat(scene, 'sign-white', '#F5EFE0', 0.55, { emissive: new Color3(0.18, 0.16, 0.12) });
   const signRed = mat(scene, 'sign-red', '#D63030', 0.5);

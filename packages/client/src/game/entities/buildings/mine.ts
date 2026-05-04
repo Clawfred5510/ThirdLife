@@ -40,9 +40,12 @@ export function buildMine(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const stoneMat = mat(scene, 'mine-stone', '#6A635A', 0.95);
-  const trimMat = mat(scene, 'mine-trim', '#3A2E28', 0.75);
-  const darkWoodMat = mat(scene, 'mine-wood', '#5A3A22', 0.85);
+  // Painted to match gamedesigns/mine.png: lighter cool grey rocks,
+  // warm brown timber/headframe wood, teal-green roof on the small
+  // mine-entrance shed.
+  const stoneMat = mat(scene, 'mine-stone', '#7A736A', 0.95);
+  const trimMat = mat(scene, 'mine-trim', '#3F7A6B', 0.75);
+  const darkWoodMat = mat(scene, 'mine-wood', '#7A4F2E', 0.85);
   const metalMat = mat(scene, 'mine-metal', '#6A6A70', 0.55, { metallic: 0.55 });
   const rustMat = mat(scene, 'mine-rust', '#9A6030', 0.75, { metallic: 0.2 });
   const oreMat = mat(scene, 'ore-dark', '#3A3030', 0.95);

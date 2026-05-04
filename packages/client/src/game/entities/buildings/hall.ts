@@ -42,10 +42,13 @@ export function buildHall(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const stoneMat = mat(scene, 'hall-stone', '#DDD4BD', 0.88);
-  const roofMat = mat(scene, 'hall-roof', '#6F7A82', 0.5, { metallic: 0.35 });
-  const trimMat = mat(scene, 'hall-trim', '#2A2018', 0.6);
-  const marbleMat = mat(scene, 'hall-marble', '#F0EAD8', 0.55);
+  // Painted to match gamedesigns/hall.png: cream sandstone with brick
+  // accents, charcoal roof (replaces the old metallic-grey), marble
+  // pediment, brass detailing, red flag.
+  const stoneMat = mat(scene, 'hall-stone', '#D7C4A2', 0.88);
+  const roofMat = mat(scene, 'hall-roof', '#26201A', 0.6);
+  const trimMat = mat(scene, 'hall-trim', '#26201A', 0.6);
+  const marbleMat = mat(scene, 'hall-marble', '#E8DEC0', 0.55);
   const bronzeMat = mat(scene, 'hall-bronze', '#7A5A3A', 0.6, { metallic: 0.5 });
   const flagMat = mat(scene, 'flag-red', '#B03030', 0.9, { emissive: new Color3(0.08, 0.02, 0.02) });
 

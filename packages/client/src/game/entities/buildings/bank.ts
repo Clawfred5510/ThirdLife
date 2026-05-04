@@ -42,12 +42,13 @@ export function buildBank(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  // Materials — classical stone palette
-  const stoneMat = mat(scene, 'bank-stone', '#E0D9C4', 0.88);
-  const marbleMat = mat(scene, 'marble', '#F0EAD8', 0.5, { metallic: 0.05 });
+  // Painted to match gamedesigns/bank.png: cream sandstone, marble pediment,
+  // brass detailing, charcoal flat roof (replaces green copper dome).
+  const stoneMat = mat(scene, 'bank-stone', '#D7C4A2', 0.88);
+  const marbleMat = mat(scene, 'marble', '#E8DEC0', 0.5, { metallic: 0.05 });
   const goldMat = mat(scene, 'gold', '#D4A847', 0.35, { metallic: 0.6 });
-  const trimMat = mat(scene, 'bank-trim', '#3A2A20', 0.55);
-  const domeMat = mat(scene, 'dome-copper', '#8FAE9A', 0.5, { metallic: 0.4 });
+  const trimMat = mat(scene, 'bank-trim', '#26201A', 0.55);
+  const domeMat = mat(scene, 'dome-copper', '#3A3530', 0.5, { metallic: 0.2 });
   const lionMat = mat(scene, 'lion-bronze', '#7A5A3A', 0.6, { metallic: 0.5 });
 
   const buildingRoot = new TransformNode(`bankBody_${id}`, scene);

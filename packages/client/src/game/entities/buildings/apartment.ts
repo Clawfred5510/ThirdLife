@@ -40,11 +40,13 @@ export function buildApartment(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const wallMat = mat(scene, 'apt-wall', '#D8C9A8', 0.88);
+  // Painted to match gamedesigns/apartment.png: terra-cotta brick walls,
+  // cream cornice band, dark slate parapet, deep-teal window glass.
+  const wallMat = mat(scene, 'apt-wall', '#A6543A', 0.88);
   const trimMat = mat(scene, 'apt-trim', '#3A2820', 0.6);
   const corniceMat = mat(scene, 'apt-cornice', '#F0E8D4', 0.55);
-  const parapetMat = mat(scene, 'apt-parapet', '#4A4E58', 0.7);
-  const glassMat = mat(scene, 'apt-glass', '#A8C4D8', 0.15, { alpha: 0.5, emissive: new Color3(0.25, 0.35, 0.45) });
+  const parapetMat = mat(scene, 'apt-parapet', '#2D3138', 0.7);
+  const glassMat = mat(scene, 'apt-glass', '#2A5560', 0.15, { alpha: 0.5, emissive: new Color3(0.10, 0.20, 0.25) });
   const metalMat = mat(scene, 'apt-metal', '#7A8090', 0.45, { metallic: 0.55 });
   const plantMat = mat(scene, 'apt-plant', '#3A7A3A', 0.95);
   const trunkMat = mat(scene, 'apt-trunk', '#5A3A22', 0.9);

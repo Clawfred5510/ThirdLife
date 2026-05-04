@@ -40,11 +40,14 @@ export function buildOffice(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  const wallMat = mat(scene, 'office-wall', '#8AA0B8', 0.55, { metallic: 0.2 });
-  const trimMat = mat(scene, 'office-trim', '#2A2F38', 0.55);
-  const glassMat = mat(scene, 'office-glass', '#A8C8D8', 0.15, { alpha: 0.5, emissive: new Color3(0.15, 0.25, 0.35) });
+  // Painted to match gamedesigns/office.png: warm beige stone walls
+  // (replaces the old blue), navy parapet trim, deep-teal curtain-wall
+  // glass, light concrete plaza, slate parapet/penthouse.
+  const wallMat = mat(scene, 'office-wall', '#A8A498', 0.55, { metallic: 0.05 });
+  const trimMat = mat(scene, 'office-trim', '#26201A', 0.55);
+  const glassMat = mat(scene, 'office-glass', '#2A5560', 0.15, { alpha: 0.5, emissive: new Color3(0.10, 0.20, 0.25) });
   const concreteMat = mat(scene, 'office-concrete', '#B5B3AE', 0.9);
-  const penthouseMat = mat(scene, 'penthouse', '#4A4F58', 0.65);
+  const penthouseMat = mat(scene, 'penthouse', '#3A3530', 0.65);
   const metalMat = mat(scene, 'office-metal', '#8E9098', 0.4, { metallic: 0.55 });
   const plantMat = mat(scene, 'office-plant', '#3A7A3A', 0.95);
   const medallion = mat(scene, 'medallion', '#D4A847', 0.35, { metallic: 0.55 });

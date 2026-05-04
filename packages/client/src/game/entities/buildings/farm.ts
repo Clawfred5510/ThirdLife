@@ -51,10 +51,12 @@ export function buildFarm(
   const exteriorCasters: AbstractMesh[] = [];
   const collisionWalls: AbstractMesh[] = [];
 
-  // Materials
-  const barnWallMat = mat(scene, 'barn-red', '#A8342A', 0.88);
+  // Painted to match gamedesigns/farm.png: red barn walls, FOREST GREEN
+  // gambrel roof (NOT the previous near-black), cream trim, light-tan
+  // wood silos with darker caps.
+  const barnWallMat = mat(scene, 'barn-red', '#9C3C28', 0.88);
   const barnTrimMat = mat(scene, 'barn-trim', '#F2E8D5', 0.75);
-  const roofMat = mat(scene, 'barn-roof', '#2A1814', 0.7);
+  const roofMat = mat(scene, 'barn-roof', '#3D7C3F', 0.7);
   const siloMat = mat(scene, 'silo-metal', '#DCD3BC', 0.55, { metallic: 0.2 });
   const siloCapMat = mat(scene, 'silo-cap', '#5A6270', 0.45, { metallic: 0.6 });
   const soilMat = mat(scene, 'soil', '#4A3020', 0.95);
