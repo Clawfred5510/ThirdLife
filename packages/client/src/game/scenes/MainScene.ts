@@ -111,6 +111,12 @@ export class MainScene {
   /** Current keyboard state. */
   private keys: Record<string, boolean> = {};
 
+  /** Virtual-input state from the on-screen joystick (mobile UX).
+   *  Merged with the keyboard state in sendPlayerInput. */
+  private virtual: { forward: boolean; backward: boolean; left: boolean; right: boolean; sprint: boolean } = {
+    forward: false, backward: false, left: false, right: false, sprint: false,
+  };
+
   /** Whether we were sending movement input last frame — used to send a stop signal. */
   private wasMoving = false;
 
@@ -908,7 +914,7 @@ export class MainScene {
     }
 
     const dt = this.engine.getDeltaTime() / 1000;
-    const sprintActive = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
+    const sprintActive = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.virtual.sprint;
     const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * dt;
 
     // Camera yaw (same math as sendPlayerInput)
@@ -918,10 +924,10 @@ export class MainScene {
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
 
     let mx = 0, mz = 0;
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) { mx += fx; mz += fz; }
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) { mx -= fx; mz -= fz; }
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) { mx += rx; mz += rz; }
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) { mx -= rx; mz -= rz; }
+    if (this.keys['KeyW'] || this.keys['ArrowUp'] || this.virtual.forward) { mx += fx; mz += fz; }
+    if (this.keys['KeyS'] || this.keys['ArrowDown'] || this.virtual.backward) { mx -= fx; mz -= fz; }
+    if (this.keys['KeyD'] || this.keys['ArrowRight'] || this.virtual.right) { mx += rx; mz += rz; }
+    if (this.keys['KeyA'] || this.keys['ArrowLeft'] || this.virtual.left) { mx -= rx; mz -= rz; }
 
     const len = Math.hypot(mx, mz);
     if (len > 0) {
@@ -1046,6 +1052,20 @@ export class MainScene {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) releaseAllKeys();
     });
+
+    // Bridge for the on-screen joystick (mobile UX). The React Joystick
+    // component calls window.__tlSetVirtualInput({ forward, backward,
+    // left, right, sprint }) on every state change. Cleared on blur so
+    // touch + page-switch can't strand the player walking forever.
+    (window as unknown as { __tlSetVirtualInput?: (s: typeof this.virtual) => void })
+      .__tlSetVirtualInput = (s) => { this.virtual = { ...s }; };
+    const releaseVirtual = () => {
+      this.virtual.forward = this.virtual.backward = this.virtual.left = this.virtual.right = this.virtual.sprint = false;
+    };
+    window.addEventListener('blur', releaseVirtual);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) releaseVirtual();
+    });
   }
 
   /**
@@ -1129,12 +1149,12 @@ export class MainScene {
     }
 
     const input: PlayerInput = {
-      forward: !!this.keys['KeyW'] || !!this.keys['ArrowUp'],
-      backward: !!this.keys['KeyS'] || !!this.keys['ArrowDown'],
-      left: !!this.keys['KeyA'] || !!this.keys['ArrowLeft'],
-      right: !!this.keys['KeyD'] || !!this.keys['ArrowRight'],
+      forward: !!this.keys['KeyW'] || !!this.keys['ArrowUp'] || this.virtual.forward,
+      backward: !!this.keys['KeyS'] || !!this.keys['ArrowDown'] || this.virtual.backward,
+      left: !!this.keys['KeyA'] || !!this.keys['ArrowLeft'] || this.virtual.left,
+      right: !!this.keys['KeyD'] || !!this.keys['ArrowRight'] || this.virtual.right,
       jump: !!this.keys['Space'],
-      sprint: !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight'],
+      sprint: !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight'] || this.virtual.sprint,
       rotation: yaw,
     };
 

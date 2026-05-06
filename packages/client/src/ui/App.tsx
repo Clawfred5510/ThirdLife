@@ -11,6 +11,7 @@ import { CharacterCreator } from './components/CharacterCreator';
 import { ResourceBar } from './components/ResourceBar';
 import { Phone } from './components/Phone';
 import { BigMap } from './components/BigMap';
+import { Joystick } from './components/Joystick';
 import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
 
@@ -30,6 +31,7 @@ export const App: React.FC = () => {
       <ResourceBar />
       <Wallet />
       <Phone />
+      <Joystick />
       <ChatPanel />
       <Toast />
       <Minimap />
