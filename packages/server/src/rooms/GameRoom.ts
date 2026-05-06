@@ -41,6 +41,7 @@ import {
   getEvents,
   getAuthSessionPlayerId,
   tickReputation,
+  getRawDb,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -248,6 +249,64 @@ export class GameRoom extends Room<GameState> {
       } else {
         client.send(MessageType.UPDATE_BUSINESS, { error: 'Update failed (not owner or parcel not claimed)' });
       }
+    });
+
+    this.onMessage(MessageType.DEMOLISH_BUILDING, (client: Client, data: { parcelId: number }) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
+
+      const ownerId = this.pid(client.sessionId);
+      const allParcels = getAllParcels();
+      const parcel = allParcels.find((p) => p.id === data.parcelId);
+      if (!parcel) {
+        client.send(MessageType.DEMOLISH_BUILDING, { error: 'parcel_not_found' });
+        return;
+      }
+      if (parcel.owner_id !== ownerId) {
+        client.send(MessageType.DEMOLISH_BUILDING, { error: 'not_owner' });
+        return;
+      }
+      const buildingType = (parcel as { building_type?: string }).building_type as BuildingType | undefined;
+      if (!buildingType) {
+        client.send(MessageType.DEMOLISH_BUILDING, { error: 'nothing_to_demolish' });
+        return;
+      }
+
+      // Refund 50% of the building's original cost (land cost stays
+      // sunk; the parcel remains owned and can be rebuilt on).
+      const spec = BUILDINGS[buildingType];
+      const refund = spec ? Math.floor(spec.cost / 2) : 0;
+      if (refund > 0) {
+        const newCredits = player.credits + refund;
+        updatePlayerCredits(ownerId, newCredits);
+        player.credits = newCredits;
+        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      }
+
+      // Clear the building from the parcel + any sub-units associated
+      // with it (Phase C apartments/offices).
+      setBuildingType(data.parcelId, '');
+      updateBusinessInDb(data.parcelId, ownerId, { type: '', name: '' });
+      try {
+        const db = getRawDb();
+        db.prepare('DELETE FROM properties WHERE parcel_id = ?').run(data.parcelId);
+      } catch (err) {
+        console.warn('[demolish] sub-unit cleanup failed:', err);
+      }
+
+      this.broadcast(MessageType.PARCEL_UPDATE, {
+        id: data.parcelId,
+        owner_id: ownerId,
+        business_name: '',
+        business_type: '',
+        building_type: '',
+      });
+
+      addEvent('demolish', ownerId, {
+        parcel: data.parcelId, building: buildingType, refund,
+      }, 'major');
+      console.log(`${player.name} demolished ${buildingType} on parcel #${data.parcelId} (refund ${refund} $AMETA)`);
     });
 
     this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {

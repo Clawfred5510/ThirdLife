@@ -331,6 +331,10 @@ export function sendUpdateBusiness(parcelId: number, data: { name?: string; type
   room?.send(MessageType.UPDATE_BUSINESS, { parcelId, ...data });
 }
 
+export function sendDemolish(parcelId: number): void {
+  room?.send(MessageType.DEMOLISH_BUILDING, { parcelId });
+}
+
 export function sendBuildStructure(parcelId: number, buildingType: string): void {
   room?.send(MessageType.BUILD_STRUCTURE, { parcelId, buildingType });
 }

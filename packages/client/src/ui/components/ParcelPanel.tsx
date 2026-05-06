@@ -11,6 +11,7 @@ import {
 import {
   sendClaimParcel,
   sendUpdateBusiness,
+  sendDemolish,
   onCreditsUpdate,
   getSessionId,
 } from '../../network/Client';
@@ -40,8 +41,6 @@ export const ParcelPanel: React.FC = () => {
   const [credits, setCredits] = useState(0);
   const [editName, setEditName] = useState('');
   const [editType, setEditType] = useState('');
-  const [editColor, setEditColor] = useState('#4a90d9');
-  const [editHeight, setEditHeight] = useState(4);
   const [message, setMessage] = useState('');
   const [pickedBuilding, setPickedBuilding] = useState<BuildingType>('apartment');
 
@@ -72,8 +71,6 @@ export const ParcelPanel: React.FC = () => {
     if (parcel) {
       setEditName(parcel.business_name || '');
       setEditType(parcel.business_type || '');
-      setEditColor(parcel.color || '#4a90d9');
-      setEditHeight(parcel.height || 4);
       setMessage('');
     }
   }, [parcel?.id]);
@@ -86,14 +83,17 @@ export const ParcelPanel: React.FC = () => {
 
   const handleUpdate = useCallback(() => {
     if (!parcel) return;
-    // Don't include type — it's locked after claim.
-    sendUpdateBusiness(parcel.id, {
-      name: editName,
-      color: editColor,
-      height: editHeight,
-    });
+    // Owner can rename their business; type/color/height are locked.
+    sendUpdateBusiness(parcel.id, { name: editName });
     setMessage('Updating...');
-  }, [parcel, editName, editColor, editHeight]);
+  }, [parcel, editName]);
+
+  const handleDemolish = useCallback(() => {
+    if (!parcel) return;
+    if (!confirm('Demolish this building? You will get back 50% of the build cost. The land stays yours.')) return;
+    sendDemolish(parcel.id);
+    setMessage('Demolishing...');
+  }, [parcel]);
 
   if (!parcel) return null;
 
@@ -271,36 +271,21 @@ export const ParcelPanel: React.FC = () => {
             onChange={(e) => setEditName(e.target.value)}
             placeholder="e.g. Joe's Cafe"
           />
-          <div style={{ ...labelStyle, opacity: 0.7 }}>
-            Building Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType}</span>
-            <span style={{ opacity: 0.5, marginLeft: 6, fontSize: 10 }}>(locked at claim time)</span>
+          <div style={{ ...labelStyle, opacity: 0.85, marginTop: 4 }}>
+            Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType ?? '—'}</span>
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={labelStyle}>Color</div>
-              <input
-                type="color"
-                value={editColor}
-                onChange={(e) => setEditColor(e.target.value)}
-                style={{ width: '100%', height: 28, border: 'none', background: 'none', cursor: 'pointer' }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={labelStyle}>Height: {editHeight}</div>
-              <input
-                type="range"
-                min={1}
-                max={20}
-                step={0.5}
-                value={editHeight}
-                onChange={(e) => setEditHeight(Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-          <div style={{ marginTop: 8, textAlign: 'right' }}>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            {editType && (
+              <button
+                style={{ ...buttonStyle, background: '#B5563A' }}
+                onClick={handleDemolish}
+                aria-label="Demolish this building (50% refund)"
+              >
+                Demolish
+              </button>
+            )}
             <button style={buttonStyle} onClick={handleUpdate}>
-              Update Business
+              Save Name
             </button>
           </div>
         </>
@@ -312,11 +297,18 @@ export const ParcelPanel: React.FC = () => {
             Owned by another player
           </div>
           {parcel.business_name && (
-            <div style={{ opacity: 0.8 }}>
+            <div style={{ opacity: 0.85 }}>
               <strong>{parcel.business_name}</strong>
-              {parcel.business_type && <span style={{ opacity: 0.6 }}> ({parcel.business_type})</span>}
             </div>
           )}
+          {parcel.business_type && (
+            <div style={{ ...labelStyle, opacity: 0.75 }}>
+              Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(parcel.business_type as BuildingType)]?.label ?? parcel.business_type}</span>
+            </div>
+          )}
+          <div style={{ fontSize: 11, opacity: 0.55, marginTop: 6 }}>
+            Read-only — you don&apos;t own this parcel.
+          </div>
         </>
       )}
 

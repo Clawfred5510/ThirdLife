@@ -95,6 +95,7 @@ export enum MessageType {
   TUTORIAL = 'tutorial',
   CLAIM_PARCEL = 'claim_parcel',
   UPDATE_BUSINESS = 'update_business',
+  DEMOLISH_BUILDING = 'demolish_building',
   PARCEL_STATE = 'parcel_state',
   PARCEL_UPDATE = 'parcel_update',
   PLAYER_JOIN = 'player_join',

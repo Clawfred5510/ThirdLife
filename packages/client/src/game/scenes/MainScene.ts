@@ -305,91 +305,6 @@ export class MainScene {
 
     this.setupKeyboardInput();
 
-    // ---- Babylon Inspector toggle (CDN UMD load) ────────────────────────
-    // The npm @babylonjs/inspector package internally dynamic-imports peer
-    // packages (`@babylonjs/materials`, etc.) with bare module specifiers.
-    // Browsers can't resolve bare specifiers without an import map, and
-    // Vite doesn't bundle them because the imports are encoded as runtime
-    // strings. The Babylon docs' recommended fix for this exact issue is
-    // to load the Inspector as a self-contained UMD bundle from their CDN
-    // — every dep is pre-resolved into one script. We attach the bundle
-    // once on first use, then call scene.debugLayer.show() like normal.
-    const INSPECTOR_CDN = 'https://cdn.babylonjs.com/v7.54.3/inspector/babylon.inspector.bundle.js';
-    let inspectorScriptPromise: Promise<void> | null = null;
-    const ensureInspectorLoaded = (): Promise<void> => {
-      if (inspectorScriptPromise) return inspectorScriptPromise;
-      inspectorScriptPromise = new Promise<void>((resolve, reject) => {
-        const w = window as unknown as { BABYLON?: { Inspector?: unknown } };
-        if (w.BABYLON?.Inspector) { resolve(); return; }
-        const s = document.createElement('script');
-        s.src = INSPECTOR_CDN;
-        s.async = true;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`Failed to load ${INSPECTOR_CDN}`));
-        document.head.appendChild(s);
-      });
-      return inspectorScriptPromise;
-    };
-
-    let inspectorOpen = false;
-    const toggleInspector = async () => {
-      try {
-        if (!inspectorOpen) {
-          // eslint-disable-next-line no-console
-          console.log('[inspector] loading from CDN…');
-          await ensureInspectorLoaded();
-          scene.debugLayer.show({ embedMode: true, overlay: true });
-          inspectorOpen = true;
-          // eslint-disable-next-line no-console
-          console.log('[inspector] open');
-        } else {
-          scene.debugLayer.hide();
-          inspectorOpen = false;
-          // eslint-disable-next-line no-console
-          console.log('[inspector] closed');
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('[inspector] failed to open:', err);
-        alert('Inspector failed to open. Open DevTools (F12) → Console tab for the full error.');
-      }
-    };
-    // Expose globally so any UI element can call it (and so the user can
-    // type `__tlOpenInspector()` in the JS console as a last-resort fallback).
-    (window as unknown as { __tlOpenInspector?: () => Promise<void> }).__tlOpenInspector = toggleInspector;
-    window.addEventListener('keydown', async (e) => {
-      if (e.code !== 'Backquote') return;
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      e.preventDefault();
-      await toggleInspector();
-    });
-
-    // Floating button — top-right under the minimap, labeled, hard to miss.
-    const btn = document.createElement('button');
-    btn.id = 'tl-inspector-btn';
-    btn.textContent = '🛠 Inspector';
-    btn.title = 'Open Babylon Inspector (or press backtick)';
-    Object.assign(btn.style, {
-      position: 'fixed',
-      top: '180px',     // sits below the 150px minimap (top:16 + 150)
-      right: '16px',
-      padding: '6px 10px',
-      border: '1px solid rgba(255,255,255,0.25)',
-      borderRadius: '6px',
-      background: 'rgba(124,58,237,0.85)',
-      color: '#fff',
-      fontSize: '13px',
-      fontFamily: 'monospace',
-      cursor: 'pointer',
-      zIndex: '9999',
-      pointerEvents: 'auto',
-    } as Partial<CSSStyleDeclaration>);
-    btn.addEventListener('click', () => { toggleInspector(); });
-    document.body.appendChild(btn);
-
     // ---- Per-frame update ----
 
     scene.onBeforeRenderObservable.add(() => {
@@ -1057,7 +972,8 @@ export class MainScene {
     // component calls window.__tlSetVirtualInput({ forward, backward,
     // left, right, sprint }) on every state change. Cleared on blur so
     // touch + page-switch can't strand the player walking forever.
-    (window as unknown as { __tlSetVirtualInput?: (s: typeof this.virtual) => void })
+    interface VirtualInput { forward: boolean; backward: boolean; left: boolean; right: boolean; sprint: boolean }
+    (window as unknown as { __tlSetVirtualInput?: (s: VirtualInput) => void })
       .__tlSetVirtualInput = (s) => { this.virtual = { ...s }; };
     const releaseVirtual = () => {
       this.virtual.forward = this.virtual.backward = this.virtual.left = this.virtual.right = this.virtual.sprint = false;
