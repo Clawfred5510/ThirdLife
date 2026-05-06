@@ -1,0 +1,15 @@
+# Files Railway should skip when uploading the build context.
+# The server image only needs packages/shared + packages/server (see
+# Dockerfile); the rest is dead weight on the upload.
+
+packages/client/public
+packages/client/dist
+**/node_modules
+**/.next
+.git
+.github
+docs
+studio
+data
+.vercel
+*.log
