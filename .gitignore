@@ -5,3 +5,6 @@ data/
 *.log
 .env
 .vercel
+
+# Regenerable build artefacts from scripts/carve-buildings.py
+packages/client/public/assets/models/buildings/*_carved.glb
