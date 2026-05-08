@@ -727,8 +727,16 @@ export class MainScene {
       cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
       cam.lowerRadiusLimit = CAMERA_FOLLOW_MIN_ZOOM;
       cam.upperRadiusLimit = CAMERA_FOLLOW_MAX_ZOOM;
-      cam.lowerBetaLimit = 0.2;         // don't flip over the top
-      cam.upperBetaLimit = Math.PI / 2.05; // don't go below horizontal
+      // Full 360° around the character: alpha is explicitly unbounded
+      // (Babylon's default, but state it so future tweaks don't flip
+      // a sneaky limit on by accident).
+      cam.lowerAlphaLimit = null;
+      cam.upperAlphaLimit = null;
+      // Vertical: open up close-to-overhead and almost-horizontal,
+      // but stop just shy of gimbal-flipping so the camera can't
+      // invert.
+      cam.lowerBetaLimit = 0.10;
+      cam.upperBetaLimit = Math.PI / 2.05;
       cam.wheelPrecision = 8;
       cam.panningSensibility = 0;
       cam.angularSensibilityX = 300;    // lower = more sensitive
@@ -1049,7 +1057,23 @@ export class MainScene {
     if (!this.arcCamera || !this.localPlayerRoot) return;
     const p = this.localPlayerRoot.position; // world-space (root has no parent)
     // Offset upward so the camera looks at shoulder height, not the feet.
-    this.arcCamera.target.set(p.x, p.y + 1.3, p.z);
+    const t = this.arcCamera.target;
+    const newX = p.x;
+    const newY = p.y + 1.3;
+    const newZ = p.z;
+    const dx = newX - t.x;
+    const dy = newY - t.y;
+    const dz = newZ - t.z;
+    // Move BOTH target and camera position by the same delta. The
+    // orbit angle (alpha/beta/radius) is preserved by construction —
+    // any drift between Babylon's internal state and the new target
+    // is impossible because we don't touch alpha/beta directly.
+    // Result: when the player walks, the camera follows at exactly
+    // the same orbit the user set; movement initiation can never
+    // perturb the view.
+    t.x = newX; t.y = newY; t.z = newZ;
+    const c = this.arcCamera.position;
+    c.x += dx; c.y += dy; c.z += dz;
   }
 
   private sendPlayerInput(): void {
