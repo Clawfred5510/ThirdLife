@@ -597,7 +597,7 @@ const AgentsBody: React.FC = () => {
 };
 
 const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent, onChange }) => {
-  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim' | 'reassign'>('idle');
+  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim' | 'reassign' | 'confirm_delete'>('idle');
   const [amt, setAmt] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -611,6 +611,19 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
       const endpoint = mode === 'fund' ? 'allocate' : 'reclaim';
       await apiPost(`/agents/${agent.id}/${endpoint}`, { amount: n }, { authed: true });
       setAmt(''); setMode('idle'); onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await apiDelete(`/agents/${agent.id}`, { authed: true });
+      onChange();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -658,6 +671,29 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
               Reassign
             </button>
           )}
+          <button onClick={() => setMode('confirm_delete')} style={S.dangerBtn} aria-label={`Remove ${agent.name}`}>
+            Remove
+          </button>
+        </div>
+      )}
+      {mode === 'confirm_delete' && (
+        <div style={S.confirmDeleteRow}>
+          <span style={S.confirmDeleteText}>
+            Remove <strong>{agent.name}</strong>? Their parcels, balance, and resources return to your wallet.
+          </span>
+          <div style={S.confirmDeleteActions}>
+            <button
+              onClick={() => { setMode('idle'); setErr(null); }}
+              style={S.cancelTextBtn}
+              disabled={busy}
+            >
+              cancel
+            </button>
+            <button onClick={remove} disabled={busy} style={S.dangerBtn}>
+              {busy ? '…' : 'Remove'}
+            </button>
+          </div>
+          {err && <div style={S.formMsg}>{err}</div>}
         </div>
       )}
       {(mode === 'fund' || mode === 'reclaim') && (
@@ -1599,6 +1635,20 @@ const S: Record<string, React.CSSProperties> = {
     borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.30)',
     borderRadius: 4, cursor: 'pointer',
   },
+  dangerBtn: {
+    flex: 1, padding: '5px 8px', fontSize: 11, fontWeight: 600,
+    background: 'rgba(239,68,68,0.10)', color: '#fca5a5',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(239,68,68,0.30)',
+    borderRadius: 4, cursor: 'pointer',
+  },
+  confirmDeleteRow: {
+    display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6,
+    padding: '8px 6px', borderRadius: 4,
+    background: 'rgba(239,68,68,0.06)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(239,68,68,0.20)',
+  },
+  confirmDeleteText: { fontSize: 11, color: '#F5E6D0', lineHeight: 1.4 },
+  confirmDeleteActions: { display: 'flex', gap: 6, justifyContent: 'flex-end' },
   allocateRow: {
     display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center',
   },

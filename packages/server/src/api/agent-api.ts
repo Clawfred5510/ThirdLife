@@ -557,6 +557,75 @@ router.post('/agents/:id/reclaim', authWallet, rateLimit, async (req: Request, r
   }
 });
 
+// Delete an agent. Owner-only. Everything the agent owns (parcels,
+// properties, balance, resources, reputation) is transferred back to
+// the owner wallet first — nothing is lost. Open market orders are
+// cancelled (their escrow refunds to the agent and then folds into the
+// wallet sweep). After the transfer the agent + player rows are
+// deleted; the 3D body disappears on the next autopilot tick when the
+// GameRoom's refreshAgents pass broadcasts PLAYER_LEAVE.
+router.delete('/agents/:id', authWallet, rateLimit, async (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+
+  // Cancel any open market orders first so escrow refunds back into the
+  // agent's account before the sweep. cancelOrder() is async; the loop
+  // is awaited so all refunds settle before the deletion transaction.
+  try {
+    const openOrders = getOwnerOrders(agentId).filter((o) => o.status === 'open');
+    for (const o of openOrders) {
+      await cancelOrder(agentId, o.id).catch(() => { /* best-effort */ });
+    }
+  } catch { /* best-effort */ }
+
+  const db = _rawDb();
+  let summary: { parcels: number; properties: number; credits: number; resources: number; reputation: number } = {
+    parcels: 0, properties: 0, credits: 0, resources: 0, reputation: 0,
+  };
+
+  try {
+    const tx = db.transaction(() => {
+      summary.parcels = db.prepare('UPDATE parcels SET owner_id = ? WHERE owner_id = ?').run(wallet, agentId).changes;
+      const hasProperties = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='properties'`).get();
+      if (hasProperties) {
+        summary.properties = db.prepare('UPDATE properties SET owner_id = ? WHERE owner_id = ?').run(wallet, agentId).changes;
+      }
+
+      const a = db.prepare('SELECT credits, reputation, food, materials, energy, luxury FROM players WHERE id = ?').get(agentId) as any;
+      if (a) {
+        summary.credits = a.credits ?? 0;
+        summary.reputation = a.reputation ?? 0;
+        summary.resources = (a.food ?? 0) + (a.materials ?? 0) + (a.energy ?? 0) + (a.luxury ?? 0);
+        db.prepare(`UPDATE players SET
+          credits = credits + ?, reputation = reputation + ?,
+          food = food + ?, materials = materials + ?,
+          energy = energy + ?, luxury = luxury + ?
+          WHERE id = ?`).run(
+          a.credits ?? 0, a.reputation ?? 0,
+          a.food ?? 0, a.materials ?? 0,
+          a.energy ?? 0, a.luxury ?? 0,
+          wallet,
+        );
+      }
+
+      db.prepare('DELETE FROM agents WHERE id = ?').run(agentId);
+      db.prepare('DELETE FROM players WHERE id = ?').run(agentId);
+    });
+    tx();
+  } catch (e) {
+    return res.status(500).json({ error: 'delete_failed', detail: (e as Error).message });
+  }
+
+  addEvent('agent_deleted', wallet, { agent: agentId, name: agent.name, returned: summary });
+  res.json({ ok: true, returned: summary });
+});
+
 router.get('/agents/:id/stats', (req: Request, res: Response) => {
   const id = req.params.id as string;
   const resources = getPlayerResources(id);
