@@ -66,7 +66,7 @@ import {
   DEFAULT_APPEARANCE,
   Appearance,
 } from '@gamestu/shared';
-import { setAgentWorkplace } from '../db';
+import { setAgentWorkplace, savePlayerPosition } from '../db';
 
 const router = Router();
 
@@ -335,16 +335,42 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     return res.status(500).json({ error: 'Registration failed' });
   }
 
+  // Position the agent immediately so the body appears in the right
+  // place. Without this, every new agent stands at the default spawn
+  // (0, 0, -80) — overlapping the local player — for up to 60s until
+  // the next autopilot tick teleports them to their workplace. The
+  // mapping mirrors autopilot.parcelCenter / GameRoom EXPLORE coords.
+  let spawnX = 0, spawnZ = -80;
+  if (workplaceParcelId !== null) {
+    const parcels = getAllParcels();
+    const p = parcels.find((x) => x.id === workplaceParcelId);
+    if (p) {
+      spawnX = p.grid_x * 48 - 1200 + 20;
+      spawnZ = p.grid_y * 48 - 1200 + 20;
+    }
+  } else {
+    // No workplace — spread around spawn deterministically by id so
+    // unemployed agents don't pile up at exactly (0, 0, -80).
+    let h = 5381;
+    for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+    const angle = (h % 360) * (Math.PI / 180);
+    const radius = 6 + ((h >>> 8) % 24);
+    spawnX = Math.cos(angle) * radius;
+    spawnZ = -80 + Math.sin(angle) * radius;
+  }
+  savePlayerPosition(id, spawnX, 0, spawnZ);
+
   addEvent('agent_registered', id, {
     name: body.name, job, personality, strategy,
     workplace_parcel_id: workplaceParcelId,
     workplace_foreign: workplaceParcelId !== null && !workplaceOwnedByCaller,
     owner_wallet: wallet,
+    spawn_x: spawnX, spawn_z: spawnZ,
   });
 
-  // Push the new agent into the GameRoom immediately — without this the
-  // body wouldn't appear in the 3D world until the next autopilot tick
-  // (up to 60 s).
+  // Push the new agent into the GameRoom immediately — refreshAgents
+  // will read the just-written position and broadcast PLAYER_JOIN with
+  // the correct coords.
   notifyAgentChanged(id);
 
   // Optional initial allocation — failures here don't roll back the agent.

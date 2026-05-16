@@ -90,6 +90,22 @@ function parcelCenter(parcel: ParcelRow): { x: number; y: number; z: number } {
   };
 }
 
+/**
+ * Deterministic per-agent offset around the spawn plaza so dozens of
+ * unemployed agents don't visually pile up at exactly (0, 0, -80).
+ * Same hash for the same agent across ticks → no jitter.
+ */
+function spawnSpreadFor(agentId: string): { x: number; y: number; z: number } {
+  const h = simpleHash(agentId);
+  const angle = (h % 360) * (Math.PI / 180);
+  const radius = 6 + ((h >>> 8) % 24); // 6–30 units from spawn
+  return {
+    x: SPAWN_X + Math.cos(angle) * radius,
+    y: SPAWN_Y,
+    z: SPAWN_Z + Math.sin(angle) * radius,
+  };
+}
+
 interface StrategyKnobs {
   /** Fraction of balance willing to risk on speculative orders per tick. */
   riskFraction: number;
@@ -194,7 +210,7 @@ function runWorker(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow |
   void knobs;
   // Position: stand at the workplace if assigned, else stay at spawn.
   if (workplace) return parcelCenter(workplace);
-  return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  return spawnSpreadFor(agent.id);
 }
 
 function runTrader(agent: AgentRow, knobs: StrategyKnobs): { x: number; y: number; z: number } | null {
@@ -254,7 +270,7 @@ function runBuilder(agent: AgentRow, knobs: StrategyKnobs, parcels: Map<number, 
   }
 
   const target = pickAvailableParcel();
-  if (!target) return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  if (!target) return spawnSpreadFor(agent.id);
 
   const result = claimAndBuild(agent.id, target.id, affordable.type, affordable.cost, affordable.label);
   if (result.ok) {
@@ -265,7 +281,7 @@ function runBuilder(agent: AgentRow, knobs: StrategyKnobs, parcels: Map<number, 
     const claimed = parcels.get(target.id);
     if (claimed) return parcelCenter(claimed);
   }
-  return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  return spawnSpreadFor(agent.id);
 }
 
 function runAccumulator(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
@@ -282,7 +298,7 @@ function runAccumulator(agent: AgentRow, workplace: ParcelRow | null): { x: numb
   const owned = getPlayerParcels(agent.id);
   const bank = owned.find((p) => (p as any).building_type === 'bank') ?? owned[0];
   if (bank) return parcelCenter(bank as ParcelRow);
-  return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  return spawnSpreadFor(agent.id);
 }
 
 function runSocial(agent: AgentRow, tick: number): { x: number; y: number; z: number } | null {
@@ -296,8 +312,9 @@ function runSocial(agent: AgentRow, tick: number): { x: number; y: number; z: nu
       personality: 'social', action: 'chat', message: line,
     }, 'minor');
   }
-  // Greeter always stands near spawn so newcomers see them.
-  return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  // Greeter stands near spawn so newcomers see them — but spread by id
+  // so multiple greeters don't overlap exactly.
+  return spawnSpreadFor(agent.id);
 }
 
 function runAmbitious(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow | null, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
@@ -312,7 +329,7 @@ function runAmbitious(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRo
     return runTrader(agent, knobs);
   }
   if (workplace) return parcelCenter(workplace);
-  return { x: SPAWN_X, y: SPAWN_Y, z: SPAWN_Z };
+  return spawnSpreadFor(agent.id);
 }
 
 // ──────────────────────────────────────────────────────────────────────
