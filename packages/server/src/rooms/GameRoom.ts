@@ -609,6 +609,7 @@ export class GameRoom extends Room<GameState> {
       rotation: p.rotation,
       color: p.color,
       appearance: p.appearance,
+      bot_kind: p.bot_kind,
     };
   }
 
@@ -625,7 +626,17 @@ export class GameRoom extends Room<GameState> {
     const seen = new Set<string>();
     for (const a of fresh) {
       seen.add(a.id);
-      if (this.agentPlayers.has(a.id)) continue;
+      const existing = this.agentPlayers.get(a.id);
+      if (existing) {
+        // Owner may have toggled autopilot on/off via the REST endpoint;
+        // propagate that to the broadcast so the AUTO/AGENT badge updates.
+        const wanted: 'auto' | 'agent' = a.autopilot_enabled === 1 ? 'auto' : 'agent';
+        if (existing.bot_kind !== wanted) {
+          existing.bot_kind = wanted;
+          if (!initial) this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(existing));
+        }
+        continue;
+      }
       const row = getOrCreatePlayer(a.id, a.name);
       let appearance: Appearance = { ...DEFAULT_APPEARANCE };
       const src = a.appearance ?? row.appearance;
@@ -640,6 +651,7 @@ export class GameRoom extends Room<GameState> {
         credits: row.credits,
         color: appearance.shirt_color,
         appearance,
+        bot_kind: a.autopilot_enabled === 1 ? 'auto' : 'agent',
       };
       this.agentPlayers.set(a.id, pd);
       if (!initial) {

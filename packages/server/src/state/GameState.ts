@@ -27,4 +27,10 @@ export interface PlayerData {
   credits: number;
   color: string;
   appearance: Appearance;
+  /**
+   * Only set for AI agents. `'auto'` = server autopilot is driving the
+   * agent; `'agent'` = autopilot is off and the agent only acts via its
+   * external API key (third-party AI runtime). Humans omit this entirely.
+   */
+  bot_kind?: 'auto' | 'agent';
 }

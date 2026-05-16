@@ -76,6 +76,9 @@ interface RemotePlayer {
   root: TransformNode;
   avatar: Avatar;
   label: Rectangle;
+  /** Optional bot-kind badge above the name (AUTO / AGENT). Humans null. */
+  badge: Rectangle | null;
+  badgeKind: 'auto' | 'agent' | null;
   targetX: number;
   targetY: number;
   targetZ: number;
@@ -647,6 +650,43 @@ export class MainScene {
 
   // ---------- Remote player management ----------
 
+  /** Build a small AUTO/AGENT badge above an avatar's name plate. */
+  private buildBotBadge(sessionId: string, kind: 'auto' | 'agent', mesh: AbstractMesh): Rectangle {
+    const rect = new Rectangle(`badge_${sessionId}`);
+    rect.width = '60px';
+    rect.height = '18px';
+    rect.cornerRadius = 4;
+    rect.thickness = 1;
+    if (kind === 'auto') {
+      rect.background = 'rgba(63,122,61,0.75)';     // forest green
+      rect.color = '#86efac';
+    } else {
+      rect.background = 'rgba(216,148,56,0.75)';    // amber
+      rect.color = '#fde68a';
+    }
+    const text = new TextBlock(`badgeText_${sessionId}`, kind === 'auto' ? 'AUTO' : 'AGENT');
+    text.color = '#0F0A07';
+    text.fontSize = 10;
+    text.fontWeight = 'bold';
+    rect.addControl(text);
+    this.labelUI.addControl(rect);
+    rect.linkWithMesh(mesh);
+    rect.linkOffsetY = -82; // sits above the name plate (which is at -60)
+    return rect;
+  }
+
+  /** Reconcile an existing avatar's badge with a new bot_kind. */
+  private syncBotBadge(sessionId: string, render: RemotePlayer, kind: 'auto' | 'agent' | undefined): void {
+    if (!kind) {
+      if (render.badge) { render.badge.dispose(); render.badge = null; render.badgeKind = null; }
+      return;
+    }
+    if (render.badgeKind === kind && render.badge) return;
+    if (render.badge) { render.badge.dispose(); render.badge = null; }
+    render.badge = this.buildBotBadge(sessionId, kind, render.mesh);
+    render.badgeKind = kind;
+  }
+
   private addRemotePlayer(sessionId: string, player: PlayerSnapshot, scene: Scene): void {
     const isLocal = sessionId === getSessionId() || sessionId === this.localPlayerId;
     const appearance = player.appearance ?? DEFAULT_APPEARANCE;
@@ -689,11 +729,21 @@ export class MainScene {
     labelRect.linkWithMesh(mesh);
     labelRect.linkOffsetY = -60;
 
+    // AUTO / AGENT badge above the name, only for AI agents. The
+    // discriminator comes from the server-side bot_kind field; humans
+    // omit it entirely and get no badge.
+    let badge: Rectangle | null = null;
+    if (player.bot_kind) {
+      badge = this.buildBotBadge(sessionId, player.bot_kind, mesh);
+    }
+
     this.remotePlayers.set(sessionId, {
       mesh,
       root: avatar.root,
       avatar,
       label: labelRect,
+      badge,
+      badgeKind: player.bot_kind ?? null,
       targetX: player.x,
       targetY: player.y,
       targetZ: player.z,
@@ -787,6 +837,7 @@ export class MainScene {
     const remote = this.remotePlayers.get(sessionId);
     if (remote) {
       remote.label.dispose();
+      if (remote.badge) remote.badge.dispose();
       disposeAvatar(remote.avatar);
       this.remotePlayers.delete(sessionId);
     }
@@ -799,6 +850,9 @@ export class MainScene {
       remote.targetY = player.y;
       remote.targetZ = player.z;
       remote.targetRotation = player.rotation ?? 0;
+
+      // Server may have toggled the agent's autopilot. Reconcile the badge.
+      this.syncBotBadge(sessionId, remote, player.bot_kind);
 
       // Appearance diff — apply only when the full object actually changed.
       if (player.appearance) {

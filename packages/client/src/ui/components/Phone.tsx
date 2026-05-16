@@ -525,7 +525,6 @@ const AgentsBody: React.FC = () => {
   const [data, setData] = useState<AgentsMine | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [revealedKey, setRevealedKey] = useState<{ id: string; api_key: string } | null>(null);
   const signedIn = hasAuthToken();
 
   const refresh = () => {
@@ -578,18 +577,14 @@ const AgentsBody: React.FC = () => {
       {showCreate && (
         <CreateAgentModal
           onClose={() => setShowCreate(false)}
-          onCreated={(payload) => {
+          onCreated={() => {
+            // Agent is fully autonomous from this point — the API key is
+            // stashed on the agent's record (retrievable later via the
+            // "API key" disclosure on the agent card). The owner has
+            // nothing to copy.
             setShowCreate(false);
-            setRevealedKey({ id: payload.id, api_key: payload.api_key });
             refresh();
           }}
-        />
-      )}
-      {revealedKey && (
-        <ApiKeyModal
-          agentId={revealedKey.id}
-          apiKey={revealedKey.api_key}
-          onClose={() => setRevealedKey(null)}
         />
       )}
     </>
@@ -601,6 +596,41 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
   const [amt, setAmt] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+
+  const exportApiKey = async () => {
+    setExportBusy(true);
+    setErr(null);
+    try {
+      const r = await apiGet<{ ok: boolean; api_key: string }>(
+        `/agents/${agent.id}/api-key`, { authed: true },
+      );
+      setApiKey(r.api_key);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const toggleAutopilot = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost(
+        `/agents/${agent.id}/autopilot`,
+        { enabled: !agent.autopilot_enabled },
+        { authed: true },
+      );
+      onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async () => {
     setErr(null);
@@ -725,6 +755,46 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           onDone={() => { setMode('idle'); onChange(); }}
         />
       )}
+      {mode === 'idle' && (
+        <div style={S.advancedRow}>
+          <button
+            onClick={() => setShowAdvanced((v) => !v)}
+            style={S.advancedToggle}
+          >
+            {showAdvanced ? '▾' : '▸'} Advanced
+          </button>
+          {showAdvanced && (
+            <div style={S.advancedBody}>
+              <div style={S.advancedRowItem}>
+                <span style={S.advancedLabel}>
+                  Driver: <strong>{agent.autopilot_enabled ? 'AUTO (server)' : 'AGENT (external)'}</strong>
+                </span>
+                <button onClick={toggleAutopilot} disabled={busy} style={S.advancedSmallBtn}>
+                  {busy ? '…' : agent.autopilot_enabled ? 'Hand to external' : 'Take back'}
+                </button>
+              </div>
+              <div style={S.advancedRowItem}>
+                <span style={S.advancedLabel}>External runtime key</span>
+                {apiKey ? (
+                  <button
+                    onClick={() => { navigator.clipboard?.writeText(apiKey).catch(() => {}); }}
+                    style={S.advancedSmallBtn}
+                  >
+                    Copy
+                  </button>
+                ) : (
+                  <button onClick={exportApiKey} disabled={exportBusy} style={S.advancedSmallBtn}>
+                    {exportBusy ? '…' : 'Reveal'}
+                  </button>
+                )}
+              </div>
+              {apiKey && (
+                <code style={S.apiKeyCode}>{apiKey}</code>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -805,7 +875,7 @@ type CreateStep = 'job' | 'workplace' | 'name' | 'confirm';
 
 const CreateAgentModal: React.FC<{
   onClose: () => void;
-  onCreated: (payload: { id: string; api_key: string }) => void;
+  onCreated: () => void;
 }> = ({ onClose, onCreated }) => {
   const [step, setStep] = useState<CreateStep>('job');
   const [job, setJob] = useState<JobId | null>(null);
@@ -835,13 +905,14 @@ const CreateAgentModal: React.FC<{
       if (workplaceId !== null) body.workplace_parcel_id = workplaceId;
       if (Number.isFinite(fund) && fund > 0) body.initial_fund = fund;
 
-      const created = await apiPost<{ ok: boolean; agent: { id: string }; api_key: string; initial_fund_error?: string }>(
+      const created = await apiPost<{ ok: boolean; agent: { id: string }; initial_fund_error?: string }>(
         '/agents/register', body, { authed: true },
       );
       if (created.initial_fund_error) {
         setErr(`Agent created, but initial fund failed: ${created.initial_fund_error}`);
       }
-      onCreated({ id: created.agent.id, api_key: created.api_key });
+      void created.agent.id;
+      onCreated();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -1013,31 +1084,9 @@ const WorkplaceStep: React.FC<{
   );
 };
 
-const ApiKeyModal: React.FC<{ agentId: string; apiKey: string; onClose: () => void }> = ({ agentId, apiKey, onClose }) => (
-  <div style={S.modalScrim} onClick={onClose}>
-    <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-      <div style={S.modalTitle}>API key — save it now</div>
-      <div style={S.modalNote}>
-        Give this key to a script to let it drive your agent via REST. It is shown only once.
-      </div>
-      <div style={S.apiKeyBox}>
-        <div style={S.apiKeyLabel}>agent id</div>
-        <code style={S.apiKeyCode}>{agentId}</code>
-        <div style={{ ...S.apiKeyLabel, marginTop: 10 }}>api key</div>
-        <code style={S.apiKeyCode}>{apiKey}</code>
-      </div>
-      <div style={S.modalActions}>
-        <button
-          onClick={() => { navigator.clipboard?.writeText(apiKey).catch(() => {}); }}
-          style={S.submit}
-        >
-          Copy key
-        </button>
-        <button onClick={onClose} style={S.cancelTextBtn}>done</button>
-      </div>
-    </div>
-  </div>
-);
+// (ApiKeyModal removed 2026-05-16 — the create flow no longer surfaces
+//  the API key. Owners can reveal it later via the Advanced disclosure
+//  on the agent card, which calls GET /api/v1/agents/:id/api-key.)
 
 // ── Wallet tab — connect / disconnect ─────────────────────────────────
 //
@@ -1649,6 +1698,28 @@ const S: Record<string, React.CSSProperties> = {
   },
   confirmDeleteText: { fontSize: 11, color: '#F5E6D0', lineHeight: 1.4 },
   confirmDeleteActions: { display: 'flex', gap: 6, justifyContent: 'flex-end' },
+
+  // ── Advanced disclosure (autopilot toggle + API key export) ─────────
+  advancedRow: { marginTop: 4 },
+  advancedToggle: {
+    background: 'transparent', color: '#7A6850',
+    border: 'none', cursor: 'pointer', fontSize: 10, padding: '2px 0',
+  },
+  advancedBody: {
+    display: 'flex', flexDirection: 'column', gap: 4,
+    marginTop: 4, padding: '6px 6px',
+    borderRadius: 4,
+    background: 'rgba(245,230,208,0.03)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.10)',
+  },
+  advancedRowItem: { display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' },
+  advancedLabel: { fontSize: 10, color: '#A89378' },
+  advancedSmallBtn: {
+    padding: '3px 8px', fontSize: 10, fontWeight: 600,
+    background: 'rgba(216,148,56,0.18)', color: '#D89438',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.30)',
+    borderRadius: 3, cursor: 'pointer',
+  },
   allocateRow: {
     display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center',
   },

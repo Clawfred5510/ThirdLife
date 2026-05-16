@@ -354,6 +354,13 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     }
   }
 
+  // The api_key is intentionally NOT returned here. Agents are server-side
+  // NPCs running on autopilot — owners don't need the key. It stays on the
+  // agent's record and can be exported on demand via
+  // GET /agents/:id/api-key when an owner wants to hand the agent to an
+  // external AI runtime (OpenClaw, Hermes, etc.).
+  void apiKey;
+
   res.json({
     ok: true,
     agent: {
@@ -364,12 +371,47 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
       workplace_foreign: workplaceParcelId !== null && !workplaceOwnedByCaller,
       balance: initialFunded,
       appearance: agentAppearance,
+      autopilot_enabled: true,
     },
-    api_key: apiKey,
     initial_fund: initialFunded,
     initial_fund_error: initialFundError,
-    note: 'Save this API key — it is only shown once. Fund the agent via POST /agents/' + id + '/allocate.',
   });
+});
+
+// Reveal an agent's API key on demand. Owner-only. Used when the owner
+// wants to hand the agent off to an external AI runtime; for the default
+// server-autopilot flow nobody ever has to read this.
+router.get('/agents/:id/api-key', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+  const row = _rawDb().prepare('SELECT api_key FROM agents WHERE id = ?').get(agentId) as { api_key: string } | undefined;
+  if (!row) return res.status(404).json({ error: 'agent_not_found' });
+  res.json({ ok: true, agent_id: agentId, api_key: row.api_key });
+});
+
+// Toggle whether the server's autopilot drives an agent. When off, the
+// agent only acts in response to external API calls (using its api_key).
+// The 3D badge above the agent reflects this state — AUTO when on,
+// AGENT when off (external/idle).
+router.post('/agents/:id/autopilot', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const { enabled } = (req.body ?? {}) as { enabled?: boolean };
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be a boolean' });
+  }
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+  _rawDb().prepare('UPDATE agents SET autopilot_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, agentId);
+  res.json({ ok: true, autopilot_enabled: enabled });
 });
 
 // Reassign an agent's workplace. Owner-only. The new parcel must have the

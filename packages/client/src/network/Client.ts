@@ -59,6 +59,12 @@ export interface PlayerSnapshot {
   rotation: number;
   color: string;
   appearance?: Appearance;
+  /**
+   * Only set for AI agents. `'auto'` = server autopilot is driving the
+   * agent (server-side NPC); `'agent'` = autopilot is off and the agent
+   * is only acting via its external API key. Humans omit this entirely.
+   */
+  bot_kind?: 'auto' | 'agent';
 }
 
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;
