@@ -1,6 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost, apiDelete, hasAuthToken } from '../../network/api';
 import {
+  hasInjectedWallet,
+  getStoredPlayerId,
+  getStoredAuthToken,
+  connectWallet,
+  logoutWallet,
+} from '../../network/wallet';
+import {
   RESOURCE_TYPES, ResourceType,
   GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
   zoneForGrid, isPremiumParcel,
@@ -8,7 +15,9 @@ import {
   AgentPersonality, AgentStrategy,
 } from '@gamestu/shared';
 
-type AppId = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance' | 'agents';
+type AppId =
+  | 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance'
+  | 'agents' | 'closet' | 'wallet';
 type ActiveApp = AppId | null;
 
 interface AppDef {
@@ -21,7 +30,9 @@ interface AppDef {
 // Palette pulled from gamedesigns/ — terra cotta, ochre, forest green,
 // teal, sandstone, slate. Warm, painterly, no neon.
 const APPS: AppDef[] = [
+  { id: 'wallet',      label: 'Wallet',      icon: '👛', color: '#3F2A6E' }, // deep violet
   { id: 'agents',      label: 'My Agents',   icon: '🤖', color: '#5C6F8A' }, // slate-blue
+  { id: 'closet',      label: 'Closet',      icon: '👕', color: '#A8556B' }, // dusty rose
   { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
   { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#D89438' }, // ochre
   { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#B5563A' }, // brick
@@ -119,6 +130,18 @@ export const Phone: React.FC = () => {
   const close = () => { setOpen(false); setActiveApp(null); };
   const goHome = () => setActiveApp(null);
 
+  // The Closet app is special: it doesn't have an in-phone view. Tapping the
+  // icon dispatches the open-character-creator event and closes the phone so
+  // the user gets the full-screen editor without overlapping UI.
+  const launchApp = (id: AppId) => {
+    if (id === 'closet') {
+      window.dispatchEvent(new CustomEvent('open-character-creator'));
+      close();
+      return;
+    }
+    setActiveApp(id);
+  };
+
   const activeAppDef = activeApp ? APPS.find((a) => a.id === activeApp) ?? null : null;
 
   return (
@@ -148,7 +171,7 @@ export const Phone: React.FC = () => {
             {/* Screen content */}
             <div style={S.screenContent}>
               {!activeApp ? (
-                <HomeScreen onLaunch={(id) => setActiveApp(id)} />
+                <HomeScreen onLaunch={launchApp} />
               ) : (
                 <AppView app={activeAppDef!} onBack={goHome} />
               )}
@@ -216,6 +239,7 @@ const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack })
         {app.id === 'governance' && <GovernanceBody />}
         {app.id === 'events' && <EventBody />}
         {app.id === 'agents' && <AgentsBody />}
+        {app.id === 'wallet' && <WalletBody />}
       </div>
     </div>
   );
@@ -721,6 +745,93 @@ const ApiKeyModal: React.FC<{ agentId: string; apiKey: string; onClose: () => vo
     </div>
   </div>
 );
+
+// ── Wallet tab — connect / disconnect ─────────────────────────────────
+//
+// For testing this is an explicit Phone app. The longer-term plan is that
+// the game won't open until you've signed in with a wallet (i.e. wallet
+// auth becomes a gate, not an opt-in). Until then this lives here so a
+// human player can try the wallet → agents flow without leaving the game.
+
+const WalletBody: React.FC = () => {
+  const [addr, setAddr] = useState<string | null>(() => {
+    const pid = getStoredPlayerId();
+    return pid && /^0x[a-fA-F0-9]{40}$/.test(pid) && getStoredAuthToken() ? pid : null;
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const hasWallet = hasInjectedWallet();
+
+  const connect = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await connectWallet();
+      setAddr(r.address);
+      // Reload so Colyseus reconnects with the wallet identity. Without
+      // this, the active room is still bound to the prior guest UUID.
+      window.location.reload();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      await logoutWallet();
+      setAddr(null);
+      window.location.reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.walletWrap}>
+      {addr ? (
+        <>
+          <div style={S.walletStatus}>Connected</div>
+          <div style={S.walletAddr} title={addr}>
+            {addr.slice(0, 6)}…{addr.slice(-4)}
+          </div>
+          <div style={S.walletHint}>
+            Your in-game progress, agents, and market orders are now bound to this wallet.
+          </div>
+          <button
+            onClick={disconnect}
+            disabled={busy}
+            style={S.walletDangerBtn}
+          >
+            {busy ? '…' : 'Disconnect wallet'}
+          </button>
+        </>
+      ) : (
+        <>
+          <div style={S.walletStatus}>Guest mode</div>
+          <div style={S.walletHint}>
+            You're playing as a browser-local guest. Connect a wallet to claim a persistent identity, spawn agents, and trade on the market.
+          </div>
+          {hasWallet ? (
+            <button
+              onClick={connect}
+              disabled={busy}
+              style={S.walletPrimaryBtn}
+            >
+              {busy ? 'Connecting…' : 'Connect wallet'}
+            </button>
+          ) : (
+            <div style={S.walletHint}>
+              No browser wallet detected. Install MetaMask, Rabby, or another EIP-1193 wallet to continue.
+            </div>
+          )}
+          {err && <div style={S.errMsg}>{err}</div>}
+        </>
+      )}
+    </div>
+  );
+};
 
 const EventBody: React.FC = () => {
   const [severity, setSeverity] = useState<Severity>('all');
@@ -1264,5 +1375,34 @@ const S: Record<string, React.CSSProperties> = {
   apiKeyCode: {
     fontFamily: 'monospace', fontSize: 10, color: '#D89438',
     wordBreak: 'break-all', marginTop: 2,
+  },
+
+  // ── Wallet tab ────────────────────────────────────────────────────
+  walletWrap: {
+    display: 'flex', flexDirection: 'column', gap: 12, padding: '8px 4px',
+  },
+  walletStatus: {
+    fontSize: 11, color: '#A89378', textTransform: 'uppercase', letterSpacing: 0.8,
+    fontFamily: 'Georgia, serif',
+  },
+  walletAddr: {
+    fontFamily: 'monospace', fontSize: 14, color: '#D89438',
+    background: 'rgba(216,148,56,0.08)',
+    padding: '8px 10px', borderRadius: 6, textAlign: 'center',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.20)',
+  },
+  walletHint: { fontSize: 11, color: '#A89378', lineHeight: 1.5 },
+  walletPrimaryBtn: {
+    padding: '10px 14px', fontSize: 13, fontWeight: 600,
+    background: '#3F2A6E', color: '#F5E6D0',
+    border: 'none', borderRadius: 6, cursor: 'pointer',
+    marginTop: 4,
+  },
+  walletDangerBtn: {
+    padding: '10px 14px', fontSize: 13, fontWeight: 600,
+    background: 'rgba(239,68,68,0.10)', color: '#fca5a5',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(239,68,68,0.30)',
+    borderRadius: 6, cursor: 'pointer',
+    marginTop: 4,
   },
 };

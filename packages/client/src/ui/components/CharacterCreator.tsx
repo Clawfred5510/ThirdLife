@@ -136,18 +136,9 @@ export const CharacterCreator: React.FC = () => {
     });
   }, []);
 
-  if (!open) {
-    return (
-      <button
-        style={S.openBtn}
-        onClick={() => setOpen(true)}
-        title="Customize character"
-        aria-label="Open character customizer"
-      >
-        <span aria-hidden="true">👕</span> Character
-      </button>
-    );
-  }
+  // Opened from the Phone's "Closet" app via window.dispatchEvent('open-character-creator').
+  // No floating button — the creator is invisible unless explicitly opened.
+  if (!open) return null;
 
   return (
     <div
@@ -264,13 +255,6 @@ const StyleRow: React.FC<{ options: readonly string[]; value: string; onChange: 
 // ---- Styles ----
 
 const S: Record<string, React.CSSProperties> = {
-  openBtn: {
-    position: 'absolute', top: 16, right: 260,
-    background: 'rgba(12,14,24,0.85)', border: '1px solid rgba(255,255,255,0.15)',
-    color: '#fff', borderRadius: 8, padding: '8px 14px',
-    cursor: 'pointer', fontSize: 13, fontFamily: 'sans-serif',
-    pointerEvents: 'auto', zIndex: 10,
-  },
   overlay: {
     position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
