@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { getAllParcels, getAllPlayers, wipeParcels, deletePlayer, seedParcels, wipePlayerParcels } from '../db';
+import { getAllParcels, getAllPlayers, wipeParcels, deletePlayer, seedParcels, wipePlayerParcels, getRawDb, playerExists } from '../db';
 
 const router = Router();
 
@@ -207,6 +207,95 @@ router.post('/api/ban/:id', (req, res) => {
   const id = req.params.id;
   const removed = deletePlayer(id);
   res.json({ ok: removed });
+});
+
+// Move everything owned by `from` onto `to` in a single SQLite transaction.
+// Used when a player who has been playing as a guest UUID connects a wallet
+// for the first time and wants to keep their progress. Both player records
+// must already exist.
+//
+// What moves: parcels, properties, market_orders, agents.owner_wallet (if
+// `to` is a wallet), events.player_id, credits, food/materials/energy/luxury,
+// reputation. Source ends with zero balance and no owned anything.
+//
+// Body: { from: string, to: string }
+router.post('/api/transfer-player', (req: Request, res: Response) => {
+  const { from, to } = (req.body ?? {}) as { from?: string; to?: string };
+  if (typeof from !== 'string' || from.length < 4) {
+    res.status(400).json({ ok: false, error: 'invalid_from' }); return;
+  }
+  if (typeof to !== 'string' || to.length < 4) {
+    res.status(400).json({ ok: false, error: 'invalid_to' }); return;
+  }
+  if (from === to) {
+    res.status(400).json({ ok: false, error: 'from_equals_to' }); return;
+  }
+  if (!playerExists(from)) {
+    res.status(404).json({ ok: false, error: 'from_not_found' }); return;
+  }
+  if (!playerExists(to)) {
+    res.status(404).json({ ok: false, error: 'to_not_found' }); return;
+  }
+
+  const db = getRawDb();
+  const summary: Record<string, number> = {};
+  const isToWallet = /^0x[a-fA-F0-9]{40}$/.test(to);
+
+  const tx = db.transaction(() => {
+    summary.parcels = (db.prepare('UPDATE parcels SET owner_id = ? WHERE owner_id = ?').run(to, from)).changes;
+
+    // properties / market_orders / events / agents.owner_wallet — only run
+    // if the table exists (additive migrations may not have applied yet on
+    // an old DB shape).
+    const hasTable = (name: string) => !!db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+    ).get(name);
+
+    if (hasTable('properties')) {
+      summary.properties = db.prepare('UPDATE properties SET owner_id = ? WHERE owner_id = ?').run(to, from).changes;
+    }
+    if (hasTable('market_orders')) {
+      summary.market_orders = db.prepare(`UPDATE market_orders SET owner_id = ? WHERE owner_id = ? AND status = 'open'`).run(to, from).changes;
+    }
+    summary.events = db.prepare('UPDATE events SET player_id = ? WHERE player_id = ?').run(to, from).changes;
+
+    if (hasTable('agents')) {
+      // If from was a wallet, agents may have owner_wallet = from; repoint
+      // to the new wallet so the new wallet sees them in its My Agents tab.
+      if (isToWallet) {
+        summary.agent_ownership = db.prepare('UPDATE agents SET owner_wallet = ? WHERE owner_wallet = ?').run(to, from.toLowerCase()).changes;
+      }
+    }
+
+    // Sum balances + resources from source onto target, then zero source.
+    const fromRow = db.prepare('SELECT credits, reputation, food, materials, energy, luxury FROM players WHERE id = ?').get(from) as any;
+    const toRow   = db.prepare('SELECT credits, reputation, food, materials, energy, luxury FROM players WHERE id = ?').get(to)   as any;
+
+    const newTo = {
+      credits:    (toRow.credits    ?? 0) + (fromRow.credits    ?? 0),
+      reputation: (toRow.reputation ?? 0) + (fromRow.reputation ?? 0),
+      food:       (toRow.food       ?? 0) + (fromRow.food       ?? 0),
+      materials:  (toRow.materials  ?? 0) + (fromRow.materials  ?? 0),
+      energy:     (toRow.energy     ?? 0) + (fromRow.energy     ?? 0),
+      luxury:     (toRow.luxury     ?? 0) + (fromRow.luxury     ?? 0),
+    };
+    db.prepare(`UPDATE players SET credits=?, reputation=?, food=?, materials=?, energy=?, luxury=? WHERE id=?`)
+      .run(newTo.credits, newTo.reputation, newTo.food, newTo.materials, newTo.energy, newTo.luxury, to);
+    db.prepare(`UPDATE players SET credits=0, reputation=0, food=0, materials=0, energy=0, luxury=0 WHERE id=?`).run(from);
+
+    summary.credits_moved    = fromRow.credits    ?? 0;
+    summary.reputation_moved = fromRow.reputation ?? 0;
+    summary.resources_moved  = (fromRow.food ?? 0) + (fromRow.materials ?? 0) + (fromRow.energy ?? 0) + (fromRow.luxury ?? 0);
+  });
+
+  try {
+    tx();
+    // eslint-disable-next-line no-console
+    console.log(`[admin] transfer-player ${from} → ${to}:`, summary);
+    res.json({ ok: true, from, to, summary });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'transfer_failed', detail: (e as Error).message });
+  }
 });
 
 export default router;
