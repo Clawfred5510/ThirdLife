@@ -37,6 +37,22 @@ export interface IEconomy {
     amount: number,
     reason: string,
   ): Promise<{ ok: boolean; reason?: string; fee?: number }>;
+
+  /**
+   * Intra-wallet allocation: move `amount` between a wallet and an agent it
+   * owns. Fee-free — this is not a transaction, it's the owner moving their
+   * own money between their own actor records.
+   *
+   * `direction = 'fund'` moves wallet → agent; 'reclaim' moves agent → wallet.
+   * The caller must have already validated ownership (agents.owner_wallet ===
+   * walletId); implementations may double-check.
+   */
+  allocate(
+    walletId: string,
+    agentId: string,
+    amount: number,
+    direction: 'fund' | 'reclaim',
+  ): Promise<{ ok: boolean; reason?: string }>;
 }
 
 /** Reserved player ID used as the fee/tax sink. Created lazily on first use. */

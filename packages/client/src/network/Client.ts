@@ -266,10 +266,6 @@ export async function connect(playerName: string): Promise<Room> {
     window.dispatchEvent(new CustomEvent('work-result', { detail: msg }));
   });
 
-  room.onMessage(MessageType.TRADE_RESULT, (msg: unknown) => {
-    window.dispatchEvent(new CustomEvent('trade-result', { detail: msg }));
-  });
-
   console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);
   return room;
 }
@@ -343,16 +339,8 @@ export function sendWork(): void {
   room?.send(MessageType.WORK, {});
 }
 
-export function sendTrade(resource: string, quantity: number): void {
-  room?.send(MessageType.TRADE, { resource, quantity });
-}
-
 export function sendExplore(): void {
   room?.send(MessageType.EXPLORE, {});
-}
-
-export function requestMarketPrices(): void {
-  room?.send(MessageType.MARKET_PRICES, {});
 }
 
 export function requestEvents(): void {

@@ -25,7 +25,6 @@ const {
   getAllParcels,
   buyLand,
   transferCredits,
-  tradeSellResources,
   workProduce,
   playerExists,
   registerAgent,
@@ -121,18 +120,9 @@ check('first 800-transfer ok', r1.ok === true);
 check('second 800-transfer rejected (would overspend)', r2.ok === false && r2.reason === 'insufficient_balance');
 check('carl balance = 200 after single transfer', getPlayerCredits('carl') === 200);
 
-// tradeSellResources atomicity
-updatePlayerResources('alice', { food: 10, materials: 0, energy: 0, luxury: 0 });
-const aliceBefore2 = getPlayerCredits('alice');
-const t1 = tradeSellResources('alice', 'food', 5, 2500);
-check('trade ok with enough resource', t1.ok === true);
-check('trade credits balance', getPlayerCredits('alice') === aliceBefore2 + 2500);
-const res = getPlayerResources('alice');
-check('trade debited resource', res.food === 5);
-
-const t2 = tradeSellResources('alice', 'food', 100, 50_000);
-check('trade rejects insufficient resource', t2.ok === false && t2.reason === 'insufficient_resource');
-check('trade does NOT credit on rejection', getPlayerCredits('alice') === aliceBefore2 + 2500);
+// (Legacy tradeSellResources atomicity test removed 2026-05-16 — the
+//  flat-price sell path no longer exists. Order-book trades are covered
+//  by the matchOrder transactional test in the market suite.)
 
 // workProduce atomicity
 const wp = workProduce('alice', 0, { food: 5, materials: 100, energy: 50, luxury: 0 });
@@ -146,7 +136,7 @@ check('playerExists true for real', playerExists('alice') === true);
 check('playerExists false for ghost', playerExists('does-not-exist') === false);
 
 // Agent registration path adds a player row
-registerAgent('agent-x', 'AgentX', 'trader', 'balanced', 'tl_sk_fake_for_test');
+registerAgent('agent-x', 'AgentX', 'trader', 'balanced', 'tl_sk_fake_for_test', null);
 check('registered agent has a player row', playerExists('agent-x') === true);
 
 // ── Cleanup ──────────────────────────────────────────────────────────────

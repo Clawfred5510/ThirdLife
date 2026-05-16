@@ -36,4 +36,7 @@ export class OnChainEconomy implements IEconomy {
   async transfer(): Promise<{ ok: boolean; reason?: string; fee?: number }> {
     throw new Error('not implemented');
   }
+  async allocate(): Promise<{ ok: boolean; reason?: string }> {
+    throw new Error('not implemented');
+  }
 }

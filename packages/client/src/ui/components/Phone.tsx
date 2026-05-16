@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { apiGet } from '../../network/api';
+import { apiGet, apiPost, apiDelete, hasAuthToken } from '../../network/api';
 import {
   RESOURCE_TYPES, ResourceType,
   GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
   zoneForGrid, isPremiumParcel,
+  AGENT_PERSONALITIES, AGENT_STRATEGIES,
+  AgentPersonality, AgentStrategy,
 } from '@gamestu/shared';
 
-type AppId = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance';
+type AppId = 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance' | 'agents';
 type ActiveApp = AppId | null;
 
 interface AppDef {
@@ -19,8 +21,9 @@ interface AppDef {
 // Palette pulled from gamedesigns/ — terra cotta, ochre, forest green,
 // teal, sandstone, slate. Warm, painterly, no neon.
 const APPS: AppDef[] = [
-  { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#D89438' }, // ochre
+  { id: 'agents',      label: 'My Agents',   icon: '🤖', color: '#5C6F8A' }, // slate-blue
   { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
+  { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#D89438' }, // ochre
   { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#B5563A' }, // brick
   { id: 'world2d',     label: 'Map',         icon: '🗺️', color: '#2A5560' }, // teal
   { id: 'governance',  label: 'Decrees',     icon: '🗳️', color: '#7A4F2E' }, // wood
@@ -212,6 +215,7 @@ const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack })
         {app.id === 'world2d' && <World2DBody />}
         {app.id === 'governance' && <GovernanceBody />}
         {app.id === 'events' && <EventBody />}
+        {app.id === 'agents' && <AgentsBody />}
       </div>
     </div>
   );
@@ -269,20 +273,84 @@ const LeaderboardBody: React.FC = () => {
   );
 };
 
+interface OpenOrder {
+  id: number;
+  resource: ResourceType;
+  side: 'buy' | 'sell';
+  price: number;
+  quantity: number;
+  filled: number;
+}
+
 const MarketBody: React.FC = () => {
   const [resource, setResource] = useState<ResourceType>('food');
   const [book, setBook] = useState<BookSnapshot | null>(null);
+  const [side, setSide] = useState<'buy' | 'sell'>('buy');
+  const [price, setPrice] = useState<string>('');
+  const [qty, setQty] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [orders, setOrders] = useState<OpenOrder[]>([]);
+  const signedIn = hasAuthToken();
+
+  const loadBook = () =>
+    apiGet<BookSnapshot>(`/market/book/${resource}`).then(setBook).catch(() => {});
+  const loadOrders = () => {
+    if (!signedIn) return;
+    apiGet<{ orders: OpenOrder[] }>('/market/orders', { authed: true })
+      .then((r) => setOrders(r.orders))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
+    const tick = () => {
       apiGet<BookSnapshot>(`/market/book/${resource}`)
         .then((r) => { if (!cancelled) setBook(r); })
         .catch(() => {});
-    load();
-    const i = setInterval(load, 4000);
+      if (signedIn && !cancelled) loadOrders();
+    };
+    tick();
+    const i = setInterval(tick, 4000);
     return () => { cancelled = true; clearInterval(i); };
-  }, [resource]);
+  }, [resource, signedIn]);
+
+  const submit = async () => {
+    setMsg(null);
+    const p = parseInt(price, 10);
+    const q = parseInt(qty, 10);
+    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(q) || q <= 0) {
+      setMsg('Enter a positive integer price and quantity.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await apiPost<{ ok: boolean; trades: unknown[] }>(
+        '/market/order',
+        { resource, side, price: p, quantity: q },
+        { authed: true },
+      );
+      const filled = (r.trades ?? []).length;
+      setMsg(filled > 0 ? `Order placed — ${filled} fill(s).` : 'Order placed — resting in book.');
+      setPrice(''); setQty('');
+      loadBook();
+      loadOrders();
+    } catch (e) {
+      setMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async (id: number) => {
+    try {
+      await apiDelete(`/market/order/${id}`, { authed: true });
+      loadOrders();
+      loadBook();
+    } catch (e) {
+      setMsg(`Cancel failed: ${(e as Error).message}`);
+    }
+  };
 
   return (
     <>
@@ -311,6 +379,69 @@ const MarketBody: React.FC = () => {
           )) : <div style={S.empty}>No asks</div>}
         </div>
       </div>
+
+      <div style={S.colHeader}>Place order</div>
+      {!signedIn ? (
+        <div style={S.empty}>Connect a wallet to place orders.</div>
+      ) : (
+        <div style={S.formGrid}>
+          <div style={S.sideToggle}>
+            <button
+              onClick={() => setSide('buy')}
+              style={{ ...S.sideBtn, ...(side === 'buy' ? S.sideBtnBuy : {}) }}
+            >
+              Buy
+            </button>
+            <button
+              onClick={() => setSide('sell')}
+              style={{ ...S.sideBtn, ...(side === 'sell' ? S.sideBtnSell : {}) }}
+            >
+              Sell
+            </button>
+          </div>
+          <input
+            type="number" min={1} step={1} value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="Price ($AMETA)"
+            style={S.input}
+            aria-label="Limit price"
+          />
+          <input
+            type="number" min={1} step={1} value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            placeholder="Quantity"
+            style={S.input}
+            aria-label="Order quantity"
+          />
+          <button onClick={submit} disabled={busy} style={S.submit}>
+            {busy ? '...' : `${side === 'buy' ? 'Buy' : 'Sell'} ${resource}`}
+          </button>
+          {msg && <div style={S.formMsg}>{msg}</div>}
+        </div>
+      )}
+
+      {signedIn && orders.length > 0 && (
+        <>
+          <div style={S.colHeader}>My open orders</div>
+          <div style={S.trades}>
+            {orders.map((o) => (
+              <div key={o.id} style={S.openOrderRow}>
+                <span style={{ color: o.side === 'buy' ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                  {o.side === 'buy' ? 'BUY' : 'SELL'}
+                </span>
+                <span style={{ color: '#e4e4ef' }}>{o.resource}</span>
+                <span style={{ color: '#8b8b9a' }}>
+                  {o.quantity - o.filled}/{o.quantity} @ {o.price}
+                </span>
+                <button onClick={() => cancel(o.id)} style={S.cancelBtn} aria-label={`Cancel order ${o.id}`}>
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       <div style={S.colHeader}>Recent trades</div>
       <div style={S.trades}>
         {book?.recentTrades.length ? book.recentTrades.slice(0, 8).map((t) => (
@@ -322,10 +453,274 @@ const MarketBody: React.FC = () => {
           </div>
         )) : <div style={S.empty}>No trades yet</div>}
       </div>
-      <div style={S.foot}>Place orders via <code>POST /api/v1/market/order</code>.</div>
     </>
   );
 };
+
+// ── My Agents tab — wallet's owned agents, allocate/reclaim, create new ─
+
+interface AgentRow {
+  id: string;
+  name: string;
+  personality: string;
+  strategy: string;
+  balance: number;
+  resources: { food: number; materials: number; energy: number; luxury: number };
+  land_count: number;
+  building_count: number;
+  autopilot_enabled: boolean;
+  created_at: string;
+}
+
+interface AgentsMine { wallet: string; agents: AgentRow[]; limit: number; }
+
+const AgentsBody: React.FC = () => {
+  const [data, setData] = useState<AgentsMine | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [revealedKey, setRevealedKey] = useState<{ id: string; api_key: string } | null>(null);
+  const signedIn = hasAuthToken();
+
+  const refresh = () => {
+    if (!signedIn) return;
+    apiGet<AgentsMine>('/agents/mine', { authed: true })
+      .then((r) => { setData(r); setErr(null); })
+      .catch((e) => setErr((e as Error).message));
+  };
+
+  useEffect(() => {
+    if (!signedIn) return;
+    refresh();
+    const i = setInterval(refresh, 8000);
+    return () => clearInterval(i);
+  }, [signedIn]);
+
+  if (!signedIn) {
+    return (
+      <div style={S.emptyPad}>
+        Connect a wallet to spawn and manage AI agents.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div style={S.agentHeader}>
+        <span style={S.agentCount}>
+          {data ? `${data.agents.length}/${data.limit}` : '…'} agents
+        </span>
+        <button
+          onClick={() => setShowCreate(true)}
+          disabled={!!data && data.agents.length >= data.limit}
+          style={S.createBtn}
+        >
+          + New agent
+        </button>
+      </div>
+      {err && <div style={S.errMsg}>{err}</div>}
+      {data && data.agents.length === 0 && (
+        <div style={S.emptyPad}>
+          You have no agents yet. Create one — each agent is an autonomous economic actor you fund and direct.
+        </div>
+      )}
+      <div style={S.agentList}>
+        {data?.agents.map((a) => (
+          <AgentCard key={a.id} agent={a} onChange={refresh} />
+        ))}
+      </div>
+      {showCreate && (
+        <CreateAgentModal
+          onClose={() => setShowCreate(false)}
+          onCreated={(payload) => {
+            setShowCreate(false);
+            setRevealedKey({ id: payload.id, api_key: payload.api_key });
+            refresh();
+          }}
+        />
+      )}
+      {revealedKey && (
+        <ApiKeyModal
+          agentId={revealedKey.id}
+          apiKey={revealedKey.api_key}
+          onClose={() => setRevealedKey(null)}
+        />
+      )}
+    </>
+  );
+};
+
+const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent, onChange }) => {
+  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim'>('idle');
+  const [amt, setAmt] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setErr(null);
+    const n = parseInt(amt, 10);
+    if (!Number.isFinite(n) || n <= 0) { setErr('Enter a positive integer.'); return; }
+    setBusy(true);
+    try {
+      const endpoint = mode === 'fund' ? 'allocate' : 'reclaim';
+      await apiPost(`/agents/${agent.id}/${endpoint}`, { amount: n }, { authed: true });
+      setAmt(''); setMode('idle'); onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.agentCard}>
+      <div style={S.agentCardHead}>
+        <span style={S.agentName}>{agent.name}</span>
+        <span style={S.agentBal}>{formatAmeta(agent.balance)} $AMETA</span>
+      </div>
+      <div style={S.agentMeta}>
+        <span>{agent.personality}</span>
+        <span>·</span>
+        <span>{agent.strategy}</span>
+        <span>·</span>
+        <span>{agent.land_count} parcel{agent.land_count === 1 ? '' : 's'}</span>
+        <span>·</span>
+        <span>{agent.autopilot_enabled ? 'autopilot on' : 'autopilot off'}</span>
+      </div>
+      {mode === 'idle' ? (
+        <div style={S.agentActions}>
+          <button onClick={() => setMode('fund')} style={S.fundBtn}>Fund</button>
+          <button
+            onClick={() => setMode('reclaim')}
+            disabled={agent.balance <= 0}
+            style={S.reclaimBtn}
+          >
+            Reclaim
+          </button>
+        </div>
+      ) : (
+        <div style={S.allocateRow}>
+          <input
+            type="number" min={1} step={1} value={amt}
+            onChange={(e) => setAmt(e.target.value)}
+            placeholder={mode === 'fund' ? 'Amount to send' : 'Amount to pull back'}
+            style={S.input}
+            autoFocus
+          />
+          <button onClick={submit} disabled={busy} style={S.submit}>
+            {busy ? '...' : mode === 'fund' ? 'Send' : 'Pull'}
+          </button>
+          <button
+            onClick={() => { setMode('idle'); setAmt(''); setErr(null); }}
+            style={S.cancelTextBtn}
+          >
+            cancel
+          </button>
+          {err && <div style={S.formMsg}>{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CreateAgentModal: React.FC<{
+  onClose: () => void;
+  onCreated: (payload: { id: string; api_key: string }) => void;
+}> = ({ onClose, onCreated }) => {
+  const [name, setName] = useState('');
+  const [personality, setPersonality] = useState<AgentPersonality>(AGENT_PERSONALITIES[0]);
+  const [strategy, setStrategy] = useState<AgentStrategy>(AGENT_STRATEGIES[0]);
+  const [initialFund, setInitialFund] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setErr(null);
+    if (!name.trim()) { setErr('Name required.'); return; }
+    setBusy(true);
+    try {
+      const created = await apiPost<{ ok: boolean; agent: { id: string }; api_key: string }>(
+        '/agents/register',
+        { name: name.trim(), personality, strategy_preset: strategy },
+        { authed: true },
+      );
+      // Optional initial allocation. Errors here don't roll back creation —
+      // the agent exists, owner can fund it later.
+      const fund = parseInt(initialFund, 10);
+      if (Number.isFinite(fund) && fund > 0) {
+        try {
+          await apiPost(`/agents/${created.agent.id}/allocate`, { amount: fund }, { authed: true });
+        } catch (e) {
+          setErr(`Agent created, but initial fund failed: ${(e as Error).message}`);
+        }
+      }
+      onCreated({ id: created.agent.id, api_key: created.api_key });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.modalScrim} onClick={onClose}>
+      <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={S.modalTitle}>New agent</div>
+        <input
+          type="text" value={name} onChange={(e) => setName(e.target.value)}
+          placeholder="Name (unique)"
+          maxLength={32}
+          style={S.input}
+          autoFocus
+        />
+        <select value={personality} onChange={(e) => setPersonality(e.target.value as AgentPersonality)} style={S.select}>
+          {AGENT_PERSONALITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={strategy} onChange={(e) => setStrategy(e.target.value as AgentStrategy)} style={S.select}>
+          {AGENT_STRATEGIES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <input
+          type="number" min={0} step={1} value={initialFund}
+          onChange={(e) => setInitialFund(e.target.value)}
+          placeholder="Initial $AMETA (optional)"
+          style={S.input}
+        />
+        {err && <div style={S.errMsg}>{err}</div>}
+        <div style={S.modalActions}>
+          <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
+          <button onClick={submit} disabled={busy} style={S.submit}>
+            {busy ? '...' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ApiKeyModal: React.FC<{ agentId: string; apiKey: string; onClose: () => void }> = ({ agentId, apiKey, onClose }) => (
+  <div style={S.modalScrim} onClick={onClose}>
+    <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={S.modalTitle}>API key — save it now</div>
+      <div style={S.modalNote}>
+        Give this key to a script to let it drive your agent via REST. It is shown only once.
+      </div>
+      <div style={S.apiKeyBox}>
+        <div style={S.apiKeyLabel}>agent id</div>
+        <code style={S.apiKeyCode}>{agentId}</code>
+        <div style={{ ...S.apiKeyLabel, marginTop: 10 }}>api key</div>
+        <code style={S.apiKeyCode}>{apiKey}</code>
+      </div>
+      <div style={S.modalActions}>
+        <button
+          onClick={() => { navigator.clipboard?.writeText(apiKey).catch(() => {}); }}
+          style={S.submit}
+        >
+          Copy key
+        </button>
+        <button onClick={onClose} style={S.cancelTextBtn}>done</button>
+      </div>
+    </div>
+  </div>
+);
 
 const EventBody: React.FC = () => {
   const [severity, setSeverity] = useState<Severity>('all');
@@ -757,4 +1152,117 @@ const S: Record<string, React.CSSProperties> = {
   decreeStatus: { fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, minWidth: 56 },
   decreeSubject: { fontSize: 12, color: '#F5E6D0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   decreeMeta: { fontSize: 10, color: '#7A6850', marginLeft: 62 },
+
+  // ── Market form + my-orders ───────────────────────────────────────
+  formGrid: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 },
+  sideToggle: { display: 'flex', gap: 4 },
+  sideBtn: {
+    flex: 1, padding: '6px 8px', fontSize: 11, fontWeight: 600,
+    background: 'transparent', color: '#A89378',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.20)',
+    borderRadius: 4, cursor: 'pointer',
+  },
+  sideBtnBuy: { background: '#1F3A1E', color: '#86efac', borderColor: '#22c55e' },
+  sideBtnSell: { background: '#3A1F1F', color: '#fca5a5', borderColor: '#ef4444' },
+  input: {
+    width: '100%', padding: '6px 8px', fontSize: 12,
+    background: 'rgba(245,230,208,0.05)', color: '#F5E6D0',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.20)',
+    borderRadius: 4, outline: 'none',
+    boxSizing: 'border-box', fontFamily: 'inherit',
+  },
+  select: {
+    width: '100%', padding: '6px 8px', fontSize: 12,
+    background: '#1F1812', color: '#F5E6D0',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.20)',
+    borderRadius: 4, outline: 'none',
+    boxSizing: 'border-box', fontFamily: 'inherit',
+  },
+  submit: {
+    padding: '7px 10px', fontSize: 12, fontWeight: 600,
+    background: '#3F7A3D', color: '#F5E6D0',
+    border: 'none', borderRadius: 4, cursor: 'pointer',
+  },
+  formMsg: { fontSize: 10, color: '#A89378', marginTop: 2 },
+  openOrderRow: {
+    display: 'flex', gap: 6, alignItems: 'center',
+    fontSize: 11, padding: '3px 4px',
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(216,148,56,0.08)',
+  },
+  cancelBtn: {
+    marginLeft: 'auto', width: 22, height: 22, borderRadius: 11,
+    background: 'rgba(239,68,68,0.15)', color: '#ef4444',
+    border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1,
+  },
+
+  // ── My Agents tab ─────────────────────────────────────────────────
+  agentHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  agentCount: { fontSize: 11, color: '#A89378', fontFamily: 'Georgia, serif' },
+  createBtn: {
+    padding: '5px 10px', fontSize: 11, fontWeight: 600,
+    background: '#5C6F8A', color: '#F5E6D0',
+    border: 'none', borderRadius: 4, cursor: 'pointer',
+  },
+  emptyPad: { fontSize: 12, color: '#A89378', padding: '14px 8px', textAlign: 'center', lineHeight: 1.4 },
+  errMsg: { fontSize: 11, color: '#fca5a5', padding: '6px 4px' },
+  agentList: { display: 'flex', flexDirection: 'column', gap: 6 },
+  agentCard: {
+    padding: '8px 10px', borderRadius: 8,
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.12)',
+    display: 'flex', flexDirection: 'column', gap: 4,
+  },
+  agentCardHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  agentName: { fontSize: 13, color: '#F5E6D0', fontWeight: 600, fontFamily: 'Georgia, serif' },
+  agentBal: { fontSize: 12, color: '#D89438', fontVariantNumeric: 'tabular-nums' },
+  agentMeta: { fontSize: 10, color: '#7A6850', display: 'flex', flexWrap: 'wrap', gap: 4 },
+  agentActions: { display: 'flex', gap: 6, marginTop: 4 },
+  fundBtn: {
+    flex: 1, padding: '5px 8px', fontSize: 11, fontWeight: 600,
+    background: '#3F7A3D', color: '#F5E6D0',
+    border: 'none', borderRadius: 4, cursor: 'pointer',
+  },
+  reclaimBtn: {
+    flex: 1, padding: '5px 8px', fontSize: 11, fontWeight: 600,
+    background: 'rgba(216,148,56,0.18)', color: '#D89438',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.30)',
+    borderRadius: 4, cursor: 'pointer',
+  },
+  allocateRow: {
+    display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center',
+  },
+  cancelTextBtn: {
+    background: 'transparent', color: '#A89378',
+    border: 'none', cursor: 'pointer', fontSize: 11, padding: '5px 8px',
+  },
+
+  // ── Modal (create agent / api key) ─────────────────────────────────
+  modalScrim: {
+    position: 'absolute', inset: 0, zIndex: 30,
+    background: 'rgba(0,0,0,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 16,
+  },
+  modal: {
+    width: '100%', maxWidth: 280, background: '#2A1F18',
+    borderRadius: 10, padding: 14,
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.30)',
+    display: 'flex', flexDirection: 'column', gap: 8,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+  },
+  modalTitle: { fontSize: 13, fontWeight: 600, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
+  modalNote: { fontSize: 11, color: '#A89378', lineHeight: 1.4 },
+  modalActions: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 4 },
+  apiKeyBox: {
+    background: 'rgba(0,0,0,0.30)', padding: 8, borderRadius: 6,
+    display: 'flex', flexDirection: 'column',
+  },
+  apiKeyLabel: { fontSize: 9, color: '#A89378', textTransform: 'uppercase', letterSpacing: 0.5 },
+  apiKeyCode: {
+    fontFamily: 'monospace', fontSize: 10, color: '#D89438',
+    wordBreak: 'break-all', marginTop: 2,
+  },
 };

@@ -4,6 +4,7 @@ import {
   updatePlayerCredits,
   playerExists,
   addEvent,
+  getAgentById,
 } from '../db';
 import { TRANSFER_FEE_BPS, BPS_DENOMINATOR } from '@gamestu/shared';
 import { IEconomy, WORLD_TREASURY_ID } from './IEconomy';
@@ -78,5 +79,30 @@ export class InMemoryEconomy implements IEconomy {
     }
     addEvent('transfer', fromId, { to: toId, amount, fee, reason });
     return { ok: true, fee };
+  }
+
+  async allocate(
+    walletId: string,
+    agentId: string,
+    amount: number,
+    direction: 'fund' | 'reclaim',
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (amount <= 0 || !Number.isFinite(amount) || !Number.isInteger(amount)) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+    const agent = getAgentById(agentId);
+    if (!agent) return { ok: false, reason: 'agent_not_found' };
+    if (agent.owner_wallet?.toLowerCase() !== walletId.toLowerCase()) {
+      return { ok: false, reason: 'not_owner' };
+    }
+    const fromId = direction === 'fund' ? walletId : agentId;
+    const toId   = direction === 'fund' ? agentId  : walletId;
+    const fromBal = getPlayerCredits(fromId);
+    if (fromBal < amount) return { ok: false, reason: 'insufficient_balance' };
+
+    updatePlayerCredits(fromId, fromBal - amount);
+    updatePlayerCredits(toId,   getPlayerCredits(toId) + amount);
+    addEvent('allocate', walletId, { agent: agentId, amount, direction });
+    return { ok: true };
   }
 }

@@ -14,9 +14,7 @@ import {
   BUILDINGS,
   BuildingType,
   INCOME_TICK_MS,
-  BASE_MARKET_PRICES,
   ResourceType,
-  RESOURCE_TYPES,
   EXPLORE_COST,
   TICK_PRODUCTION,
   FOOD_PER_AGENT_PER_TICK,
@@ -390,35 +388,10 @@ export class GameRoom extends Room<GameState> {
       addEvent('work', ownerId, { produced, creditsEarned }, 'minor');
     });
 
-    // ---- TRADE: sell resources at market prices ----
-    this.onMessage(MessageType.TRADE, (client: Client, data: { resource: string; quantity: number }) => {
-      const player = this.players.get(client.sessionId);
-      if (!player) return;
-      if (typeof data.resource !== 'string' || typeof data.quantity !== 'number' || data.quantity <= 0) return;
-      if (!RESOURCE_TYPES.includes(data.resource as ResourceType)) { client.send(MessageType.TRADE_RESULT, { error: 'Invalid resource' }); return; }
-
-      const ownerId = this.pid(client.sessionId);
-      const resources = getPlayerResources(ownerId);
-      const key = data.resource as keyof typeof resources;
-      if (resources[key] < data.quantity) { client.send(MessageType.TRADE_RESULT, { error: 'Insufficient resource' }); return; }
-
-      const price = BASE_MARKET_PRICES[data.resource as ResourceType];
-      const earnings = Math.floor(price * data.quantity);
-      resources[key] -= data.quantity;
-      player.credits += earnings;
-      updatePlayerCredits(ownerId, player.credits);
-      updatePlayerResources(ownerId, resources);
-
-      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-      client.send(MessageType.RESOURCE_UPDATE, resources);
-      client.send(MessageType.TRADE_RESULT, { sold: data.resource, quantity: data.quantity, earned: earnings });
-      addEvent('trade', ownerId, { resource: data.resource, quantity: data.quantity, earned: earnings }, 'normal');
-    });
-
-    // ---- MARKET_PRICES: return current prices ----
-    this.onMessage(MessageType.MARKET_PRICES, (client: Client) => {
-      client.send(MessageType.MARKET_PRICES, BASE_MARKET_PRICES);
-    });
+    // (Legacy Colyseus TRADE + MARKET_PRICES handlers removed 2026-05-16.
+    //  All resource trading goes through the REST order book — see
+    //  POST /api/v1/market/order. Humans use their wallet session token,
+    //  agents use their tl_sk_ API key; same endpoint, one ledger.)
 
     // ---- EXPLORE: move to random unclaimed parcel ----
     this.onMessage(MessageType.EXPLORE, (client: Client) => {

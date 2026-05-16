@@ -2,7 +2,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
 import { LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS } from '@gamestu/shared';
-import type { ResourceType } from '@gamestu/shared';
 
 const RESERVED_SET = new Set<number>(RESERVED_PARCEL_IDS);
 
@@ -65,25 +64,19 @@ interface DBBackend {
   getPlayerParcels(playerId: string): ParcelRow[];
   addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity?: string): void;
   getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }): Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }>;
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void;
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void;
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
-  getAllAgents(): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  getAllAgents(): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>;
+  /** Agents owned by a wallet (the unified replacement for wallet_bots). */
+  getAgentsByWallet(walletAddress: string): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  /** Single agent's record, including its owning wallet (or null for legacy unowned agents). */
+  getAgentById(agentId: string): { id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null } | null;
+  countAgentsByWallet(walletAddress: string): number;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
    *  +1 reputation per consumed unit. Returns a per-owner summary. */
   tickReputation(): Array<{ owner_id: string; consumed: number }>;
-  /** Phase E.1 — list bots associated with a wallet. */
-  getWalletBots(walletAddress: string): Array<{ bot_id: string; name: string; slot_index: number }>;
-  /** Phase E.1 — register a new bot under a wallet. Returns the slot
-   *  index used (1..10) or null if the wallet is already at 10. */
-  createWalletBot(walletAddress: string, botId: string, name: string): number | null;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
-  tradeSellResources(
-    id: string,
-    resource: ResourceType,
-    quantity: number,
-    earnings: number,
-  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } };
   workProduce(
     id: string,
     creditsEarned: number,
@@ -225,6 +218,12 @@ class SQLiteDatabase implements DBBackend {
     // personality routine each income tick.
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN autopilot_enabled INTEGER DEFAULT 1`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN last_autopilot_tick INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
+    // Identity unification (2026-05-16): every agent is owned by a wallet.
+    // owner_wallet is the lowercased wallet address. Pre-existing agents
+    // registered before this column existed will be NULL until their owner
+    // claims them via /admin or the migration below.
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN owner_wallet TEXT`); } catch (_) { /* exists */ }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_wallet)`);
 
     // Phase C: properties table = sub-units of multi-floor buildings
     // (apartment studios, office spaces). The legacy columns
@@ -336,23 +335,55 @@ class SQLiteDatabase implements DBBackend {
       );
     `);
 
-    // Phase E.1 — wallet → multiple bots (children)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS wallet_bots (
-        wallet_address TEXT NOT NULL,
-        bot_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        slot_index INTEGER NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        PRIMARY KEY (wallet_address, bot_id),
-        FOREIGN KEY (bot_id) REFERENCES players(id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_wallet_bots_addr ON wallet_bots(wallet_address);
-    `);
-
     // Phase E.2 — X (Twitter) verification scaffolding on agents.
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_verified INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_handle TEXT`); } catch (_) { /* exists */ }
+
+    // One-shot migration (2026-05-16): legacy `wallet_bots` table is being
+    // collapsed into `agents`. Each row becomes an agent with default
+    // personality/strategy and an auto-minted API key. The bot's existing
+    // player record (balance, parcels, etc.) is preserved. After migration
+    // the wallet_bots table is dropped.
+    try {
+      const hasTable = (this.db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='wallet_bots'`,
+      ).get() as { name: string } | undefined);
+      if (hasTable) {
+        const rows = this.db.prepare(
+          `SELECT wallet_address, bot_id, name FROM wallet_bots`,
+        ).all() as Array<{ wallet_address: string; bot_id: string; name: string }>;
+        const insert = this.db.prepare(
+          `INSERT OR IGNORE INTO agents
+             (id, name, personality, strategy, api_key, owner_wallet, autopilot_enabled)
+           VALUES (?, ?, 'balanced', 'balanced', ?, ?, 0)`,
+        );
+        const namesInUse = new Set(
+          (this.db.prepare(`SELECT name FROM agents`).all() as Array<{ name: string }>).map((r) => r.name),
+        );
+        for (const r of rows) {
+          // Avoid the UNIQUE collision on `name` — append the wallet's last
+          // 4 chars if the bot's name is already used by another agent.
+          let name = r.name;
+          if (namesInUse.has(name)) {
+            const suffix = r.wallet_address.slice(-4);
+            name = `${r.name}-${suffix}`;
+            // Worst case keep stepping. Very unlikely to need more than once.
+            let n = 2;
+            while (namesInUse.has(name)) { name = `${r.name}-${suffix}-${n}`; n += 1; }
+          }
+          namesInUse.add(name);
+          const rb = this.db.prepare(`SELECT lower(hex(randomblob(24))) AS h`).get() as { h: string };
+          const apiKey = `tl_sk_${rb.h}`;
+          insert.run(r.bot_id, name, apiKey, r.wallet_address.toLowerCase());
+        }
+        this.db.exec(`DROP TABLE wallet_bots`);
+        if (rows.length > 0) {
+          console.log(`[db] migrated ${rows.length} wallet_bots row(s) into agents`);
+        }
+      }
+    } catch (e) {
+      console.warn('[db] wallet_bots migration failed:', (e as Error).message);
+    }
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }
@@ -478,26 +509,6 @@ class SQLiteDatabase implements DBBackend {
       this.stmtUpdateCredits.run(fromCredits - amount, fromId);
       this.stmtUpdateCredits.run(toCredits + amount, toId);
       return { ok: true };
-    });
-    return txn();
-  }
-
-  tradeSellResources(
-    id: string,
-    resource: ResourceType,
-    quantity: number,
-    earnings: number,
-  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
-    const txn = this.db.transaction(() => {
-      if (quantity <= 0) return { ok: false, reason: 'invalid_quantity' };
-      const resources = this.getPlayerResources(id);
-      if (resources[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
-      resources[resource] -= quantity;
-      const creditsBefore = this.getPlayerCredits(id);
-      const creditsAfter = creditsBefore + earnings;
-      this.updatePlayerResources(id, resources);
-      this.stmtUpdateCredits.run(creditsAfter, id);
-      return { ok: true, credits: creditsAfter, resources };
     });
     return txn();
   }
@@ -666,10 +677,13 @@ class SQLiteDatabase implements DBBackend {
     return this.db.prepare(`SELECT * FROM events ${whereSql} ORDER BY id DESC LIMIT ?`).all(...params, limit) as any[];
   }
 
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
-    this.db.prepare('INSERT INTO agents (id, name, personality, strategy, api_key) VALUES (?, ?, ?, ?, ?)').run(id, name, personality, strategy, apiKey);
-    // Also create a player record so the agent can interact with the game
-    this.db.prepare(`INSERT OR IGNORE INTO players (id, name, credits) VALUES (?, ?, 50)`).run(id, name);
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void {
+    this.db.prepare(
+      'INSERT INTO agents (id, name, personality, strategy, api_key, owner_wallet) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(id, name, personality, strategy, apiKey, ownerWallet ? ownerWallet.toLowerCase() : null);
+    // Also create a player record so the agent can interact with the game.
+    // New agents start at 0 — owners fund them via economy().allocate.
+    this.db.prepare(`INSERT OR IGNORE INTO players (id, name, credits) VALUES (?, ?, 0)`).run(id, name);
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
@@ -679,28 +693,29 @@ class SQLiteDatabase implements DBBackend {
 
   getAllAgents() {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at FROM agents`,
-    ).all() as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at, owner_wallet FROM agents`,
+    ).all() as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>;
   }
 
-  getWalletBots(walletAddress: string) {
+  getAgentsByWallet(walletAddress: string) {
     return this.db.prepare(
-      `SELECT bot_id, name, slot_index FROM wallet_bots WHERE wallet_address = ? ORDER BY slot_index ASC`,
-    ).all(walletAddress.toLowerCase()) as Array<{ bot_id: string; name: string; slot_index: number }>;
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at
+         FROM agents WHERE owner_wallet = ? ORDER BY created_at ASC`,
+    ).all(walletAddress.toLowerCase()) as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
   }
 
-  createWalletBot(walletAddress: string, botId: string, name: string): number | null {
-    const addr = walletAddress.toLowerCase();
-    const existing = this.getWalletBots(addr);
-    if (existing.length >= 10) return null;
-    // First unused slot in 1..10
-    const taken = new Set(existing.map((e) => e.slot_index));
-    let slot = 1;
-    while (slot <= 10 && taken.has(slot)) slot += 1;
-    this.db.prepare(
-      `INSERT INTO wallet_bots (wallet_address, bot_id, name, slot_index) VALUES (?, ?, ?, ?)`,
-    ).run(addr, botId, name, slot);
-    return slot;
+  getAgentById(agentId: string) {
+    return this.db.prepare(
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at, owner_wallet
+         FROM agents WHERE id = ?`,
+    ).get(agentId) as { id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null } | undefined ?? null;
+  }
+
+  countAgentsByWallet(walletAddress: string): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM agents WHERE owner_wallet = ?`,
+    ).get(walletAddress.toLowerCase()) as { n: number };
+    return row.n;
   }
 
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
@@ -870,22 +885,6 @@ class MemoryDB implements DBBackend {
     return { ok: true };
   }
 
-  tradeSellResources(
-    id: string,
-    resource: ResourceType,
-    quantity: number,
-    earnings: number,
-  ): { ok: boolean; reason?: string; credits?: number; resources?: { food: number; materials: number; energy: number; luxury: number } } {
-    if (quantity <= 0) return { ok: false, reason: 'invalid_quantity' };
-    const resources = this.getPlayerResources(id);
-    if (resources[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
-    resources[resource] -= quantity;
-    const creditsAfter = this.getPlayerCredits(id) + earnings;
-    this.updatePlayerResources(id, resources);
-    this.updatePlayerCredits(id, creditsAfter);
-    return { ok: true, credits: creditsAfter, resources };
-  }
-
   workProduce(
     id: string,
     creditsEarned: number,
@@ -1042,11 +1041,12 @@ class MemoryDB implements DBBackend {
     return arr.slice(-limit).reverse();
   }
 
-  private agents = new Map<string, { id: string; name: string; personality: string; strategy: string; apiKey: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>();
+  private agents = new Map<string, { id: string; name: string; personality: string; strategy: string; apiKey: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>();
 
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string): void {
-    this.agents.set(apiKey, { id, name, personality, strategy, apiKey, autopilot_enabled: 1, last_autopilot_tick: 0, created_at: new Date().toISOString() });
-    this.players.set(id, { id, name, credits: 50, reputation: 0, x: 0, y: 0, z: -80, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
+  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void {
+    this.agents.set(apiKey, { id, name, personality, strategy, apiKey, autopilot_enabled: 1, last_autopilot_tick: 0, created_at: new Date().toISOString(), owner_wallet: ownerWallet ? ownerWallet.toLowerCase() : null });
+    // New agents start at 0 — owners fund them via economy().allocate.
+    this.players.set(id, { id, name, credits: 0, reputation: 0, x: 0, y: 0, z: -80, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
@@ -1058,22 +1058,29 @@ class MemoryDB implements DBBackend {
     return Array.from(this.agents.values()).map(({ apiKey, ...rest }) => rest);
   }
 
-  private walletBots = new Map<string, Array<{ bot_id: string; name: string; slot_index: number }>>();
-
-  getWalletBots(walletAddress: string) {
-    return this.walletBots.get(walletAddress.toLowerCase()) ?? [];
+  getAgentsByWallet(walletAddress: string) {
+    const addr = walletAddress.toLowerCase();
+    return Array.from(this.agents.values())
+      .filter((a) => a.owner_wallet === addr)
+      .map(({ apiKey, owner_wallet, ...rest }) => rest)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
-  createWalletBot(walletAddress: string, botId: string, name: string): number | null {
+  getAgentById(agentId: string) {
+    for (const a of this.agents.values()) {
+      if (a.id === agentId) {
+        const { apiKey, ...rest } = a;
+        return rest;
+      }
+    }
+    return null;
+  }
+
+  countAgentsByWallet(walletAddress: string): number {
     const addr = walletAddress.toLowerCase();
-    const list = this.walletBots.get(addr) ?? [];
-    if (list.length >= 10) return null;
-    const taken = new Set(list.map((e) => e.slot_index));
-    let slot = 1;
-    while (slot <= 10 && taken.has(slot)) slot += 1;
-    list.push({ bot_id: botId, name, slot_index: slot });
-    this.walletBots.set(addr, list);
-    return slot;
+    let n = 0;
+    for (const a of this.agents.values()) if (a.owner_wallet === addr) n += 1;
+    return n;
   }
 
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
@@ -1232,22 +1239,17 @@ export function addEvent(type: string, playerId: string | null, data: Record<str
 export function getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }) {
   return backend.getEvents(limit, opts);
 }
-export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string) { backend.registerAgent(id, name, personality, strategy, apiKey); }
+export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null) {
+  backend.registerAgent(id, name, personality, strategy, apiKey, ownerWallet);
+}
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
 export function getAllAgents() { return backend.getAllAgents(); }
+export function getAgentsByWallet(walletAddress: string) { return backend.getAgentsByWallet(walletAddress); }
+export function getAgentById(agentId: string) { return backend.getAgentById(agentId); }
+export function countAgentsByWallet(walletAddress: string) { return backend.countAgentsByWallet(walletAddress); }
 export function tickReputation() { return backend.tickReputation(); }
-export function getWalletBots(walletAddress: string) { return backend.getWalletBots(walletAddress); }
-export function createWalletBot(walletAddress: string, botId: string, name: string) {
-  return backend.createWalletBot(walletAddress, botId, name);
-}
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
-export function tradeSellResources(
-  id: string,
-  resource: ResourceType,
-  quantity: number,
-  earnings: number,
-) { return backend.tradeSellResources(id, resource, quantity, earnings); }
 export function workProduce(
   id: string,
   creditsEarned: number,

@@ -106,10 +106,9 @@ export enum MessageType {
   BUILD_STRUCTURE = 'build_structure',
   WORK = 'work',
   WORK_RESULT = 'work_result',
-  TRADE = 'trade',
-  TRADE_RESULT = 'trade_result',
+  // TRADE / TRADE_RESULT / MARKET_PRICES removed 2026-05-16 — all market
+  // operations now go through the REST order book (/api/v1/market/*).
   RESOURCE_UPDATE = 'resource_update',
-  MARKET_PRICES = 'market_prices',
   EXPLORE = 'explore',
   EVENTS = 'events',
   EVENT = 'event',

@@ -13,11 +13,14 @@ import {
   getEvents,
   registerAgent,
   getAgentByApiKey,
-  tradeSellResources,
+  getAgentById,
+  getAgentsByWallet,
+  countAgentsByWallet,
+  getAuthSessionPlayerId,
   workProduce,
   buyLand,
 } from '../db';
-import { economy, WORLD_TREASURY_ID } from '../economy';
+import { economy } from '../economy';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
 import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
@@ -55,8 +58,6 @@ import {
   AgentPersonality,
   AgentStrategy,
   CURRENCY_NAME,
-  TRADING_FEE_BPS,
-  BPS_DENOMINATOR,
 } from '@gamestu/shared';
 
 const router = Router();
@@ -115,43 +116,117 @@ setInterval(() => {
 }, BUCKET_TTL_MS).unref();
 
 function rateLimit(req: Request, res: Response, next: NextFunction): void {
-  const agentId = (req as any).agentId as string | undefined;
+  const playerId = (req as AuthedRequest).playerId as string | undefined;
   const ip = (req.ip || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
-  const key = agentId ? `agent:${agentId}` : `ip:${ip}`;
+  const key = playerId ? `player:${playerId}` : `ip:${ip}`;
   if (!consumeToken(key)) {
     res.setHeader('Retry-After', '60');
-    res.status(429).json({ error: 'Rate limit exceeded. Max 60 req/min per agent.' });
+    res.status(429).json({ error: 'Rate limit exceeded. Max 60 req/min per actor.' });
     return;
   }
   next();
 }
 
-// ── Auth middleware for agent actions ────────────────────────────────────
+// ── Auth middleware ──────────────────────────────────────────────────────
+//
+// One Bearer token, two issuers — wallets and agents. Unified by 2026-05-16
+// identity rework. After this middleware:
+//   - req.playerId : the acting player record (wallet address OR agent UUID)
+//   - req.tokenKind: 'wallet' | 'agent' — useful when an endpoint must
+//                    forbid one (e.g. /agents/register is wallet-only).
+//   - req.walletId : the owning wallet (= playerId for wallet tokens,
+//                    = agent.owner_wallet for agent tokens). May be null
+//                    for legacy unowned agents.
+//
+// authAgent is kept as a thin alias for endpoints that semantically require
+// agent-key auth (autopilot toggles, etc.). Most endpoints use authPlayer.
 
-function authAgent(req: Request, res: Response, next: NextFunction): void {
+interface AuthedRequest extends Request {
+  playerId?: string;
+  tokenKind?: 'wallet' | 'agent';
+  walletId?: string | null;
+  agentId?: string; // back-compat for endpoints not yet migrated
+  agentName?: string;
+}
+
+function authPlayer(req: Request, res: Response, next: NextFunction): void {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
     logAuthFailure(req, 'missing_header', null);
-    res.status(401).json({ error: 'Authorization header required: Bearer <api_key>' });
+    res.status(401).json({ error: 'Authorization header required: Bearer <wallet-session-token | tl_sk_…>' });
     return;
   }
-  const apiKey = auth.slice(7);
-  const agent = getAgentByApiKey(apiKey);
-  if (!agent) {
-    // Log only a short prefix so full keys don't end up in logs
-    const hint = apiKey.length >= 10 ? apiKey.slice(0, 10) + '…' : '(short)';
-    logAuthFailure(req, 'invalid_key', hint);
-    res.status(401).json({ error: 'Invalid API key' });
+  const token = auth.slice(7);
+
+  // Wallet session token: opaque 32-byte hex, resolves to a lowercased
+  // wallet address as playerId.
+  const walletPlayerId = getAuthSessionPlayerId(token);
+  if (walletPlayerId) {
+    const r = req as AuthedRequest;
+    r.playerId = walletPlayerId;
+    r.walletId = walletPlayerId;
+    r.tokenKind = 'wallet';
+    next();
     return;
   }
-  (req as any).agentId = agent.id;
-  (req as any).agentName = agent.name;
-  next();
+
+  // Agent API key: tl_sk_ prefix, resolves to an agent UUID.
+  if (token.startsWith('tl_sk_')) {
+    const agent = getAgentByApiKey(token);
+    if (agent) {
+      const r = req as AuthedRequest;
+      r.playerId = agent.id;
+      r.agentId = agent.id;
+      r.agentName = agent.name;
+      const meta = getAgentById(agent.id);
+      r.walletId = meta?.owner_wallet ?? null;
+      r.tokenKind = 'agent';
+      next();
+      return;
+    }
+  }
+
+  const hint = token.length >= 10 ? token.slice(0, 10) + '…' : '(short)';
+  logAuthFailure(req, 'invalid_key', hint);
+  res.status(401).json({ error: 'Invalid token (expected wallet session token or tl_sk_ API key)' });
 }
 
-// ── Registration (no auth required) ─────────────────────────────────────
+// Legacy alias for sites that semantically require agent-key auth. Behaves
+// the same as authPlayer but rejects wallet tokens.
+function authAgent(req: Request, res: Response, next: NextFunction): void {
+  authPlayer(req, res, () => {
+    const r = req as AuthedRequest;
+    if (r.tokenKind !== 'agent') {
+      res.status(403).json({ error: 'This endpoint requires an agent API key (tl_sk_…), not a wallet session token.' });
+      return;
+    }
+    next();
+  });
+}
 
-router.post('/agents/register', (req: Request, res: Response) => {
+// Wallet-only middleware. Required for endpoints that act on the wallet
+// itself (e.g. agent registration, allocate/reclaim).
+function authWallet(req: Request, res: Response, next: NextFunction): void {
+  authPlayer(req, res, () => {
+    const r = req as AuthedRequest;
+    if (r.tokenKind !== 'wallet') {
+      res.status(403).json({ error: 'This endpoint requires a wallet session token, not an agent API key.' });
+      return;
+    }
+    next();
+  });
+}
+
+// ── Registration (wallet-gated) ─────────────────────────────────────────
+//
+// Every agent is owned by exactly one wallet. The caller must present a
+// wallet session token; the new agent's owner_wallet is set to that wallet.
+// Cap: 10 agents per wallet. New agents start at 0 balance — owners fund
+// them via POST /agents/:id/allocate.
+
+const MAX_AGENTS_PER_WALLET = 10;
+
+router.post('/agents/register', authWallet, (req: Request, res: Response) => {
   const { name, personality, strategy_preset } = req.body ?? {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name (string) required' });
   if (!personality || !AGENT_PERSONALITIES.includes(personality as AgentPersonality)) {
@@ -161,23 +236,28 @@ router.post('/agents/register', (req: Request, res: Response) => {
     return res.status(400).json({ error: `strategy_preset required, one of: ${AGENT_STRATEGIES.join(', ')}` });
   }
 
-  const id = generateId();
+  const wallet = (req as AuthedRequest).walletId!;
+  if (countAgentsByWallet(wallet) >= MAX_AGENTS_PER_WALLET) {
+    return res.status(409).json({ error: 'wallet_at_agent_cap', limit: MAX_AGENTS_PER_WALLET });
+  }
+
+  const id = `${wallet}:agent:${crypto.randomBytes(8).toString('hex')}`;
   const apiKey = generateApiKey();
 
   try {
-    registerAgent(id, name, personality, strategy_preset, apiKey);
+    registerAgent(id, name, personality, strategy_preset, apiKey, wallet);
   } catch (err: any) {
     if (err?.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Agent name already taken' });
     return res.status(500).json({ error: 'Registration failed' });
   }
 
-  addEvent('agent_registered', id, { name, personality, strategy_preset });
+  addEvent('agent_registered', id, { name, personality, strategy_preset, owner_wallet: wallet });
 
   res.json({
     ok: true,
-    agent: { id, name, balance: STARTING_BALANCE, personality, strategy_preset },
+    agent: { id, name, balance: 0, personality, strategy_preset, owner_wallet: wallet },
     api_key: apiKey,
-    note: 'Save this API key — it is only shown once.',
+    note: 'Save this API key — it is only shown once. Fund the agent via POST /agents/' + id + '/allocate.',
   });
 });
 
@@ -242,6 +322,73 @@ router.get('/agents/me', authAgent, (req: Request, res: Response) => {
 router.get('/agents/me/events', authAgent, (req: Request, res: Response) => {
   const id = (req as any).agentId;
   res.json({ events: getEvents(200, { playerId: id }) });
+});
+
+// ── Wallet-owned agents: list + fund (allocate) + reclaim ───────────────
+//
+// These endpoints let a signed-in wallet manage the agents it owns.
+// All three require a wallet session token (not an agent API key).
+
+router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agents = getAgentsByWallet(wallet);
+  const out = agents.map((a) => {
+    const parcels = getPlayerParcels(a.id);
+    return {
+      id: a.id,
+      name: a.name,
+      personality: a.personality,
+      strategy: a.strategy,
+      balance: getPlayerCredits(a.id),
+      resources: getPlayerResources(a.id),
+      land_count: parcels.length,
+      building_count: parcels.filter((p) => (p as any).building_type).length,
+      autopilot_enabled: a.autopilot_enabled === 1,
+      last_autopilot_tick: a.last_autopilot_tick,
+      created_at: a.created_at,
+    };
+  });
+  res.json({ wallet, agents: out, limit: MAX_AGENTS_PER_WALLET });
+});
+
+router.post('/agents/:id/allocate', authWallet, rateLimit, async (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const { amount } = req.body ?? {};
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'amount must be a positive integer' });
+  }
+  try {
+    const r = await economy().allocate(wallet, agentId, amount, 'fund');
+    if (!r.ok) {
+      const status = r.reason === 'agent_not_found' ? 404 : r.reason === 'not_owner' ? 403 : 400;
+      return res.status(status).json({ error: r.reason });
+    }
+    res.json({ ok: true, agent_balance: getPlayerCredits(agentId), wallet_balance: getPlayerCredits(wallet) });
+  } catch (e) {
+    console.error('[api] allocate failed:', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.post('/agents/:id/reclaim', authWallet, rateLimit, async (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const { amount } = req.body ?? {};
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'amount must be a positive integer' });
+  }
+  try {
+    const r = await economy().allocate(wallet, agentId, amount, 'reclaim');
+    if (!r.ok) {
+      const status = r.reason === 'agent_not_found' ? 404 : r.reason === 'not_owner' ? 403 : 400;
+      return res.status(status).json({ error: r.reason });
+    }
+    res.json({ ok: true, agent_balance: getPlayerCredits(agentId), wallet_balance: getPlayerCredits(wallet) });
+  } catch (e) {
+    console.error('[api] reclaim failed:', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
 router.get('/agents/:id/stats', (req: Request, res: Response) => {
@@ -422,51 +569,31 @@ router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response)
   res.json({ ok: true, produced, creditsEarned, resources, balance: result.credits });
 });
 
-router.post('/actions/trade', authAgent, rateLimit, async (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const { resource, quantity, target_agent_id, amount } = req.body ?? {};
-
-  // Transfer $AMETA to another agent. Routed through IEconomy so the
-  // 1% transfer fee is taken automatically and the on-chain swap path
-  // works without changing call sites later.
-  if (target_agent_id !== undefined || amount !== undefined) {
-    if (typeof target_agent_id !== 'string' || !target_agent_id) {
-      return res.status(400).json({ error: 'target_agent_id (string) required for transfer' });
-    }
-    if (typeof amount !== 'number' || amount <= 0 || !Number.isFinite(amount)) {
-      return res.status(400).json({ error: 'amount must be a positive number' });
-    }
-    try {
-      const result = await economy().transfer(agentId, target_agent_id, amount, 'agent_transfer');
-      if (!result.ok) {
-        const status = result.reason === 'target_not_found' ? 404 : 400;
-        return res.status(status).json({ error: result.reason });
-      }
-      return res.json({ ok: true, transferred: amount, to: target_agent_id, fee: result.fee });
-    } catch (e) {
-      console.error('[api] transfer failed:', e);
-      return res.status(500).json({ error: 'internal_error' });
-    }
+// $AMETA transfer between actors (any player → any other player). Subject
+// to TRANSFER_FEE_BPS. The legacy "sell resources at flat price" branch
+// was removed 2026-05-16 — resource selling now goes through the order book
+// (/market/order with side='sell'). Allocate/reclaim within a wallet uses
+// /agents/:id/allocate + /reclaim and is fee-free.
+router.post('/actions/trade', authPlayer, rateLimit, async (req: Request, res: Response) => {
+  const fromId = (req as AuthedRequest).playerId!;
+  const { target_agent_id, amount } = req.body ?? {};
+  if (typeof target_agent_id !== 'string' || !target_agent_id) {
+    return res.status(400).json({ error: 'target_agent_id (string) required' });
   }
-
-  // Sell resources at base market price. Applies the same trading fee as
-  // the order book so agents can't dodge fees by hitting the legacy path.
-  if (!resource || !quantity) return res.status(400).json({ error: 'resource and quantity required (or target_agent_id + amount for transfer)' });
-  if (!RESOURCE_TYPES.includes(resource as ResourceType)) return res.status(400).json({ error: 'Invalid resource', valid: RESOURCE_TYPES });
-  if (typeof quantity !== 'number' || quantity <= 0) return res.status(400).json({ error: 'quantity must be positive' });
-
-  const price = BASE_MARKET_PRICES[resource as ResourceType];
-  const gross = Math.floor(price * quantity);
-  const fee = Math.floor((gross * TRADING_FEE_BPS) / BPS_DENOMINATOR);
-  const earnings = gross - fee;
-  const result = tradeSellResources(agentId, resource as ResourceType, quantity, earnings);
-  if (!result.ok) return res.status(400).json({ error: result.reason });
-  if (fee > 0) {
-    await economy().credit(WORLD_TREASURY_ID, fee, 'trading_fee');
+  if (typeof amount !== 'number' || amount <= 0 || !Number.isFinite(amount)) {
+    return res.status(400).json({ error: 'amount must be a positive number' });
   }
-  recordGdp(earnings);
-  addEvent('trade', agentId, { resource, quantity, gross, fee, earned: earnings }, 'normal');
-  res.json({ ok: true, sold: resource, quantity, earned: earnings, fee, resources: result.resources, balance: result.credits });
+  try {
+    const result = await economy().transfer(fromId, target_agent_id, amount, 'agent_transfer');
+    if (!result.ok) {
+      const status = result.reason === 'target_not_found' ? 404 : 400;
+      return res.status(status).json({ error: result.reason });
+    }
+    return res.json({ ok: true, transferred: amount, to: target_agent_id, fee: result.fee });
+  } catch (e) {
+    console.error('[api] transfer failed:', e);
+    return res.status(500).json({ error: 'internal_error' });
+  }
 });
 
 router.post('/actions/chat', authAgent, rateLimit, (req: Request, res: Response) => {
@@ -481,14 +608,14 @@ router.post('/actions/chat', authAgent, rateLimit, (req: Request, res: Response)
 // Market (order book) — Phase A.1
 // ──────────────────────────────────────────────────────────────────────
 
-router.post('/market/order', authAgent, rateLimit, async (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
+router.post('/market/order', authPlayer, rateLimit, async (req: Request, res: Response) => {
+  const playerId = (req as AuthedRequest).playerId!;
   const { resource, side, price, quantity } = req.body ?? {};
   if (!Number.isInteger(price) || !Number.isInteger(quantity)) {
     return res.status(400).json({ error: 'price and quantity must be integers' });
   }
   try {
-    const r = await placeOrder(agentId, resource, side, price, quantity);
+    const r = await placeOrder(playerId, resource, side, price, quantity);
     if (!r.ok) return res.status(400).json({ error: r.reason });
     res.json({ ok: true, order: r.result?.order, trades: r.result?.trades ?? [] });
   } catch (e) {
@@ -497,12 +624,12 @@ router.post('/market/order', authAgent, rateLimit, async (req: Request, res: Res
   }
 });
 
-router.delete('/market/order/:id', authAgent, rateLimit, async (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
+router.delete('/market/order/:id', authPlayer, rateLimit, async (req: Request, res: Response) => {
+  const playerId = (req as AuthedRequest).playerId!;
   const id = parseInt(String(req.params.id), 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
   try {
-    const r = await cancelOrder(agentId, id);
+    const r = await cancelOrder(playerId, id);
     if (!r.ok) return res.status(400).json({ error: r.reason });
     res.json({ ok: true });
   } catch (e) {
@@ -519,9 +646,9 @@ router.get('/market/book/:resource', (req: Request, res: Response) => {
   res.json(getBook(r as ResourceType));
 });
 
-router.get('/market/orders', authAgent, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  res.json({ orders: getOwnerOrders(agentId) });
+router.get('/market/orders', authPlayer, (req: Request, res: Response) => {
+  const playerId = (req as AuthedRequest).playerId!;
+  res.json({ orders: getOwnerOrders(playerId) });
 });
 
 // ──────────────────────────────────────────────────────────────────────

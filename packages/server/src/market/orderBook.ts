@@ -2,8 +2,6 @@ import type { Database, Statement } from 'better-sqlite3';
 import { TRADING_FEE_BPS, BPS_DENOMINATOR, RESOURCE_TYPES } from '@gamestu/shared';
 import type { ResourceType } from '@gamestu/shared';
 import {
-  getPlayerCredits,
-  updatePlayerCredits,
   getPlayerResources,
   updatePlayerResources,
   addEvent,
@@ -228,7 +226,12 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       updatePlayerResources(buyer, buyerResNew);
 
       // Seller receives net payout. Buyer's escrow already held the funds.
-      updatePlayerCredits(seller, getPlayerCredits(seller) + sellerEarn);
+      // Routed through economy() so swapping to OnChainEconomy later moves
+      // the settlement on-chain without changing this code.
+      // (The async signature is satisfied synchronously by InMemoryEconomy,
+      //  which only does DB writes — safe to use inside the sync sqlite
+      //  transaction. We intentionally don't await.)
+      void economy().credit(seller, sellerEarn, 'market_fill_seller');
       recordGdp(sellerEarn);
       totalFee += fee;
 
@@ -236,7 +239,7 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       // trade clears at (their escrow was at inbound.price for buy side).
       if (isBuy && inbound.price > tradePrice) {
         const refund = (inbound.price - tradePrice) * matchQty;
-        updatePlayerCredits(inbound.owner_id, getPlayerCredits(inbound.owner_id) + refund);
+        void economy().credit(inbound.owner_id, refund, 'market_fill_buyer_refund');
       }
 
       const tradeNow = Date.now();
@@ -273,9 +276,10 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       remaining -= matchQty;
     }
 
-    // Single treasury credit for all fees in this match pass.
+    // Single treasury credit for all fees in this match pass. Routed
+    // through economy() — see comment above on the seller payout.
     if (totalFee > 0) {
-      updatePlayerCredits(WORLD_TREASURY_ID, getPlayerCredits(WORLD_TREASURY_ID) + totalFee);
+      void economy().credit(WORLD_TREASURY_ID, totalFee, 'trading_fee');
     }
 
     const inboundStatus: 'filled' | 'open' = inbound.filled >= inbound.quantity ? 'filled' : 'open';

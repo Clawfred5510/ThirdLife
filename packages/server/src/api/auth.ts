@@ -7,9 +7,6 @@ import {
   createAuthSession,
   getAuthSessionPlayerId,
   revokeAuthSession,
-  getOrCreatePlayer,
-  getWalletBots,
-  createWalletBot,
 } from '../db';
 
 const router = Router();
@@ -107,40 +104,6 @@ router.get('/whoami', (req: Request, res: Response) => {
   if (!token) return res.json({ playerId: null });
   const playerId = getAuthSessionPlayerId(token);
   return res.json({ playerId });
-});
-
-// ──────────────────────────────────────────────────────────────────────
-// Phase E.1 — wallet has up to 10 child bot players
-// ──────────────────────────────────────────────────────────────────────
-
-function authedAddress(req: Request): string | null {
-  const auth = req.get('authorization') || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (!token) return null;
-  return getAuthSessionPlayerId(token); // wallet sessions use lowercased address as playerId
-}
-
-router.get('/wallet/:address/bots', (req: Request, res: Response) => {
-  const addr = String(req.params.address ?? '').toLowerCase();
-  if (!isAddress(addr)) return res.status(400).json({ error: 'invalid_address' });
-  res.json({ bots: getWalletBots(addr) });
-});
-
-router.post('/wallet/:address/bots', (req: Request, res: Response) => {
-  const addr = String(req.params.address ?? '').toLowerCase();
-  if (!isAddress(addr)) return res.status(400).json({ error: 'invalid_address' });
-  const session = authedAddress(req);
-  if (session !== addr) return res.status(403).json({ error: 'forbidden' });
-  const name = String((req.body ?? {}).name ?? '').trim();
-  if (!name || name.length > 32) return res.status(400).json({ error: 'invalid_name' });
-
-  const botId = `${addr}:bot:${crypto.randomBytes(8).toString('hex')}`;
-  // Create the underlying player record so the bot can immediately
-  // act in the world (claim parcels, build, etc.).
-  getOrCreatePlayer(botId, name);
-  const slot = createWalletBot(addr, botId, name);
-  if (slot === null) return res.status(409).json({ error: 'wallet_full', limit: 10 });
-  res.json({ ok: true, bot: { bot_id: botId, name, slot_index: slot } });
 });
 
 export default router;
