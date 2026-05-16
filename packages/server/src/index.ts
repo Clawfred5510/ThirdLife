@@ -1,4 +1,4 @@
-import { Server } from 'colyseus';
+import { Server, matchMaker } from 'colyseus';
 import { createServer } from 'http';
 import express from 'express';
 import cors from 'cors';
@@ -62,4 +62,15 @@ httpServer.listen(config.port, config.host, () => {
   console.log(
     `${GAME_NAME} server listening on http://${config.host}:${config.port} (origin=${config.clientOrigin})`
   );
+
+  // Boot a single persistent game room so the autopilot runs even when
+  // no humans are connected. Combined with GameRoom.autoDispose=false
+  // this means agents are "online" 24/7 with the server process.
+  matchMaker.createRoom('game', {})
+    .then((room) => {
+      console.log(`[matchMaker] game room created at boot: ${room.roomId}`);
+    })
+    .catch((err) => {
+      console.error('[matchMaker] failed to create game room at boot:', err);
+    });
 });

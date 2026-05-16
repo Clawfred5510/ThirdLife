@@ -44,6 +44,7 @@ import {
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
+import { onAgentChanged } from '../events/agentEvents';
 import { generateUnitsForParcel, buildingHasUnits, tickPropertyIncome, backfillSubUnits } from '../properties';
 import { resolveDecreesTick } from '../governance';
 import { getWorldTick } from '../world';
@@ -82,15 +83,25 @@ export class GameRoom extends Room<GameState> {
 
   /**
    * AI agents shown to clients as virtual players. Keyed by agent id.
-   * Loaded from DB on boot, refreshed every autopilot tick (catches new
-   * agents that were registered via /agents/register). Their positions
-   * are updated by the autopilot pass and broadcast as PLAYER_UPDATE.
+   * Loaded from DB on boot, refreshed every autopilot tick and whenever
+   * the REST agent-api fires an event via agentEvents. Positions are
+   * updated by the autopilot pass and broadcast as PLAYER_UPDATE.
    */
   private agentPlayers = new Map<string, PlayerData>();
+
+  /** Unsubscribe handle for the agent-events bus (set in onCreate, called in onDispose). */
+  private offAgentChanged: (() => void) | null = null;
 
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
+
+    // Keep the room alive even with zero connected humans. Agents need
+    // to be "online" continuously and the autopilot tick lives in this
+    // room's update loop. Without this, the room would dispose when the
+    // last human leaves and the autopilot would stop until someone else
+    // joined.
+    this.autoDispose = false;
 
     // ---- Seed parcels into DB ----
     seedParcels();
@@ -102,6 +113,12 @@ export class GameRoom extends Room<GameState> {
     if (this.agentPlayers.size > 0) {
       console.log(`[GameRoom] ${this.agentPlayers.size} agents loaded into world`);
     }
+
+    // Subscribe to agent-events so new/removed/toggled agents show up
+    // immediately in the world (no 60s autopilot-tick wait).
+    this.offAgentChanged = onAgentChanged(() => {
+      this.refreshAgents(false);
+    });
 
     // ---- Phase C: backfill sub-units for any pre-existing apartments
     // and offices that were built before the multi-floor system landed.
@@ -913,5 +930,6 @@ export class GameRoom extends Room<GameState> {
 
   onDispose() {
     console.log(`GameRoom disposed: ${this.roomId}`);
+    if (this.offAgentChanged) { this.offAgentChanged(); this.offAgentChanged = null; }
   }
 }

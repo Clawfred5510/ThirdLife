@@ -22,6 +22,7 @@ import {
 } from '../db';
 import { economy } from '../economy';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
+import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
 import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
 import { getAllAgents } from '../db';
@@ -341,6 +342,11 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     owner_wallet: wallet,
   });
 
+  // Push the new agent into the GameRoom immediately — without this the
+  // body wouldn't appear in the 3D world until the next autopilot tick
+  // (up to 60 s).
+  notifyAgentChanged(id);
+
   // Optional initial allocation — failures here don't roll back the agent.
   let initialFunded = 0;
   let initialFundError: string | undefined;
@@ -411,6 +417,7 @@ router.post('/agents/:id/autopilot', authWallet, (req: Request, res: Response) =
     return res.status(403).json({ error: 'not_owner' });
   }
   _rawDb().prepare('UPDATE agents SET autopilot_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, agentId);
+  notifyAgentChanged(agentId);
   res.json({ ok: true, autopilot_enabled: enabled });
 });
 
@@ -446,6 +453,7 @@ router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) =>
   }
   setAgentWorkplace(agentId, p.id);
   addEvent('agent_reassigned', agentId, { workplace_parcel_id: p.id });
+  notifyAgentChanged(agentId);
   res.json({ ok: true, workplace_parcel_id: p.id });
 });
 
@@ -665,6 +673,7 @@ router.delete('/agents/:id', authWallet, rateLimit, async (req: Request, res: Re
   }
 
   addEvent('agent_deleted', wallet, { agent: agentId, name: agent.name, returned: summary });
+  notifyAgentChanged(agentId);
   res.json({ ok: true, returned: summary });
 });
 

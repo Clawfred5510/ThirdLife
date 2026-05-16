@@ -22,10 +22,18 @@ export const Toast: React.FC = () => {
 
   useEffect(() => {
     const unsubAdd = onPlayerAdd((_sessionId: string, player: PlayerSnapshot) => {
+      // AI agents are persistent NPCs — they don't "join" in any meaningful
+      // sense. Skip them so logging in doesn't fire a wall of toasts for
+      // every agent in the world.
+      if (player.bot_kind) return;
       addToast(`${player.name} joined`, 'join');
     });
 
     const unsubRemove = onPlayerRemove((sessionId: string) => {
+      // Agent IDs look like 0x…:agent:<hex>. Skip those — agent removals
+      // happen frequently (autopilot toggles, deletions) and aren't
+      // human-facing "left" events.
+      if (sessionId.includes(':agent:')) return;
       addToast(`Player ${sessionId.slice(0, 4)} left`, 'leave');
     });
 
