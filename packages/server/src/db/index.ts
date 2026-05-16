@@ -39,6 +39,20 @@ export interface BusinessUpdate {
   height?: number;
 }
 
+export interface AgentRow {
+  id: string;
+  name: string;
+  personality: string;
+  strategy: string;
+  autopilot_enabled: number;
+  last_autopilot_tick: number;
+  created_at: string;
+  owner_wallet: string | null;
+  job: string | null;
+  workplace_parcel_id: number | null;
+  appearance: string | null;
+}
+
 // ── SQLite vs In-Memory fallback ───────────────────────────────────────────
 
 interface DBBackend {
@@ -64,14 +78,20 @@ interface DBBackend {
   getPlayerParcels(playerId: string): ParcelRow[];
   addEvent(type: string, playerId: string | null, data: Record<string, unknown>, severity?: string): void;
   getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }): Array<{ id: number; type: string; player_id: string | null; data: string; severity: string; created_at: string }>;
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void;
+  registerAgent(
+    id: string, name: string, personality: string, strategy: string,
+    apiKey: string, ownerWallet: string | null,
+    job: string | null, workplaceParcelId: number | null, appearanceJson: string | null,
+  ): void;
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null;
-  getAllAgents(): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>;
+  getAllAgents(): Array<AgentRow>;
   /** Agents owned by a wallet (the unified replacement for wallet_bots). */
-  getAgentsByWallet(walletAddress: string): Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+  getAgentsByWallet(walletAddress: string): Array<AgentRow>;
   /** Single agent's record, including its owning wallet (or null for legacy unowned agents). */
-  getAgentById(agentId: string): { id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null } | null;
+  getAgentById(agentId: string): AgentRow | null;
   countAgentsByWallet(walletAddress: string): number;
+  /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
+  setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
    *  +1 reputation per consumed unit. Returns a per-owner summary. */
   tickReputation(): Array<{ owner_id: string; consumed: number }>;
@@ -224,6 +244,15 @@ class SQLiteDatabase implements DBBackend {
     // claims them via /admin or the migration below.
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN owner_wallet TEXT`); } catch (_) { /* exists */ }
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_wallet)`);
+
+    // Jobs (2026-05-16): each agent has a player-facing job id, an optional
+    // workplace parcel (can belong to anyone), and a cloned appearance with
+    // a job-specific hat. Legacy agents have NULL job — see
+    // inferJobFromPersonality in shared/.
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN job TEXT`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN workplace_parcel_id INTEGER`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN appearance TEXT`); } catch (_) { /* exists */ }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_workplace ON agents(workplace_parcel_id)`);
 
     // Phase C: properties table = sub-units of multi-floor buildings
     // (apartment studios, office spaces). The legacy columns
@@ -677,13 +706,27 @@ class SQLiteDatabase implements DBBackend {
     return this.db.prepare(`SELECT * FROM events ${whereSql} ORDER BY id DESC LIMIT ?`).all(...params, limit) as any[];
   }
 
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void {
+  registerAgent(
+    id: string, name: string, personality: string, strategy: string,
+    apiKey: string, ownerWallet: string | null,
+    job: string | null, workplaceParcelId: number | null, appearanceJson: string | null,
+  ): void {
     this.db.prepare(
-      'INSERT INTO agents (id, name, personality, strategy, api_key, owner_wallet) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(id, name, personality, strategy, apiKey, ownerWallet ? ownerWallet.toLowerCase() : null);
+      `INSERT INTO agents (id, name, personality, strategy, api_key, owner_wallet, job, workplace_parcel_id, appearance)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id, name, personality, strategy, apiKey,
+      ownerWallet ? ownerWallet.toLowerCase() : null,
+      job, workplaceParcelId, appearanceJson,
+    );
     // Also create a player record so the agent can interact with the game.
     // New agents start at 0 — owners fund them via economy().allocate.
     this.db.prepare(`INSERT OR IGNORE INTO players (id, name, credits) VALUES (?, ?, 0)`).run(id, name);
+    // Mirror the agent's appearance into the player record so the render
+    // path picks it up via the same field humans use.
+    if (appearanceJson) {
+      this.db.prepare(`UPDATE players SET appearance = ? WHERE id = ?`).run(appearanceJson, id);
+    }
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
@@ -691,24 +734,28 @@ class SQLiteDatabase implements DBBackend {
     return row ?? null;
   }
 
-  getAllAgents() {
+  getAllAgents(): AgentRow[] {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at, owner_wallet FROM agents`,
-    ).all() as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>;
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+              owner_wallet, job, workplace_parcel_id, appearance
+         FROM agents`,
+    ).all() as AgentRow[];
   }
 
-  getAgentsByWallet(walletAddress: string) {
+  getAgentsByWallet(walletAddress: string): AgentRow[] {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+              owner_wallet, job, workplace_parcel_id, appearance
          FROM agents WHERE owner_wallet = ? ORDER BY created_at ASC`,
-    ).all(walletAddress.toLowerCase()) as Array<{ id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string }>;
+    ).all(walletAddress.toLowerCase()) as AgentRow[];
   }
 
-  getAgentById(agentId: string) {
+  getAgentById(agentId: string): AgentRow | null {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at, owner_wallet
+      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+              owner_wallet, job, workplace_parcel_id, appearance
          FROM agents WHERE id = ?`,
-    ).get(agentId) as { id: string; name: string; personality: string; strategy: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null } | undefined ?? null;
+    ).get(agentId) as AgentRow | undefined ?? null;
   }
 
   countAgentsByWallet(walletAddress: string): number {
@@ -716,6 +763,10 @@ class SQLiteDatabase implements DBBackend {
       `SELECT COUNT(*) AS n FROM agents WHERE owner_wallet = ?`,
     ).get(walletAddress.toLowerCase()) as { n: number };
     return row.n;
+  }
+
+  setAgentWorkplace(agentId: string, parcelId: number | null): void {
+    this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
 
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
@@ -1041,12 +1092,27 @@ class MemoryDB implements DBBackend {
     return arr.slice(-limit).reverse();
   }
 
-  private agents = new Map<string, { id: string; name: string; personality: string; strategy: string; apiKey: string; autopilot_enabled: number; last_autopilot_tick: number; created_at: string; owner_wallet: string | null }>();
+  private agents = new Map<string, AgentRow & { apiKey: string }>();
 
-  registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null): void {
-    this.agents.set(apiKey, { id, name, personality, strategy, apiKey, autopilot_enabled: 1, last_autopilot_tick: 0, created_at: new Date().toISOString(), owner_wallet: ownerWallet ? ownerWallet.toLowerCase() : null });
+  registerAgent(
+    id: string, name: string, personality: string, strategy: string,
+    apiKey: string, ownerWallet: string | null,
+    job: string | null, workplaceParcelId: number | null, appearanceJson: string | null,
+  ): void {
+    this.agents.set(apiKey, {
+      id, name, personality, strategy, apiKey,
+      autopilot_enabled: 1, last_autopilot_tick: 0,
+      created_at: new Date().toISOString(),
+      owner_wallet: ownerWallet ? ownerWallet.toLowerCase() : null,
+      job, workplace_parcel_id: workplaceParcelId, appearance: appearanceJson,
+    });
     // New agents start at 0 — owners fund them via economy().allocate.
-    this.players.set(id, { id, name, credits: 0, reputation: 0, x: 0, y: 0, z: -80, last_login: new Date().toISOString(), tutorial_done: 0, appearance: null });
+    this.players.set(id, {
+      id, name, credits: 0, reputation: 0,
+      x: 0, y: 0, z: -80,
+      last_login: new Date().toISOString(), tutorial_done: 0,
+      appearance: appearanceJson,
+    });
   }
 
   getAgentByApiKey(apiKey: string): { id: string; name: string } | null {
@@ -1054,22 +1120,22 @@ class MemoryDB implements DBBackend {
     return a ? { id: a.id, name: a.name } : null;
   }
 
-  getAllAgents() {
-    return Array.from(this.agents.values()).map(({ apiKey, ...rest }) => rest);
+  getAllAgents(): AgentRow[] {
+    return Array.from(this.agents.values()).map(({ apiKey: _k, ...rest }) => rest);
   }
 
-  getAgentsByWallet(walletAddress: string) {
+  getAgentsByWallet(walletAddress: string): AgentRow[] {
     const addr = walletAddress.toLowerCase();
     return Array.from(this.agents.values())
       .filter((a) => a.owner_wallet === addr)
-      .map(({ apiKey, owner_wallet, ...rest }) => rest)
+      .map(({ apiKey: _k, ...rest }) => rest)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
-  getAgentById(agentId: string) {
+  getAgentById(agentId: string): AgentRow | null {
     for (const a of this.agents.values()) {
       if (a.id === agentId) {
-        const { apiKey, ...rest } = a;
+        const { apiKey: _k, ...rest } = a;
         return rest;
       }
     }
@@ -1081,6 +1147,12 @@ class MemoryDB implements DBBackend {
     let n = 0;
     for (const a of this.agents.values()) if (a.owner_wallet === addr) n += 1;
     return n;
+  }
+
+  setAgentWorkplace(agentId: string, parcelId: number | null): void {
+    for (const a of this.agents.values()) {
+      if (a.id === agentId) { a.workplace_parcel_id = parcelId; return; }
+    }
   }
 
   tickReputation(): Array<{ owner_id: string; consumed: number }> {
@@ -1239,14 +1311,19 @@ export function addEvent(type: string, playerId: string | null, data: Record<str
 export function getEvents(limit?: number, opts?: { severity?: string; type?: string; playerId?: string }) {
   return backend.getEvents(limit, opts);
 }
-export function registerAgent(id: string, name: string, personality: string, strategy: string, apiKey: string, ownerWallet: string | null) {
-  backend.registerAgent(id, name, personality, strategy, apiKey, ownerWallet);
+export function registerAgent(
+  id: string, name: string, personality: string, strategy: string,
+  apiKey: string, ownerWallet: string | null,
+  job: string | null = null, workplaceParcelId: number | null = null, appearanceJson: string | null = null,
+) {
+  backend.registerAgent(id, name, personality, strategy, apiKey, ownerWallet, job, workplaceParcelId, appearanceJson);
 }
 export function getAgentByApiKey(apiKey: string) { return backend.getAgentByApiKey(apiKey); }
 export function getAllAgents() { return backend.getAllAgents(); }
 export function getAgentsByWallet(walletAddress: string) { return backend.getAgentsByWallet(walletAddress); }
 export function getAgentById(agentId: string) { return backend.getAgentById(agentId); }
 export function countAgentsByWallet(walletAddress: string) { return backend.countAgentsByWallet(walletAddress); }
+export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }

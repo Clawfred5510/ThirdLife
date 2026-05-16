@@ -58,7 +58,14 @@ import {
   AgentPersonality,
   AgentStrategy,
   CURRENCY_NAME,
+  JOBS,
+  JOB_IDS,
+  JobId,
+  applyJobLook,
+  DEFAULT_APPEARANCE,
+  Appearance,
 } from '@gamestu/shared';
+import { setAgentWorkplace } from '../db';
 
 const router = Router();
 
@@ -226,39 +233,178 @@ function authWallet(req: Request, res: Response, next: NextFunction): void {
 
 const MAX_AGENTS_PER_WALLET = 10;
 
-router.post('/agents/register', authWallet, (req: Request, res: Response) => {
-  const { name, personality, strategy_preset } = req.body ?? {};
-  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name (string) required' });
-  if (!personality || !AGENT_PERSONALITIES.includes(personality as AgentPersonality)) {
-    return res.status(400).json({ error: `personality required, one of: ${AGENT_PERSONALITIES.join(', ')}` });
-  }
-  if (!strategy_preset || !AGENT_STRATEGIES.includes(strategy_preset as AgentStrategy)) {
-    return res.status(400).json({ error: `strategy_preset required, one of: ${AGENT_STRATEGIES.join(', ')}` });
+router.post('/agents/register', authWallet, async (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const body = (req.body ?? {}) as {
+    name?: string;
+    job?: JobId;
+    workplace_parcel_id?: number;
+    initial_fund?: number;
+    // legacy fields (back-compat for the old form): personality + strategy_preset
+    personality?: AgentPersonality;
+    strategy_preset?: AgentStrategy;
+  };
+
+  if (!body.name || typeof body.name !== 'string') {
+    return res.status(400).json({ error: 'name (string) required' });
   }
 
-  const wallet = (req as AuthedRequest).walletId!;
+  // Resolve job. Either an explicit JobId (new flow) or inferred from
+  // legacy personality+strategy (back-compat for scripts that pre-date jobs).
+  let job: JobId;
+  let personality: AgentPersonality;
+  let strategy: AgentStrategy;
+  if (body.job) {
+    if (!JOB_IDS.includes(body.job)) {
+      return res.status(400).json({ error: `unknown job, expected one of: ${JOB_IDS.join(', ')}` });
+    }
+    job = body.job;
+    personality = JOBS[job].personality;
+    strategy = JOBS[job].strategy;
+  } else if (body.personality && AGENT_PERSONALITIES.includes(body.personality)) {
+    // Old request shape — keep working for /agents/register clients that
+    // pre-date the job picker. Map personality → reasonable default job.
+    personality = body.personality;
+    strategy = (body.strategy_preset && AGENT_STRATEGIES.includes(body.strategy_preset))
+      ? body.strategy_preset : 'balanced';
+    job = JOB_IDS.find((id) => JOBS[id].personality === personality) ?? 'farmer';
+  } else {
+    return res.status(400).json({ error: `job required, one of: ${JOB_IDS.join(', ')}` });
+  }
+
   if (countAgentsByWallet(wallet) >= MAX_AGENTS_PER_WALLET) {
     return res.status(409).json({ error: 'wallet_at_agent_cap', limit: MAX_AGENTS_PER_WALLET });
   }
+
+  // Workplace resolution. If the job needs a parcel, pick one:
+  //   1. caller passed an explicit workplace_parcel_id → validate match
+  //   2. else first owned parcel with the right building type
+  //   3. else any other player's parcel with the right building type
+  //   4. else null and the agent will idle until a workplace is reassigned
+  const jobSpec = JOBS[job];
+  let workplaceParcelId: number | null = null;
+  let workplaceOwnedByCaller = false;
+  if (jobSpec.requires_building) {
+    const reqType = jobSpec.requires_building;
+    if (body.workplace_parcel_id !== undefined) {
+      const parcels = getAllParcels();
+      const p = parcels.find((x) => x.id === body.workplace_parcel_id);
+      if (!p) return res.status(404).json({ error: 'workplace_parcel_not_found' });
+      if ((p as any).building_type !== reqType) {
+        return res.status(400).json({ error: 'workplace_wrong_building_type', expected: reqType });
+      }
+      // If parcel is owned and the owner is not the caller, that's still
+      // allowed — the agent becomes a freelancer at that parcel. We just
+      // note it for the audit event.
+      workplaceParcelId = p.id;
+      workplaceOwnedByCaller = p.owner_id === wallet;
+    } else {
+      const parcels = getAllParcels();
+      const own = parcels.find((x) => x.owner_id === wallet && (x as any).building_type === reqType);
+      if (own) {
+        workplaceParcelId = own.id;
+        workplaceOwnedByCaller = true;
+      } else {
+        const foreign = parcels.find((x) => x.owner_id && x.owner_id !== wallet && (x as any).building_type === reqType);
+        if (foreign) workplaceParcelId = foreign.id;
+      }
+    }
+  }
+
+  // Clone owner appearance and apply the job's hat. Falls back to
+  // DEFAULT_APPEARANCE if the owner hasn't dressed yet.
+  let ownerAppearance: Appearance = DEFAULT_APPEARANCE;
+  try {
+    const ownerPlayer = getAllPlayers().find((p) => p.id === wallet);
+    if (ownerPlayer?.appearance) ownerAppearance = JSON.parse(ownerPlayer.appearance);
+  } catch { /* keep default */ }
+  const agentAppearance = applyJobLook(ownerAppearance, job);
+  const agentAppearanceJson = JSON.stringify(agentAppearance);
 
   const id = `${wallet}:agent:${crypto.randomBytes(8).toString('hex')}`;
   const apiKey = generateApiKey();
 
   try {
-    registerAgent(id, name, personality, strategy_preset, apiKey, wallet);
+    registerAgent(
+      id, body.name, personality, strategy, apiKey, wallet,
+      job, workplaceParcelId, agentAppearanceJson,
+    );
   } catch (err: any) {
     if (err?.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Agent name already taken' });
     return res.status(500).json({ error: 'Registration failed' });
   }
 
-  addEvent('agent_registered', id, { name, personality, strategy_preset, owner_wallet: wallet });
+  addEvent('agent_registered', id, {
+    name: body.name, job, personality, strategy,
+    workplace_parcel_id: workplaceParcelId,
+    workplace_foreign: workplaceParcelId !== null && !workplaceOwnedByCaller,
+    owner_wallet: wallet,
+  });
+
+  // Optional initial allocation — failures here don't roll back the agent.
+  let initialFunded = 0;
+  let initialFundError: string | undefined;
+  if (typeof body.initial_fund === 'number' && Number.isInteger(body.initial_fund) && body.initial_fund > 0) {
+    try {
+      const r = await economy().allocate(wallet, id, body.initial_fund, 'fund');
+      if (r.ok) initialFunded = body.initial_fund;
+      else initialFundError = r.reason ?? 'allocate_failed';
+    } catch (e) {
+      initialFundError = (e as Error).message;
+    }
+  }
 
   res.json({
     ok: true,
-    agent: { id, name, balance: 0, personality, strategy_preset, owner_wallet: wallet },
+    agent: {
+      id, name: body.name,
+      job, label: jobSpec.label,
+      personality, strategy, owner_wallet: wallet,
+      workplace_parcel_id: workplaceParcelId,
+      workplace_foreign: workplaceParcelId !== null && !workplaceOwnedByCaller,
+      balance: initialFunded,
+      appearance: agentAppearance,
+    },
     api_key: apiKey,
+    initial_fund: initialFunded,
+    initial_fund_error: initialFundError,
     note: 'Save this API key — it is only shown once. Fund the agent via POST /agents/' + id + '/allocate.',
   });
+});
+
+// Reassign an agent's workplace. Owner-only. The new parcel must have the
+// right building type for the agent's job (or any building if the job has
+// no requirement — though such jobs ignore workplace anyway).
+router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const { workplace_parcel_id } = (req.body ?? {}) as { workplace_parcel_id?: number | null };
+
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+
+  if (workplace_parcel_id === null || workplace_parcel_id === undefined) {
+    setAgentWorkplace(agentId, null);
+    return res.json({ ok: true, workplace_parcel_id: null });
+  }
+  if (!Number.isInteger(workplace_parcel_id)) {
+    return res.status(400).json({ error: 'workplace_parcel_id must be an integer or null' });
+  }
+
+  const job = agent.job as JobId | null;
+  const reqType = job && JOBS[job]?.requires_building;
+  const parcels = getAllParcels();
+  const p = parcels.find((x) => x.id === workplace_parcel_id);
+  if (!p) return res.status(404).json({ error: 'parcel_not_found' });
+  if (reqType && (p as any).building_type !== reqType) {
+    return res.status(400).json({ error: 'parcel_wrong_building_type', expected: reqType });
+  }
+  setAgentWorkplace(agentId, p.id);
+  addEvent('agent_reassigned', agentId, { workplace_parcel_id: p.id });
+  res.json({ ok: true, workplace_parcel_id: p.id });
 });
 
 // ── Public info endpoints ──────────────────────────────────────────────
@@ -334,9 +480,15 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
   const agents = getAgentsByWallet(wallet);
   const out = agents.map((a) => {
     const parcels = getPlayerParcels(a.id);
+    const jobId = (a.job ?? null) as JobId | null;
+    const jobLabel = jobId && JOBS[jobId] ? JOBS[jobId].label : null;
     return {
       id: a.id,
       name: a.name,
+      job: jobId,
+      job_label: jobLabel,
+      job_icon: jobId && JOBS[jobId] ? JOBS[jobId].icon : null,
+      workplace_parcel_id: a.workplace_parcel_id,
       personality: a.personality,
       strategy: a.strategy,
       balance: getPlayerCredits(a.id),
@@ -349,6 +501,20 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
     };
   });
   res.json({ wallet, agents: out, limit: MAX_AGENTS_PER_WALLET });
+});
+
+// Public catalog of job presets — used by the Phone create flow so the
+// client doesn't have to bundle the table.
+router.get('/jobs', (_req: Request, res: Response) => {
+  res.json({
+    jobs: JOB_IDS.map((id) => ({
+      id,
+      label: JOBS[id].label,
+      icon: JOBS[id].icon,
+      summary: JOBS[id].summary,
+      requires_building: JOBS[id].requires_building ?? null,
+    })),
+  });
 });
 
 router.post('/agents/:id/allocate', authWallet, rateLimit, async (req: Request, res: Response) => {

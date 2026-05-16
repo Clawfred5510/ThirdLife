@@ -13,6 +13,7 @@ import {
   zoneForGrid, isPremiumParcel,
   AGENT_PERSONALITIES, AGENT_STRATEGIES,
   AgentPersonality, AgentStrategy,
+  JOBS, JOB_IDS, JobId,
 } from '@gamestu/shared';
 
 type AppId =
@@ -486,6 +487,10 @@ const MarketBody: React.FC = () => {
 interface AgentRow {
   id: string;
   name: string;
+  job: JobId | null;
+  job_label: string | null;
+  job_icon: string | null;
+  workplace_parcel_id: number | null;
   personality: string;
   strategy: string;
   balance: number;
@@ -497,6 +502,24 @@ interface AgentRow {
 }
 
 interface AgentsMine { wallet: string; agents: AgentRow[]; limit: number; }
+
+interface WorldParcel {
+  id: number;
+  grid_x: number;
+  grid_y: number;
+  owner_id: string;
+  business_type: string;
+  business_name: string;
+}
+
+interface WorldResp {
+  parcels: number;
+  claimed: number;
+  agents: number;
+  tick: number;
+  gdp: number;
+  parcels_data: WorldParcel[];
+}
 
 const AgentsBody: React.FC = () => {
   const [data, setData] = useState<AgentsMine | null>(null);
@@ -574,7 +597,7 @@ const AgentsBody: React.FC = () => {
 };
 
 const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent, onChange }) => {
-  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim'>('idle');
+  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim' | 'reassign'>('idle');
   const [amt, setAmt] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -595,22 +618,32 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
     }
   };
 
+  const jobIcon = agent.job_icon ?? '🤖';
+  const jobLabel = agent.job_label ?? agent.personality;
+  const reqBuilding = agent.job ? JOBS[agent.job]?.requires_building : undefined;
+
   return (
     <div style={S.agentCard}>
       <div style={S.agentCardHead}>
-        <span style={S.agentName}>{agent.name}</span>
+        <span style={S.agentName}>
+          <span style={{ marginRight: 4 }}>{jobIcon}</span>{agent.name}
+        </span>
         <span style={S.agentBal}>{formatAmeta(agent.balance)} $AMETA</span>
       </div>
       <div style={S.agentMeta}>
-        <span>{agent.personality}</span>
+        <span>{jobLabel}</span>
         <span>·</span>
-        <span>{agent.strategy}</span>
-        <span>·</span>
-        <span>{agent.land_count} parcel{agent.land_count === 1 ? '' : 's'}</span>
+        <span>
+          {agent.workplace_parcel_id
+            ? `parcel #${agent.workplace_parcel_id}`
+            : reqBuilding
+              ? 'no workplace'
+              : 'roams'}
+        </span>
         <span>·</span>
         <span>{agent.autopilot_enabled ? 'autopilot on' : 'autopilot off'}</span>
       </div>
-      {mode === 'idle' ? (
+      {mode === 'idle' && (
         <div style={S.agentActions}>
           <button onClick={() => setMode('fund')} style={S.fundBtn}>Fund</button>
           <button
@@ -620,8 +653,14 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           >
             Reclaim
           </button>
+          {reqBuilding && (
+            <button onClick={() => setMode('reassign')} style={S.reclaimBtn}>
+              Reassign
+            </button>
+          )}
         </div>
-      ) : (
+      )}
+      {(mode === 'fund' || mode === 'reclaim') && (
         <div style={S.allocateRow}>
           <input
             type="number" min={1} step={1} value={amt}
@@ -642,40 +681,129 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           {err && <div style={S.formMsg}>{err}</div>}
         </div>
       )}
+      {mode === 'reassign' && reqBuilding && (
+        <ReassignPicker
+          agent={agent}
+          requiredBuilding={reqBuilding}
+          onCancel={() => setMode('idle')}
+          onDone={() => { setMode('idle'); onChange(); }}
+        />
+      )}
     </div>
   );
 };
+
+const ReassignPicker: React.FC<{
+  agent: AgentRow;
+  requiredBuilding: string;
+  onCancel: () => void;
+  onDone: () => void;
+}> = ({ agent, requiredBuilding, onCancel, onDone }) => {
+  const [owned, setOwned] = useState<WorldParcel[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const myWallet = (() => { try { return localStorage.getItem('tl_player_id'); } catch { return null; } })();
+
+  useEffect(() => {
+    apiGet<WorldResp>('/world')
+      .then((r) => {
+        const mine = r.parcels_data.filter(
+          (p) => p.owner_id === myWallet && p.business_type === requiredBuilding,
+        );
+        setOwned(mine);
+      })
+      .catch((e) => setErr((e as Error).message));
+  }, [myWallet, requiredBuilding]);
+
+  const reassign = async (parcelId: number) => {
+    setBusy(true); setErr(null);
+    try {
+      await apiPost(`/agents/${agent.id}/reassign`, { workplace_parcel_id: parcelId }, { authed: true });
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.allocateRow}>
+      {!owned && <span style={S.formMsg}>Loading owned {requiredBuilding}s…</span>}
+      {owned && owned.length === 0 && (
+        <span style={S.formMsg}>
+          You don't own a {requiredBuilding}. Build one first, then reassign.
+        </span>
+      )}
+      {owned && owned.length > 0 && (
+        <select
+          disabled={busy}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (Number.isFinite(v)) reassign(v);
+          }}
+          style={S.select}
+          defaultValue=""
+        >
+          <option value="" disabled>Pick a {requiredBuilding}…</option>
+          {owned.map((p) => (
+            <option key={p.id} value={p.id}>
+              #{p.id} — {p.business_name || requiredBuilding} ({p.grid_x},{p.grid_y})
+            </option>
+          ))}
+        </select>
+      )}
+      <button onClick={onCancel} style={S.cancelTextBtn}>cancel</button>
+      {err && <div style={S.formMsg}>{err}</div>}
+    </div>
+  );
+};
+
+// ── Create-agent four-step wizard ──────────────────────────────────────
+// Step 1: Job picker (8 cards)
+// Step 2: Workplace picker (only for jobs that need one)
+// Step 3: Name + initial fund
+// Step 4: Confirm + spawn
+
+type CreateStep = 'job' | 'workplace' | 'name' | 'confirm';
 
 const CreateAgentModal: React.FC<{
   onClose: () => void;
   onCreated: (payload: { id: string; api_key: string }) => void;
 }> = ({ onClose, onCreated }) => {
+  const [step, setStep] = useState<CreateStep>('job');
+  const [job, setJob] = useState<JobId | null>(null);
+  const [workplaceId, setWorkplaceId] = useState<number | null>(null);
+  const [workplaceLabel, setWorkplaceLabel] = useState<string>('');
   const [name, setName] = useState('');
-  const [personality, setPersonality] = useState<AgentPersonality>(AGENT_PERSONALITIES[0]);
-  const [strategy, setStrategy] = useState<AgentStrategy>(AGENT_STRATEGIES[0]);
   const [initialFund, setInitialFund] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const jobSpec = job ? JOBS[job] : null;
+  const needsWorkplace = !!jobSpec?.requires_building;
+
+  const advanceFromJob = () => {
+    if (!job) return;
+    setStep(needsWorkplace ? 'workplace' : 'name');
+  };
+
   const submit = async () => {
+    if (!job) return;
     setErr(null);
     if (!name.trim()) { setErr('Name required.'); return; }
     setBusy(true);
     try {
-      const created = await apiPost<{ ok: boolean; agent: { id: string }; api_key: string }>(
-        '/agents/register',
-        { name: name.trim(), personality, strategy_preset: strategy },
-        { authed: true },
-      );
-      // Optional initial allocation. Errors here don't roll back creation —
-      // the agent exists, owner can fund it later.
       const fund = parseInt(initialFund, 10);
-      if (Number.isFinite(fund) && fund > 0) {
-        try {
-          await apiPost(`/agents/${created.agent.id}/allocate`, { amount: fund }, { authed: true });
-        } catch (e) {
-          setErr(`Agent created, but initial fund failed: ${(e as Error).message}`);
-        }
+      const body: Record<string, unknown> = { name: name.trim(), job };
+      if (workplaceId !== null) body.workplace_parcel_id = workplaceId;
+      if (Number.isFinite(fund) && fund > 0) body.initial_fund = fund;
+
+      const created = await apiPost<{ ok: boolean; agent: { id: string }; api_key: string; initial_fund_error?: string }>(
+        '/agents/register', body, { authed: true },
+      );
+      if (created.initial_fund_error) {
+        setErr(`Agent created, but initial fund failed: ${created.initial_fund_error}`);
       }
       onCreated({ id: created.agent.id, api_key: created.api_key });
     } catch (e) {
@@ -688,35 +816,164 @@ const CreateAgentModal: React.FC<{
   return (
     <div style={S.modalScrim} onClick={onClose}>
       <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={S.modalTitle}>New agent</div>
-        <input
-          type="text" value={name} onChange={(e) => setName(e.target.value)}
-          placeholder="Name (unique)"
-          maxLength={32}
-          style={S.input}
-          autoFocus
-        />
-        <select value={personality} onChange={(e) => setPersonality(e.target.value as AgentPersonality)} style={S.select}>
-          {AGENT_PERSONALITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select value={strategy} onChange={(e) => setStrategy(e.target.value as AgentStrategy)} style={S.select}>
-          {AGENT_STRATEGIES.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <input
-          type="number" min={0} step={1} value={initialFund}
-          onChange={(e) => setInitialFund(e.target.value)}
-          placeholder="Initial $AMETA (optional)"
-          style={S.input}
-        />
-        {err && <div style={S.errMsg}>{err}</div>}
-        <div style={S.modalActions}>
-          <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
-          <button onClick={submit} disabled={busy} style={S.submit}>
-            {busy ? '...' : 'Create'}
-          </button>
+        <div style={S.modalTitle}>
+          New agent — step {step === 'job' ? '1' : step === 'workplace' ? '2' : step === 'name' ? '3' : '4'} of {needsWorkplace ? 4 : 3}
         </div>
+
+        {step === 'job' && (
+          <>
+            <div style={S.modalNote}>Pick a role. Each job determines what your agent does and where it stands.</div>
+            <div style={S.jobGrid}>
+              {JOB_IDS.map((id) => (
+                <button
+                  key={id}
+                  onClick={() => setJob(id)}
+                  style={{ ...S.jobCard, ...(job === id ? S.jobCardActive : {}) }}
+                >
+                  <div style={S.jobIcon}>{JOBS[id].icon}</div>
+                  <div style={S.jobLabel}>{JOBS[id].label}</div>
+                  <div style={S.jobSummary}>{JOBS[id].summary}</div>
+                </button>
+              ))}
+            </div>
+            <div style={S.modalActions}>
+              <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
+              <button onClick={advanceFromJob} disabled={!job} style={S.submit}>Next</button>
+            </div>
+          </>
+        )}
+
+        {step === 'workplace' && jobSpec && (
+          <WorkplaceStep
+            requiredBuilding={jobSpec.requires_building!}
+            jobLabel={jobSpec.label}
+            selected={workplaceId}
+            onPick={(id, label) => { setWorkplaceId(id); setWorkplaceLabel(label); }}
+            onBack={() => setStep('job')}
+            onContinue={() => setStep('name')}
+            onCancel={onClose}
+          />
+        )}
+
+        {step === 'name' && (
+          <>
+            <div style={S.modalNote}>Name your agent and optionally fund it now.</div>
+            <input
+              type="text" value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="Name (unique)" maxLength={32}
+              style={S.input} autoFocus
+            />
+            <input
+              type="number" min={0} step={1} value={initialFund}
+              onChange={(e) => setInitialFund(e.target.value)}
+              placeholder="Initial $AMETA (optional)"
+              style={S.input}
+            />
+            <div style={S.modalActions}>
+              <button
+                onClick={() => setStep(needsWorkplace ? 'workplace' : 'job')}
+                style={S.cancelTextBtn}
+              >
+                back
+              </button>
+              <button
+                onClick={() => setStep('confirm')}
+                disabled={!name.trim()}
+                style={S.submit}
+              >
+                Next
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 'confirm' && jobSpec && (
+          <>
+            <div style={S.confirmRow}>
+              <span style={S.confirmIcon}>{jobSpec.icon}</span>
+              <div>
+                <div style={S.confirmName}>{name}</div>
+                <div style={S.confirmRole}>{jobSpec.label}</div>
+              </div>
+            </div>
+            <div style={S.confirmDetails}>
+              <div>Workplace: {workplaceId !== null ? workplaceLabel : (needsWorkplace ? 'auto-assigned (any open)' : 'roams')}</div>
+              <div>Initial funding: {initialFund && parseInt(initialFund, 10) > 0 ? `${parseInt(initialFund, 10).toLocaleString()} $AMETA` : 'none — fund later'}</div>
+            </div>
+            {err && <div style={S.errMsg}>{err}</div>}
+            <div style={S.modalActions}>
+              <button onClick={() => setStep('name')} style={S.cancelTextBtn}>back</button>
+              <button onClick={submit} disabled={busy} style={S.submit}>
+                {busy ? '…' : 'Spawn agent'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
+  );
+};
+
+const WorkplaceStep: React.FC<{
+  requiredBuilding: string;
+  jobLabel: string;
+  selected: number | null;
+  onPick: (parcelId: number, label: string) => void;
+  onBack: () => void;
+  onContinue: () => void;
+  onCancel: () => void;
+}> = ({ requiredBuilding, jobLabel, selected, onPick, onBack, onContinue, onCancel }) => {
+  const [owned, setOwned] = useState<WorldParcel[] | null>(null);
+  const [foreignCount, setForeignCount] = useState<number>(0);
+  const myWallet = (() => { try { return localStorage.getItem('tl_player_id'); } catch { return null; } })();
+
+  useEffect(() => {
+    apiGet<WorldResp>('/world')
+      .then((r) => {
+        const matching = r.parcels_data.filter((p) => p.business_type === requiredBuilding);
+        const mine = matching.filter((p) => p.owner_id === myWallet);
+        const foreign = matching.filter((p) => p.owner_id !== myWallet);
+        setOwned(mine);
+        setForeignCount(foreign.length);
+      })
+      .catch(() => { setOwned([]); });
+  }, [myWallet, requiredBuilding]);
+
+  return (
+    <>
+      <div style={S.modalNote}>Pick where your {jobLabel} will work.</div>
+      {!owned && <div style={S.formMsg}>Loading owned {requiredBuilding}s…</div>}
+      {owned && owned.length === 0 && (
+        <div style={S.modalNote}>
+          You don't own a {requiredBuilding}. Your agent will work at one of the {foreignCount}
+          {' '}existing {requiredBuilding}{foreignCount === 1 ? '' : 's'} owned by other players.
+          You'll still earn the resources your agent produces; the parcel owner keeps their building income.
+        </div>
+      )}
+      {owned && owned.length > 0 && (
+        <div style={S.parcelList}>
+          {owned.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => onPick(p.id, `#${p.id} — ${p.business_name || requiredBuilding}`)}
+              style={{ ...S.parcelOption, ...(selected === p.id ? S.parcelOptionActive : {}) }}
+            >
+              <div style={S.parcelOptionTitle}>#{p.id} — {p.business_name || requiredBuilding}</div>
+              <div style={S.parcelOptionMeta}>grid ({p.grid_x}, {p.grid_y})</div>
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={S.modalActions}>
+        <button onClick={onCancel} style={S.cancelTextBtn}>cancel</button>
+        <button onClick={onBack} style={S.cancelTextBtn}>back</button>
+        <button onClick={onContinue} style={S.submit}>
+          {owned && owned.length > 0 && selected === null
+            ? 'Skip — auto-pick'
+            : 'Next'}
+        </button>
+      </div>
+    </>
   );
 };
 
@@ -1376,6 +1633,53 @@ const S: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace', fontSize: 10, color: '#D89438',
     wordBreak: 'break-all', marginTop: 2,
   },
+
+  // ── Job picker grid (create wizard, step 1) ──────────────────────────
+  jobGrid: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6,
+    maxHeight: 280, overflowY: 'auto',
+  },
+  jobCard: {
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.18)',
+    borderRadius: 6, padding: '8px 6px', cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+    textAlign: 'left',
+  },
+  jobCardActive: {
+    background: 'rgba(216,148,56,0.18)',
+    borderColor: '#D89438',
+  },
+  jobIcon: { fontSize: 22 },
+  jobLabel: { fontSize: 12, fontWeight: 600, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
+  jobSummary: { fontSize: 10, color: '#A89378', lineHeight: 1.3 },
+
+  // ── Workplace step (parcel picker) ────────────────────────────────────
+  parcelList: {
+    display: 'flex', flexDirection: 'column', gap: 4,
+    maxHeight: 220, overflowY: 'auto',
+  },
+  parcelOption: {
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.18)',
+    borderRadius: 6, padding: '6px 8px', cursor: 'pointer', textAlign: 'left',
+  },
+  parcelOptionActive: {
+    background: 'rgba(216,148,56,0.18)',
+    borderColor: '#D89438',
+  },
+  parcelOptionTitle: { fontSize: 12, color: '#F5E6D0', fontWeight: 600 },
+  parcelOptionMeta: { fontSize: 10, color: '#7A6850' },
+
+  // ── Confirm step ──────────────────────────────────────────────────────
+  confirmRow: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '8px 4px',
+  },
+  confirmIcon: { fontSize: 36 },
+  confirmName: { fontSize: 14, color: '#F5E6D0', fontWeight: 600, fontFamily: 'Georgia, serif' },
+  confirmRole: { fontSize: 11, color: '#A89378' },
+  confirmDetails: { fontSize: 11, color: '#A89378', lineHeight: 1.5, padding: '4px 0' },
 
   // ── Wallet tab ────────────────────────────────────────────────────
   walletWrap: {

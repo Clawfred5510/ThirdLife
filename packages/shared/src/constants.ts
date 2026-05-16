@@ -1,3 +1,5 @@
+import type { Appearance, HatStyle, AccessoryStyle } from './types';
+
 export const TICK_RATE = 20; // Server ticks per second
 export const WORLD_SIZE = 2152; // World dimensions in units (45*40 + 44*8 = 2152)
 export const MAX_PLAYERS_PER_ROOM = 50;
@@ -241,6 +243,121 @@ export type AgentPersonality = 'trader' | 'builder' | 'ambitious' | 'social' | '
 export type AgentStrategy = 'aggressive' | 'balanced' | 'conservative';
 export const AGENT_PERSONALITIES: AgentPersonality[] = ['trader', 'builder', 'ambitious', 'social', 'accumulator', 'worker'];
 export const AGENT_STRATEGIES: AgentStrategy[] = ['aggressive', 'balanced', 'conservative'];
+
+// ── Jobs (player-facing) ────────────────────────────────────────────────
+//
+// A Job is the player-facing concept the owner picks when creating an
+// agent. It maps to a personality + strategy and (optionally) a required
+// building type that determines where the agent stands and works.
+//
+// Hats and accessories come from the same enums the human Closet uses;
+// the job appearance override just sets fields the player would otherwise
+// see in their wardrobe. No new 3D assets required.
+
+export type JobId =
+  | 'farmer' | 'miner' | 'factory_worker' | 'shopkeeper'
+  | 'trader' | 'builder' | 'banker' | 'greeter';
+
+export interface JobSpec {
+  id: JobId;
+  label: string;
+  icon: string;
+  /** One-sentence summary used in the create flow. */
+  summary: string;
+  personality: AgentPersonality;
+  strategy: AgentStrategy;
+  /** If set, agent must be stationed at a parcel with this building type. */
+  requires_building?: BuildingType;
+  /** Hat + accessory overrides applied on top of the owner's appearance. */
+  hat_style: HatStyle;
+  hat_color: string;
+  accessory_style?: AccessoryStyle;
+  accessory_color?: string;
+}
+
+export const JOBS: Record<JobId, JobSpec> = {
+  farmer: {
+    id: 'farmer', label: 'Farmer', icon: '🌾',
+    summary: 'Works a farm parcel. Produces food each tick.',
+    personality: 'worker', strategy: 'balanced',
+    requires_building: 'farm',
+    hat_style: 'cap', hat_color: '#8a5a3b',
+  },
+  miner: {
+    id: 'miner', label: 'Miner', icon: '⛏️',
+    summary: 'Works a mine parcel. Produces materials each tick.',
+    personality: 'worker', strategy: 'balanced',
+    requires_building: 'mine',
+    hat_style: 'cap', hat_color: '#ecc94b',
+  },
+  factory_worker: {
+    id: 'factory_worker', label: 'Factory Worker', icon: '🏭',
+    summary: 'Works a factory. Produces energy each tick.',
+    personality: 'worker', strategy: 'balanced',
+    requires_building: 'factory',
+    hat_style: 'cap', hat_color: '#ed8936',
+  },
+  shopkeeper: {
+    id: 'shopkeeper', label: 'Shopkeeper', icon: '🛍️',
+    summary: 'Runs a shop. Produces luxury goods each tick.',
+    personality: 'worker', strategy: 'balanced',
+    requires_building: 'shop',
+    hat_style: 'beanie', hat_color: '#f5e6d0',
+  },
+  trader: {
+    id: 'trader', label: 'Trader', icon: '📈',
+    summary: 'Places limit orders on the market. No workplace needed.',
+    personality: 'trader', strategy: 'balanced',
+    hat_style: 'tophat', hat_color: '#2a5560',
+  },
+  builder: {
+    id: 'builder', label: 'Builder', icon: '🏗️',
+    summary: 'Claims unclaimed parcels and builds. Roams the world.',
+    personality: 'builder', strategy: 'aggressive',
+    hat_style: 'cap', hat_color: '#dc2626',
+  },
+  banker: {
+    id: 'banker', label: 'Banker', icon: '🏦',
+    summary: 'Hoards $AMETA. Passive yield from net worth.',
+    personality: 'accumulator', strategy: 'conservative',
+    hat_style: 'tophat', hat_color: '#111111',
+    accessory_style: 'bowtie', accessory_color: '#dc2626',
+  },
+  greeter: {
+    id: 'greeter', label: 'Greeter', icon: '👋',
+    summary: 'Greets newcomers near spawn. Cosmetic — no income.',
+    personality: 'social', strategy: 'conservative',
+    hat_style: 'beanie', hat_color: '#3F7A3D',
+  },
+};
+
+export const JOB_IDS: JobId[] = Object.keys(JOBS) as JobId[];
+
+/** Build an Appearance for a new agent by cloning the owner's look and
+ *  applying the job's hat (and accessory, if specified). */
+export function applyJobLook(owner: Appearance, job: JobId): Appearance {
+  const spec = JOBS[job];
+  const next: Appearance = { ...owner, hat_style: spec.hat_style, hat_color: spec.hat_color };
+  if (spec.accessory_style) {
+    next.accessory_style = spec.accessory_style;
+    if (spec.accessory_color) next.accessory_color = spec.accessory_color;
+  }
+  return next;
+}
+
+/** Infer a Job from a legacy (pre-jobs) personality. Used for migrating
+ *  agents that pre-date the JOBS table. */
+export function inferJobFromPersonality(p: AgentPersonality): JobId {
+  switch (p) {
+    case 'trader':      return 'trader';
+    case 'builder':     return 'builder';
+    case 'accumulator': return 'banker';
+    case 'social':      return 'greeter';
+    case 'ambitious':   return 'trader';
+    case 'worker':
+    default:            return 'farmer';
+  }
+}
 
 export const INCOME_TICK_MS = 60000; // passive income every 60s
 

@@ -40,6 +40,7 @@ import {
   getAuthSessionPlayerId,
   tickReputation,
   getRawDb,
+  getAllAgents,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -79,6 +80,14 @@ export class GameRoom extends Room<GameState> {
   /** Accumulated time (ms) since last player-state broadcast. */
   private lastBroadcastTick = 0;
 
+  /**
+   * AI agents shown to clients as virtual players. Keyed by agent id.
+   * Loaded from DB on boot, refreshed every autopilot tick (catches new
+   * agents that were registered via /agents/register). Their positions
+   * are updated by the autopilot pass and broadcast as PLAYER_UPDATE.
+   */
+  private agentPlayers = new Map<string, PlayerData>();
+
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
@@ -87,6 +96,12 @@ export class GameRoom extends Room<GameState> {
     seedParcels();
     const allParcels = getAllParcels();
     console.log(`[GameRoom] ${allParcels.length} parcels in DB`);
+
+    // ---- Load AI agents as virtual players ----
+    this.refreshAgents(true);
+    if (this.agentPlayers.size > 0) {
+      console.log(`[GameRoom] ${this.agentPlayers.size} agents loaded into world`);
+    }
 
     // ---- Phase C: backfill sub-units for any pre-existing apartments
     // and offices that were built before the multi-floor system landed.
@@ -531,10 +546,13 @@ export class GameRoom extends Room<GameState> {
     };
     this.players.set(client.sessionId, player);
 
-    // Tell the joining client about itself + all current players
+    // Tell the joining client about itself + all current players + all agents.
     client.send(MessageType.PLAYER_STATE, {
       self: persistentId,
-      players: Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+      players: [
+        ...Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+        ...Array.from(this.agentPlayers.values()).map((p) => this.snapshotPlayer(p)),
+      ],
     });
 
     // Tell everyone else about the new player
@@ -592,6 +610,48 @@ export class GameRoom extends Room<GameState> {
       color: p.color,
       appearance: p.appearance,
     };
+  }
+
+  /**
+   * Refresh the in-room agent set from the DB. New agents get a
+   * PLAYER_JOIN broadcast so connected clients render them immediately.
+   * Removed agents (currently never — we don't delete) get a PLAYER_LEAVE.
+   *
+   * Called once at boot (silent — no clients yet) and once per autopilot
+   * tick so agents created mid-session show up within 60s.
+   */
+  private refreshAgents(initial: boolean): void {
+    const fresh = getAllAgents();
+    const seen = new Set<string>();
+    for (const a of fresh) {
+      seen.add(a.id);
+      if (this.agentPlayers.has(a.id)) continue;
+      const row = getOrCreatePlayer(a.id, a.name);
+      let appearance: Appearance = { ...DEFAULT_APPEARANCE };
+      const src = a.appearance ?? row.appearance;
+      if (src) {
+        try { appearance = { ...DEFAULT_APPEARANCE, ...JSON.parse(src) }; } catch { /* keep default */ }
+      }
+      const pd: PlayerData = {
+        id: a.id,
+        name: a.name,
+        x: row.x, y: row.y, z: row.z,
+        rotation: 0,
+        credits: row.credits,
+        color: appearance.shirt_color,
+        appearance,
+      };
+      this.agentPlayers.set(a.id, pd);
+      if (!initial) {
+        this.broadcast(MessageType.PLAYER_JOIN, this.snapshotPlayer(pd));
+      }
+    }
+    for (const id of Array.from(this.agentPlayers.keys())) {
+      if (!seen.has(id)) {
+        this.agentPlayers.delete(id);
+        if (!initial) this.broadcast(MessageType.PLAYER_LEAVE, { id });
+      }
+    }
   }
 
   update(deltaTime: number) {
@@ -664,8 +724,17 @@ export class GameRoom extends Room<GameState> {
 
       // Phase B autopilot — every registered agent with autopilot
       // enabled acts according to its personality + strategy. Wrapped
-      // in try/catch by runAutopilotPass per-agent.
-      runAutopilotPass();
+      // in try/catch by runAutopilotPass per-agent. Returns the agents
+      // that moved this tick so we can broadcast PLAYER_UPDATE for them.
+      const moves = runAutopilotPass();
+      // Pick up new agents that were registered since the last tick.
+      this.refreshAgents(false);
+      for (const m of moves) {
+        const a = this.agentPlayers.get(m.agentId);
+        if (!a) continue;
+        a.x = m.x; a.y = m.y; a.z = m.z;
+        this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(a));
+      }
 
       // Phase B.2 reputation: each owned shop consumes 1 luxury; owner
       // gains +1 reputation per consumed unit. Done after autopilot so
