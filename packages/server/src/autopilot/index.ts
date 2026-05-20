@@ -1,35 +1,32 @@
 /**
- * Server-side autopilot. Each registered agent with autopilot_enabled=1
- * gets one action per income tick, dispatched by personality.
+ * Server-side autopilot.
  *
- * Personalities:
- *   - worker:      free `work` every tick; periodically sells inventory
- *                  at the best bid; saves up.
- *   - trader:      places limit buy/sell orders straddling the current
- *                  spread for a chosen resource; takes fee revenue.
- *   - builder:     buys land and builds the cheapest available income
- *                  building when balance permits.
- *   - accumulator: hoards credits; works free if it has buildings to
- *                  produce from; never speculates.
- *   - social:      cosmetic — broadcasts a chat. No economic effect.
- *   - ambitious:   hybrid: trade + build, aggressive thresholds.
+ * Phase 0 rewrite (2026-05-20): replaces the personality/strategy weighted
+ * dispatch with a clean role-based one. Each agent has a `role` (work /
+ * produce / craft) that determines what they do each income tick.
  *
- * Strategy preset (aggressive/balanced/conservative) modulates spending
- * thresholds and risk tolerance.
+ *   - work    : Stand at workplace (NPC building or player-owned). Will
+ *               earn a flat WORK_WAGE_AMETA_PER_TICK in Phase 4. Today no
+ *               economic effect — only positioning.
+ *   - produce : Stand at workplace, produce that building's resource.
+ *               Phase 0 keeps the legacy `doWork` bridge so existing
+ *               production keeps flowing; Phase 1 replaces with the
+ *               tier × (base + agents) formula.
+ *   - craft   : Stand at workplace. Crafting logic ships in Phase 3.
  *
- * Each tick produces an `[autopilot]` event line for the activity feed.
+ * Strategy presets (aggressive/balanced/conservative) are gone — they
+ * affected only the deprecated trader/builder personality routines that
+ * the role enum collapses. External agents will handle their own strategy
+ * via the API in Phase 5.
  */
 
 import {
   getAllAgents,
-  getPlayerCredits,
   getPlayerResources,
-  updatePlayerResources,
   getPlayerParcels,
   getAllParcels,
   workProduce,
   buyLand,
-  claimAndBuild,
   setBuildingType,
   updateBusiness,
   addEvent,
@@ -40,22 +37,17 @@ import {
   BUILDINGS,
   BuildingType,
   ResourceType,
-  RESOURCE_TYPES,
-  LAND_COST,
   TICK_PRODUCTION,
-  AgentStrategy,
-  AgentPersonality,
+  AgentRole,
   parcelWorldPos,
 } from '@gamestu/shared';
-import { placeOrder, getBook, getBestBid } from '../market/orderBook';
-import { getNetWorth } from '../leaderboard';
 import { recordGdp, getWorldTick } from '../world';
 
 interface AgentRow {
   id: string;
   name: string;
-  personality: string;
-  strategy: string;
+  role: string;
+  is_external: number;
   autopilot_enabled: number;
   last_autopilot_tick: number;
   workplace_parcel_id: number | null;
@@ -69,25 +61,23 @@ export interface AgentMove {
   z: number;
 }
 
-// Spawn plaza — where social/idle agents stand. Mirrors the human spawn
+// Spawn plaza — where unemployed agents stand. Mirrors the human spawn
 // position so they look like a welcoming crowd at the origin.
 const SPAWN_X = 0;
 const SPAWN_Y = 0;
 const SPAWN_Z = -80;
 
-// Workplace anchor for an agent — the south edge of the parcel cell,
-// outside the building footprint so the agent is visibly standing in
-// front of their workplace rather than embedded in the wall.
+/** Workplace anchor: parcel centre offset 12u south of the building, so
+ *  the agent is visibly out in front of the structure rather than embedded
+ *  in the wall. Same formula every tick → no jitter. */
 function parcelDoor(parcel: ParcelRow): { x: number; y: number; z: number } {
   const { x, z } = parcelWorldPos(parcel.grid_x, parcel.grid_y);
   return { x, y: 0, z: z - 12 };
 }
 
-/**
- * Deterministic per-agent offset around the spawn plaza so dozens of
- * unemployed agents don't visually pile up at exactly (0, 0, -80).
- * Same hash for the same agent across ticks → no jitter.
- */
+/** Deterministic per-agent offset around the spawn plaza so dozens of
+ *  unemployed agents don't visually pile up at exactly (0, 0, -80).
+ *  Same hash for the same agent across ticks → stable position. */
 function spawnSpreadFor(agentId: string): { x: number; y: number; z: number } {
   const h = simpleHash(agentId);
   const angle = (h % 360) * (Math.PI / 180);
@@ -99,250 +89,97 @@ function spawnSpreadFor(agentId: string): { x: number; y: number; z: number } {
   };
 }
 
-interface StrategyKnobs {
-  /** Fraction of balance willing to risk on speculative orders per tick. */
-  riskFraction: number;
-  /** Distance from mid-price for trader limit orders, in % of mid. */
-  spreadPct: number;
-  /** Minimum balance buffer to keep before spending (× LAND_COST). */
-  reserveMultiplier: number;
-}
-
-const STRATEGY: Record<AgentStrategy, StrategyKnobs> = {
-  aggressive:   { riskFraction: 0.30, spreadPct: 0.05, reserveMultiplier: 0.5 },
-  balanced:     { riskFraction: 0.15, spreadPct: 0.10, reserveMultiplier: 1.0 },
-  conservative: { riskFraction: 0.05, spreadPct: 0.20, reserveMultiplier: 2.0 },
-};
-
-const CHAT_LINES = [
-  'GM, builders.',
-  'Anyone selling cheap food?',
-  'Building day on the south block.',
-  'Materials prices look soft.',
-  'Hold your $AMETA.',
-  'New parcel, who dis.',
-  'Looking for a market spread.',
-  'GG to whoever just bought that mall.',
-];
-
 /**
- * Run all registered agents' autopilot routines. Called from the
- * GameRoom income tick (every INCOME_TICK_MS). Catches per-agent
- * exceptions so one bad agent can't take down the whole tick.
+ * Run all registered agents' autopilot routines. Called from the GameRoom
+ * income tick (every TICK_LENGTH_MS). Catches per-agent exceptions so one
+ * bad agent can't take down the whole tick. External agents are skipped
+ * entirely — their actions arrive via REST, not the autopilot.
  */
 export function runAutopilotPass(): AgentMove[] {
-  const tick = getWorldTick();
-  const agents = getAllAgents().filter((a) => a.autopilot_enabled === 1) as AgentRow[];
+  const agents = getAllAgents().filter(
+    (a) => a.autopilot_enabled === 1 && a.is_external !== 1,
+  ) as AgentRow[];
   // Snapshot parcels once per tick so per-agent routines don't each scan
-  // 2025 rows. Indexed by id for O(1) workplace lookups.
+  // the full grid. Indexed by id for O(1) workplace lookups.
   const parcelMap = new Map<number, ParcelRow>();
   for (const p of getAllParcels()) parcelMap.set(p.id, p);
 
   const moves: AgentMove[] = [];
   for (const agent of agents) {
     try {
-      const move = runOne(agent, tick, parcelMap);
+      const move = runOne(agent, parcelMap);
       if (move) {
         savePlayerPosition(agent.id, move.x, move.y, move.z);
         moves.push({ agentId: agent.id, x: move.x, y: move.y, z: move.z });
       }
     } catch (err) {
-      // Don't let a single agent's failure cascade. Log + continue.
-      // eslint-disable-next-line no-console
-      console.error(`[autopilot] ${agent.name} (${agent.personality}) failed:`, (err as Error).message);
+      console.error(`[autopilot] ${agent.name} (${agent.role}) failed:`, (err as Error).message);
     }
   }
   return moves;
 }
 
-function runOne(agent: AgentRow, tick: number, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
-  const personality = agent.personality as AgentPersonality;
-  const strategyKey = (agent.strategy as AgentStrategy) in STRATEGY ? agent.strategy as AgentStrategy : 'balanced';
-  const knobs = STRATEGY[strategyKey];
-  const workplace = agent.workplace_parcel_id != null ? parcels.get(agent.workplace_parcel_id) ?? null : null;
+function runOne(agent: AgentRow, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
+  const workplace = agent.workplace_parcel_id != null
+    ? parcels.get(agent.workplace_parcel_id) ?? null
+    : null;
+  const role = (agent.role as AgentRole) ?? 'work';
 
-  switch (personality) {
-    case 'worker':      return runWorker(agent, knobs, workplace);
-    case 'trader':      return runTrader(agent, knobs, workplace);
-    case 'builder':     return runBuilder(agent, knobs, parcels);
-    case 'accumulator': return runAccumulator(agent, workplace);
-    case 'social':      return runSocial(agent, tick, workplace);
-    case 'ambitious':   return runAmbitious(agent, knobs, workplace, parcels);
-    default:            return runWorker(agent, knobs, workplace);
+  switch (role) {
+    case 'work':    return runWork(agent, workplace);
+    case 'produce': return runProduce(agent, workplace);
+    case 'craft':   return runCraft(agent, workplace);
+    default:        return runWork(agent, workplace);
   }
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Personality routines
+// Role routines
 // ──────────────────────────────────────────────────────────────────────
 
-function runWorker(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
-  // 1. Always work — at the assigned workplace if set, else at the
-  //    agent's owned production buildings. Workplace can belong to ANY
-  //    player (freelancer model) — the agent earns the output regardless.
+/** Work role: stand at the workplace; earn WORK_WAGE_AMETA_PER_TICK.
+ *  Phase 0 keeps positioning only — wage payout lands in Phase 4 when the
+ *  pricing module's wage constant is wired into the GameRoom tick. */
+function runWork(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
+  return workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
+}
+
+/** Produce role: stand at the workplace and generate the building's resource.
+ *  Phase 0 bridge: routes through the legacy `doWork` helper so production
+ *  keeps flowing for existing agents. Phase 1 replaces this with the new
+ *  tier × (base + agents) × energy formula in the GameRoom tick. */
+function runProduce(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
   const produced = doWork(agent.id, workplace);
-
-  // 2. Sell any resource we have above a small reserve at the best bid.
-  //    Worker strategy: lean inventory, convert to AMETA fast.
-  const resources = getPlayerResources(agent.id);
-  for (const r of RESOURCE_TYPES) {
-    const qty = Math.floor(resources[r]);
-    if (qty < 5) continue; // tiny, not worth a fee
-    const bid = getBestBid(r);
-    if (bid <= 0) continue; // empty book → no instant sale
-    placeOrder(agent.id, r, 'sell', bid, qty).catch(() => {});
-  }
-
   if (produced.creditsEarned > 0 || produced.anyProduced) {
     addEvent('autopilot', agent.id, {
-      personality: 'worker', action: 'work_and_sell',
+      role: 'produce', action: 'tick',
       earned: produced.creditsEarned, produced: produced.summary,
       workplace: workplace?.id ?? null,
     }, 'minor');
   }
-  void knobs;
-  // Position: stand at the workplace if assigned, else stay at spawn.
-  if (workplace) return parcelDoor(workplace);
-  return spawnSpreadFor(agent.id);
+  return workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
 }
 
-function runTrader(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
-  // Trader is a workplace-bound role like any other — they place orders
-  // from wherever they are. Position-wise we keep them at the workplace
-  // (or spawn if unemployed); the market is server-side bookkeeping, not
-  // a physical destination.
-  const balance = getPlayerCredits(agent.id);
-  const standAt = (): { x: number; y: number; z: number } =>
-    workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
-  if (balance < 100) return standAt();
-
-  const target: ResourceType | null = pickMostLiquidResource();
-  if (!target) return standAt();
-
-  const book = getBook(target);
-  const bestBid = book.bids[0]?.price ?? 0;
-  const bestAsk = book.asks[0]?.price ?? 0;
-  const mid = bestBid > 0 && bestAsk > 0 ? Math.floor((bestBid + bestAsk) / 2) : Math.max(bestBid, bestAsk, 10);
-  if (mid <= 0) return standAt();
-
-  const offset = Math.max(1, Math.floor(mid * knobs.spreadPct));
-  const buyPrice = Math.max(1, mid - offset);
-  const sellPrice = mid + offset;
-
-  // Size each leg to a fraction of riskable capital.
-  const budget = Math.floor(balance * knobs.riskFraction);
-  const buyQty = Math.max(1, Math.floor(budget / buyPrice / 2));
-
-  // Only place sell if we have inventory to back it.
-  const myRes = getPlayerResources(agent.id)[target];
-  const sellQty = Math.min(Math.floor(myRes), Math.max(0, Math.floor(buyQty / 2)));
-
-  placeOrder(agent.id, target, 'buy', buyPrice, buyQty).catch(() => {});
-  if (sellQty > 0) {
-    placeOrder(agent.id, target, 'sell', sellPrice, sellQty).catch(() => {});
-  }
-
-  addEvent('autopilot', agent.id, {
-    personality: 'trader', action: 'spread', resource: target,
-    bid: buyPrice, ask: sellPrice, buyQty, sellQty,
-  }, 'minor');
-  return standAt();
-}
-
-function runBuilder(agent: AgentRow, knobs: StrategyKnobs, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
-  // Goal: own a portfolio. Buy cheapest empty parcel and build the
-  // cheapest income building affordable, keeping a reserve.
-  const balance = getPlayerCredits(agent.id);
-  const reserve = LAND_COST * knobs.reserveMultiplier;
-
-  // Affordable building list (income-paying), cheapest first.
-  const affordable = (Object.values(BUILDINGS) as Array<typeof BUILDINGS[BuildingType]>)
-    .filter((b) => b.income > 0)
-    .sort((a, b) => a.cost - b.cost)
-    .find((b) => balance >= b.cost + LAND_COST + reserve);
-  if (!affordable) {
-    // Can't afford to build — work to earn instead.
-    return runWorker(agent, knobs, null);
-  }
-
-  const target = pickAvailableParcel();
-  if (!target) return spawnSpreadFor(agent.id);
-
-  const result = claimAndBuild(agent.id, target.id, affordable.type, affordable.cost, affordable.label);
-  if (result.ok) {
-    addEvent('autopilot', agent.id, {
-      personality: 'builder', action: 'claim_and_build',
-      parcel: target.id, building: affordable.type, cost: affordable.cost + LAND_COST,
-    }, 'major');
-    const claimed = parcels.get(target.id);
-    if (claimed) return parcelDoor(claimed);
-  }
-  return spawnSpreadFor(agent.id);
-}
-
-function runAccumulator(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
-  // Just work. Don't speculate, don't expand. Let income compound.
-  const produced = doWork(agent.id, workplace);
-  if (produced.creditsEarned > 0 || produced.anyProduced) {
-    addEvent('autopilot', agent.id, {
-      personality: 'accumulator', action: 'work',
-      earned: produced.creditsEarned,
-    }, 'minor');
-  }
-  // Banker stands at their bank parcel if owned, else workplace, else spawn.
-  if (workplace) return parcelDoor(workplace);
-  const owned = getPlayerParcels(agent.id);
-  const bank = owned.find((p) => (p as any).building_type === 'bank') ?? owned[0];
-  if (bank) return parcelDoor(bank as ParcelRow);
-  return spawnSpreadFor(agent.id);
-}
-
-function runSocial(agent: AgentRow, tick: number, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
-  // Cosmetic — emit a chat event so the world feels alive. Not every
-  // tick (would spam) — once every 3 ticks per agent, deterministic
-  // by id+tick to avoid clumping.
-  const hash = simpleHash(agent.id + ':' + tick);
-  if (hash % 3 === 0) {
-    const line = CHAT_LINES[hash % CHAT_LINES.length];
-    addEvent('autopilot', agent.id, {
-      personality: 'social', action: 'chat', message: line,
-    }, 'minor');
-  }
-  // Stand at workplace if assigned, else near spawn so newcomers see them.
-  if (workplace) return parcelDoor(workplace);
-  return spawnSpreadFor(agent.id);
-}
-
-function runAmbitious(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow | null, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
-  // Hybrid — work first, then either trade or build depending on
-  // current balance vs build threshold. Aggressive variant gates lower.
-  const balance = getPlayerCredits(agent.id);
-  doWork(agent.id, workplace);
-
-  if (balance >= LAND_COST + 50_000) {
-    return runBuilder(agent, knobs, parcels);
-  } else if (balance >= 1_000) {
-    return runTrader(agent, knobs, workplace);
-  }
-  if (workplace) return parcelDoor(workplace);
-  return spawnSpreadFor(agent.id);
+/** Craft role: stand at the workplace and consume input → produce named
+ *  luxury items. Phase 0 stub; Phase 3 implements the consumption + item
+ *  minting logic. Visually identical to produce for now. */
+function runCraft(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
+  return workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Action helpers — share work-action semantics with the REST endpoints
+// Phase 0 bridge: legacy production helper
 // ──────────────────────────────────────────────────────────────────────
 
+/** Legacy production path. Kept for one phase as a bridge so role=produce
+ *  agents keep producing under the old per-building flat rate while the
+ *  tier-based formula is being built. Phase 1 will delete this entirely. */
 function doWork(agentId: string, workplace: ParcelRow | null): {
   creditsEarned: number;
   produced: Partial<Record<ResourceType, number>>;
   anyProduced: boolean;
   summary: string;
 } {
-  // Workplace mode (freelancer): work at the assigned parcel regardless
-  // of who owns it. Output credits this agent. Parcel owner's separate
-  // building-income tick is unaffected by this — no double accounting.
-  // No workplace: work over the agent's own owned production buildings
-  // (the legacy behaviour).
   const targets: ParcelRow[] = workplace
     ? [workplace]
     : (getPlayerParcels(agentId) as ParcelRow[]);
@@ -369,7 +206,7 @@ function doWork(agentId: string, workplace: ParcelRow | null): {
     workProduce(agentId, creditsEarned, resources);
     if (creditsEarned > 0) recordGdp(creditsEarned);
   }
-  void TICK_PRODUCTION; // silence unused if pruned
+  void TICK_PRODUCTION; // legacy constant kept until Phase 1 finishes
 
   return {
     creditsEarned,
@@ -379,36 +216,15 @@ function doWork(agentId: string, workplace: ParcelRow | null): {
   };
 }
 
-function pickAvailableParcel(): { id: number } | null {
-  const all = getAllParcels();
-  const free = all.filter((p) => !p.owner_id);
-  if (free.length === 0) return null;
-  // Cheapest doesn't vary per parcel today — pick a random unclaimed.
-  return free[Math.floor(Math.random() * free.length)];
-}
-
-function pickMostLiquidResource(): ResourceType | null {
-  let best: ResourceType | null = null;
-  let bestDepth = 0;
-  for (const r of RESOURCE_TYPES) {
-    const book = getBook(r);
-    const depth =
-      (book.bids[0]?.quantity ?? 0) + (book.asks[0]?.quantity ?? 0) + (book.recentTrades.length || 0);
-    if (depth > bestDepth) { bestDepth = depth; best = r; }
-  }
-  // If everything is empty, just pick food (cheapest, fastest fills).
-  return best ?? 'food';
-}
-
 function simpleHash(s: string): number {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
   return h;
 }
 
-// Suppress unused-import lint when reputation/setBuildingType are
-// referenced from external callers but not directly here yet.
-void getNetWorth;
+// Suppress unused-import lint when these helpers are referenced from
+// external callers but not directly here yet.
 void setBuildingType;
 void updateBusiness;
 void buyLand;
+void getWorldTick;

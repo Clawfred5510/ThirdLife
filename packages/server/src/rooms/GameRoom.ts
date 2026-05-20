@@ -15,7 +15,6 @@ import {
   BuildingType,
   INCOME_TICK_MS,
   ResourceType,
-  EXPLORE_COST,
   TICK_PRODUCTION,
   FOOD_PER_AGENT_PER_TICK,
   ENERGY_PER_INCOME_BUILDING_PER_TICK,
@@ -426,29 +425,10 @@ export class GameRoom extends Room<GameState> {
     //  POST /api/v1/market/order. Humans use their wallet session token,
     //  agents use their tl_sk_ API key; same endpoint, one ledger.)
 
-    // ---- EXPLORE: move to random unclaimed parcel ----
-    this.onMessage(MessageType.EXPLORE, (client: Client) => {
-      const player = this.players.get(client.sessionId);
-      if (!player) return;
-      if (player.credits < EXPLORE_COST) { client.send(MessageType.EXPLORE, { error: 'Insufficient credits' }); return; }
-
-      const allParcels = getAllParcels();
-      const unclaimed = allParcels.filter(p => !p.owner_id);
-      if (unclaimed.length === 0) { client.send(MessageType.EXPLORE, { error: 'No unclaimed parcels' }); return; }
-
-      const target = unclaimed[Math.floor(Math.random() * unclaimed.length)];
-      const ownerId = this.pid(client.sessionId);
-      player.credits -= EXPLORE_COST;
-      updatePlayerCredits(ownerId, player.credits);
-      const targetPos = parcelWorldPos(target.grid_x, target.grid_y);
-      player.x = targetPos.x;
-      player.z = targetPos.z;
-
-      client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-      client.send(MessageType.EXPLORE, { parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y } });
-      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
-      addEvent('explore', ownerId, { parcel: target.id }, 'minor');
-    });
+    // EXPLORE action removed in Phase 0 (spec §12 deprecation):
+    // the paid "teleport to a random parcel" mechanic served no design
+    // purpose in the new tier+rank loop. Players move with WASD; parcel
+    // discovery happens via the World Map UI.
 
     // ---- EVENTS: return recent events ----
     this.onMessage(MessageType.EVENTS, (client: Client) => {

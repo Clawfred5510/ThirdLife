@@ -1,4 +1,5 @@
 import type { Appearance, HatStyle, AccessoryStyle } from './types';
+import { LAND_COST_AMETA, STARTING_BALANCE_AMETA } from './pricing';
 
 export const TICK_RATE = 20; // Server ticks per second
 export const WORLD_SIZE = 2152; // World dimensions in units (45*40 + 44*8 = 2152)
@@ -11,10 +12,12 @@ export const DEFAULT_SERVER_PORT = 2567;
 export const GAME_NAME = 'ThirdLife';
 export const WORLD_HALF = WORLD_SIZE / 2; // 1076
 export const CURRENCY_NAME = 'AMETA';
-export const CLAIM_COST = 150000;      // same as LAND_COST
-export const LAND_COST = 150000;
-export const STARTING_BALANCE = 50;
-export const EXPLORE_COST = 69;
+/** @deprecated use LAND_COST_AMETA from pricing.ts */
+export const CLAIM_COST = LAND_COST_AMETA;
+/** @deprecated use LAND_COST_AMETA from pricing.ts */
+export const LAND_COST = LAND_COST_AMETA;
+/** @deprecated use STARTING_BALANCE_AMETA from pricing.ts */
+export const STARTING_BALANCE = STARTING_BALANCE_AMETA;
 export const GRID_COLS = 45;
 export const GRID_ROWS = 45;
 
@@ -126,8 +129,10 @@ export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
 export const BUILDING_LIST: BuildingSpec[] = Object.values(BUILDINGS);
 export const RESOURCE_TYPES: ResourceType[] = ['food', 'materials', 'energy', 'luxury'];
 
-// Base market prices (credits per unit of resource) — canonical per
-// thirdlifeworld.xyz /docs. Keep in sync with the live spec.
+// Legacy market prices kept for any caller that still hardcodes them.
+// New code should use NPC_SEED_PRICE_AMETA from pricing.ts (10× lower —
+// the locked v1 anchor prices are 50/100/150/250).
+/** @deprecated use NPC_SEED_PRICE_AMETA from pricing.ts */
 export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
   food: 500,
   materials: 1000,
@@ -135,13 +140,11 @@ export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
   luxury: 2500,
 };
 
-// ── Tick-based economy (per thirdlifeworld.xyz /docs) ────────────────────
-// In addition to the manual WORK action (which awards `amount` per call),
-// resource-producing buildings now auto-produce `tickRate` per income tick.
-// Income-paying buildings require one energy per tick or they pay nothing.
-// Every active agent consumes one food per tick; below zero, they stop
-// producing (but stay in the game — inactive is a soft state).
-
+// ── Legacy tick production table ──────────────────────────────────────────
+// Pre-tier-system production rates. Will be replaced in Phase 1 by a
+// tier-based formula (base × tier_multiplier + agents × tier_multiplier).
+// Kept for now so the live tick loop keeps working until Phase 1 ships.
+/** @deprecated will be replaced by tier-derived production in Phase 1 */
 export const TICK_PRODUCTION: Record<BuildingType, { resource: ResourceType; rate: number } | null> = {
   apartment: null,
   house: null,
@@ -163,16 +166,23 @@ export const TICK_PRODUCTION: Record<BuildingType, { resource: ResourceType; rat
   club: null,
 };
 
-/** Food each active agent eats per tick. */
-export const FOOD_PER_AGENT_PER_TICK = 1;
-
-/** Energy each income-paying building burns per tick to actually pay out. */
+// FOOD_PER_AGENT_PER_TICK lives in pricing.ts (re-exported by index.ts).
+// ENERGY_PER_INCOME_BUILDING_PER_TICK is being retired in Phase 1 in favor
+// of the binary per-producing-building energy check.
+/** @deprecated retiring in Phase 1; use ENERGY_PER_PRODUCING_BUILDING_PER_TICK */
 export const ENERGY_PER_INCOME_BUILDING_PER_TICK = 1;
 
-// Agent registration
+// ── Legacy agent personality/strategy enums ──────────────────────────────
+// These are being replaced by the AgentRole enum (work/produce/craft) in
+// pricing.ts. Kept here so the autopilot still compiles during the Phase 0
+// refactor; will be deleted once the autopilot is on the role model.
+/** @deprecated use AgentRole from pricing.ts */
 export type AgentPersonality = 'trader' | 'builder' | 'ambitious' | 'social' | 'accumulator' | 'worker';
+/** @deprecated removed in Phase 0 — strategies no longer affect behaviour */
 export type AgentStrategy = 'aggressive' | 'balanced' | 'conservative';
+/** @deprecated use AGENT_ROLES from pricing.ts */
 export const AGENT_PERSONALITIES: AgentPersonality[] = ['trader', 'builder', 'ambitious', 'social', 'accumulator', 'worker'];
+/** @deprecated removed in Phase 0 */
 export const AGENT_STRATEGIES: AgentStrategy[] = ['aggressive', 'balanced', 'conservative'];
 
 // ── Jobs (player-facing) ────────────────────────────────────────────────
@@ -290,15 +300,18 @@ export function inferJobFromPersonality(p: AgentPersonality): JobId {
   }
 }
 
-export const INCOME_TICK_MS = 60000; // passive income every 60s
+/** Re-exported from pricing.ts (TICK_LENGTH_MS = 10 minutes locked).
+ *  Server reads `process.env.TICK_LENGTH_MS` if set for dev overrides. */
+import { TICK_LENGTH_MS } from './pricing';
+export const INCOME_TICK_MS = TICK_LENGTH_MS;
 
-// ── Economy fees (basis points; 100 = 1%) ─────────────────────────────
-// Match the canonical site's behavior — every autopilot trade event line
-// shows a per-trade fee, every AMETA transfer shows a +X fee. Both flow
-// to the world treasury (a special sink player ID).
-export const TRADING_FEE_BPS = 100;   // 1% on resource sales
-export const TRANSFER_FEE_BPS = 100;  // 1% on AMETA transfers between players
-export const BPS_DENOMINATOR = 10000;
+// ── Legacy fee constants ──────────────────────────────────────────────
+// Both are replaced by canonical exports from pricing.ts. The trading fee
+// becomes progressive by rank in Phase 4; for now the flat 1% (Bronze rate)
+// keeps existing market math correct.
+/** @deprecated use MARKETPLACE_FEE_BPS_BY_RANK from pricing.ts */
+export const TRADING_FEE_BPS = 100;
+// TRANSFER_FEE_BPS and BPS_DENOMINATOR are re-exported from pricing.ts.
 
 export const BUS_STOPS = [
   { name: 'Downtown Central', x: 450, z: -250 },

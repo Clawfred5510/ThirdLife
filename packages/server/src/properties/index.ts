@@ -1,10 +1,17 @@
 /**
- * Multi-floor sub-units (Phase C).
+ * Multi-floor sub-units (Phase C — legacy).
  *
- * Apartment → 18 studio units (3 floors × 6).  Each pays 5 $AMETA/tick.
- * Office    → 12 office units (3 floors × 4).  Each pays 8 $AMETA/tick.
- * Penthouse on top floor of either building (last unit_index of last floor)
- *           pays a 50% premium.
+ * @deprecated Phase 0 (2026-05-20): the spec's new building model is one
+ * building = one tier = one production output (no sub-units). This module
+ * is kept running for now so existing players don't lose their sub-unit
+ * positions; Phase 1 will fully retire it once the tier-based production
+ * formula replaces the per-unit income tick.
+ *
+ * Original design:
+ *   Apartment → 18 studio units (3 floors × 6).  Each pays 5 $AMETA/tick.
+ *   Office    → 12 office units (3 floors × 4).  Each pays 8 $AMETA/tick.
+ *   Penthouse on top floor of either building (last unit_index of last
+ *             floor) pays a 50% premium.
  *
  * When an apartment / office is built, generateUnitsForParcel() seeds the
  * 12 or 18 rows, all owned by the parcel owner with list_price = NULL

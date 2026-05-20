@@ -42,8 +42,20 @@ export interface BusinessUpdate {
 export interface AgentRow {
   id: string;
   name: string;
+  /** @deprecated Phase 0: superseded by `role`. Kept for legacy reads. */
   personality: string;
+  /** @deprecated Phase 0: strategy presets removed. Kept for legacy reads. */
   strategy: string;
+  /** Phase 0 role enum: 'work' | 'produce' | 'craft'. Default 'work'. */
+  role: string;
+  /** Phase 0: 1 if this is an external API-driven agent, 0 for in-game. */
+  is_external: number;
+  /** Phase 2: tick at which the agent went dormant from starvation, or null. */
+  dormant_at_tick: number | null;
+  /** Phase 2: consecutive ticks the agent has been starved. */
+  starvation_ticks: number;
+  /** Phase 5: external agent's allocated $AMETA trading budget. */
+  trading_budget_ameta: number | null;
   autopilot_enabled: number;
   last_autopilot_tick: number;
   created_at: string;
@@ -253,6 +265,31 @@ class SQLiteDatabase implements DBBackend {
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN workplace_parcel_id INTEGER`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN appearance TEXT`); } catch (_) { /* exists */ }
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_workplace ON agents(workplace_parcel_id)`);
+
+    // Phase 0 (2026-05-20): role enum replaces personality/strategy.
+    // role ∈ {'work', 'produce', 'craft'}. is_external splits in-game
+    // agents from external API-driven ones. dormant_at_tick + starvation
+    // are populated in Phase 2 (starvation state machine).
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN role TEXT DEFAULT 'work'`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN is_external INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN dormant_at_tick INTEGER`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN starvation_ticks INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
+    try { this.db.exec(`ALTER TABLE agents ADD COLUMN trading_budget_ameta INTEGER`); } catch (_) { /* exists */ }
+    // Backfill role for legacy rows (NULL role): infer from personality.
+    // Mapping: builder/ambitious → produce; all others → work. Trader will
+    // be migrated to is_external=1 in Phase 5 with a separate sweep.
+    try {
+      this.db.exec(`
+        UPDATE agents SET role = 'produce'
+        WHERE role IS NULL AND personality IN ('builder', 'ambitious');
+      `);
+      this.db.exec(`
+        UPDATE agents SET role = 'work'
+        WHERE role IS NULL;
+      `);
+    } catch (e) {
+      console.warn('[migration] role backfill failed:', (e as Error).message);
+    }
 
     // Phase C: properties table = sub-units of multi-floor buildings
     // (apartment studios, office spaces). The legacy columns
@@ -736,7 +773,9 @@ class SQLiteDatabase implements DBBackend {
 
   getAllAgents(): AgentRow[] {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+      `SELECT id, name, personality, strategy, role, is_external, dormant_at_tick,
+              starvation_ticks, trading_budget_ameta,
+              autopilot_enabled, last_autopilot_tick, created_at,
               owner_wallet, job, workplace_parcel_id, appearance
          FROM agents`,
     ).all() as AgentRow[];
@@ -744,7 +783,9 @@ class SQLiteDatabase implements DBBackend {
 
   getAgentsByWallet(walletAddress: string): AgentRow[] {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+      `SELECT id, name, personality, strategy, role, is_external, dormant_at_tick,
+              starvation_ticks, trading_budget_ameta,
+              autopilot_enabled, last_autopilot_tick, created_at,
               owner_wallet, job, workplace_parcel_id, appearance
          FROM agents WHERE owner_wallet = ? ORDER BY created_at ASC`,
     ).all(walletAddress.toLowerCase()) as AgentRow[];
@@ -752,7 +793,9 @@ class SQLiteDatabase implements DBBackend {
 
   getAgentById(agentId: string): AgentRow | null {
     return this.db.prepare(
-      `SELECT id, name, personality, strategy, autopilot_enabled, last_autopilot_tick, created_at,
+      `SELECT id, name, personality, strategy, role, is_external, dormant_at_tick,
+              starvation_ticks, trading_budget_ameta,
+              autopilot_enabled, last_autopilot_tick, created_at,
               owner_wallet, job, workplace_parcel_id, appearance
          FROM agents WHERE id = ?`,
     ).get(agentId) as AgentRow | undefined ?? null;
@@ -1101,6 +1144,11 @@ class MemoryDB implements DBBackend {
   ): void {
     this.agents.set(apiKey, {
       id, name, personality, strategy, apiKey,
+      role: personality === 'builder' || personality === 'ambitious' ? 'produce' : 'work',
+      is_external: 0,
+      dormant_at_tick: null,
+      starvation_ticks: 0,
+      trading_budget_ameta: null,
       autopilot_enabled: 1, last_autopilot_tick: 0,
       created_at: new Date().toISOString(),
       owner_wallet: ownerWallet ? ownerWallet.toLowerCase() : null,

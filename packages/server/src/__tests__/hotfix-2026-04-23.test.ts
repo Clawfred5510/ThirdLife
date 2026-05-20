@@ -86,8 +86,9 @@ const under = buyLand('bob', parcels[2].id);
 check('buyLand rejects under-funded', under.ok === false && under.reason === 'insufficient_balance');
 
 // ── Bug 3: INCOME_TICK_MS is a constant ──────────────────────────────────
+// Phase 0 (2026-05-20): bumped to 10 minutes per locked spec §8.
 section('Bug 3: INCOME_TICK_MS');
-check('INCOME_TICK_MS exported from shared', INCOME_TICK_MS === 60_000);
+check('INCOME_TICK_MS exported from shared', INCOME_TICK_MS === 10 * 60 * 1000);
 
 // ── Bug 6: transfer target validation ────────────────────────────────────
 section('Bug 6: transfer validation');

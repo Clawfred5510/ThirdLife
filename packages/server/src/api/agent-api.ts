@@ -25,7 +25,7 @@ import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orde
 import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
 import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
-import { getAllAgents } from '../db';
+import { getAllAgents, getRawDb as _rawDb } from '../db';
 import { computeLevel, computeJob } from '../agents-meta';
 import {
   generateUnitsForParcel,
@@ -51,7 +51,6 @@ import {
   BASE_MARKET_PRICES,
   ResourceType,
   RESOURCE_TYPES,
-  EXPLORE_COST,
   LAND_COST,
   STARTING_BALANCE,
   AGENT_PERSONALITIES,
@@ -765,12 +764,10 @@ router.get('/spec', (_req: Request, res: Response) => {
       },
     },
     actions: [
-      { name: 'explore', method: 'POST', path: '/api/v1/actions/explore', cost: `${EXPLORE_COST} ${CURRENCY_NAME}`, description: 'Move to a random unclaimed parcel.' },
       { name: 'buy_land', method: 'POST', path: '/api/v1/actions/buy-land', cost: `${LAND_COST} ${CURRENCY_NAME}`, description: 'Buy an unclaimed parcel.' },
       { name: 'build', method: 'POST', path: '/api/v1/actions/build', cost: `50,000 - 2,000,000 ${CURRENCY_NAME}`, description: 'Build on owned parcel.' },
       { name: 'work', method: 'POST', path: '/api/v1/actions/work', cost: 'Free', description: 'Produce resources from buildings.' },
       { name: 'trade', method: 'POST', path: '/api/v1/actions/trade', cost: 'Free', description: 'Sell resources at market prices, or transfer AMETA to another agent.' },
-      { name: 'chat', method: 'POST', path: '/api/v1/actions/chat', cost: 'Free', description: 'Send a message to another agent.' },
       { name: 'market_order', method: 'POST', path: '/api/v1/market/order', cost: 'Free + 1% trading fee on fill', description: 'Place a limit buy or sell order on the resource order book.' },
       { name: 'market_cancel', method: 'DELETE', path: '/api/v1/market/order/:id', cost: 'Free', description: 'Cancel one of your open orders. Refunds escrow.' },
       { name: 'list_property', method: 'POST', path: '/api/v1/actions/list-property', cost: 'Free', description: 'List a sub-unit you own for sale at a given price.' },
@@ -792,25 +789,16 @@ router.get('/spec', (_req: Request, res: Response) => {
     ],
     buildings: BUILDINGS,
     resources: { types: RESOURCE_TYPES },
-    limits: { starting_balance: STARTING_BALANCE, land_cost: LAND_COST, explore_cost: EXPLORE_COST },
+    limits: { starting_balance: STARTING_BALANCE, land_cost: LAND_COST },
   });
 });
 
 // ── Action endpoints (require auth + rate limit) ───────────────────────
 
-router.post('/actions/explore', authAgent, rateLimit, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const credits = getPlayerCredits(agentId);
-  if (credits < EXPLORE_COST) return res.status(400).json({ error: 'Insufficient balance', cost: EXPLORE_COST });
-
-  const parcels = getAllParcels().filter(p => !p.owner_id);
-  if (parcels.length === 0) return res.status(400).json({ error: 'No unclaimed parcels' });
-
-  const target = parcels[Math.floor(Math.random() * parcels.length)];
-  updatePlayerCredits(agentId, credits - EXPLORE_COST);
-  addEvent('explore', agentId, { parcel: target.id }, 'minor');
-  res.json({ ok: true, parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y }, cost: EXPLORE_COST });
-});
+// /actions/explore was removed in Phase 0 — the mechanic served no purpose
+// in the new tier+rank loop. Agents discover parcels via /world or by
+// querying /api/v1/world?unclaimed=true. Walking to a parcel happens by
+// claiming it (the autopilot already routes agents to new purchases).
 
 router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
@@ -908,13 +896,10 @@ router.post('/actions/trade', authPlayer, rateLimit, async (req: Request, res: R
   }
 });
 
-router.post('/actions/chat', authAgent, rateLimit, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const { target_agent_id, message } = req.body ?? {};
-  if (!target_agent_id || !message) return res.status(400).json({ error: 'target_agent_id and message required' });
-  addEvent('chat', agentId, { to: target_agent_id, message }, 'minor');
-  res.json({ ok: true });
-});
+// /actions/chat removed in Phase 0 — communication is a baseline gameplay
+// feature, not a transactable action. Humans use the Colyseus CHAT
+// broadcast; agents that want to "say something" can do so by emitting
+// game events via their owner's session, not the public API.
 
 // ──────────────────────────────────────────────────────────────────────
 // Market (order book) — Phase A.1
@@ -1078,32 +1063,9 @@ function safeJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Phase E.2 — X (Twitter) verification stub.
-// Real flow needs the X API v2 OAuth + tweet-content lookup. Until the
-// keys land, expose a /me/x-verify endpoint that records a handle but
-// flags x_verified = 0 (unverified) so the upgrade is a small change
-// to call the X API instead of trusting the input.
-// ──────────────────────────────────────────────────────────────────────
-
-import { getRawDb as _rawDb } from '../db';
-
-router.post('/agents/me/x-verify', authAgent, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const handle = String((req.body ?? {}).handle ?? '').trim().replace(/^@/, '');
-  if (!handle || handle.length > 30 || !/^[A-Za-z0-9_]+$/.test(handle)) {
-    return res.status(400).json({ error: 'invalid_handle' });
-  }
-  // Stub — record handle as pending; x_verified stays 0 until the real
-  // X API flow lands.
-  _rawDb().prepare('UPDATE agents SET x_handle = ?, x_verified = 0 WHERE id = ?').run(handle, agentId);
-  res.json({ ok: true, handle, verified: false, note: 'X API integration is pending — the recorded handle is unverified for now.' });
-});
-
-router.get('/agents/me/x-status', authAgent, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const row = _rawDb().prepare('SELECT x_handle, x_verified FROM agents WHERE id = ?').get(agentId) as { x_handle: string | null; x_verified: number } | undefined;
-  res.json({ handle: row?.x_handle ?? null, verified: row?.x_verified === 1 });
-});
+// X (Twitter) verification removed in Phase 0 per spec §12 — agents are
+// identified by wallet address only. The x_handle / x_verified columns
+// stay in place for a release cycle so the migration is reversible; they
+// can be dropped once we confirm nothing depends on them.
 
 export default router;

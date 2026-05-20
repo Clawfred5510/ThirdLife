@@ -59,8 +59,10 @@ const bankBefore = getPlayerCredits('carl');
 const bankSpec = BUILDINGS.bank;
 const rb = claimAndBuild('carl', parcels[2].id, 'bank', bankSpec.cost, bankSpec.label);
 check('bank claim ok', rb.ok === true);
-check(`bank total = 2_150_000 (2M + 150K land)`,
-  bankBefore - getPlayerCredits('carl') === 2_150_000,
+// Phase 0 (2026-05-20): LAND_COST moved from 150K → 200K per locked v1
+// pricing. Bank total is now 2M (building) + 200K (land) = 2.2M.
+check(`bank total = 2_200_000 (2M + 200K land)`,
+  bankBefore - getPlayerCredits('carl') === 2_200_000,
   `diff=${bankBefore - getPlayerCredits('carl')}`);
 
 fs.rmSync(tmp, { recursive: true, force: true });
