@@ -19,6 +19,7 @@ import {
   countAgentsByWallet,
   countAgentsByWalletAndKind,
   setAgentStarvation,
+  setAgentRole,
   burnLuxuryItems,
   getPlayerItems,
   getLifetimeLuxuryBurned,
@@ -67,6 +68,8 @@ import {
   TIER_INDEX,
   PROPERTY_FEE_BPS,
   BPS_DENOMINATOR,
+  AGENT_ROLES,
+  AgentRole,
   AGENT_PERSONALITIES,
   AGENT_STRATEGIES,
   AgentPersonality,
@@ -603,6 +606,39 @@ router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) =>
 });
 
 /**
+ * Phase 2: change an agent's role (work / produce / craft). Wallet-auth
+ * only — the owner picks the agent's behaviour. Idempotent: passing the
+ * same role returns 200 without writes.
+ */
+router.post('/agents/:id/role', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+  const { role } = (req.body ?? {}) as { role?: string };
+  if (typeof role !== 'string' || !AGENT_ROLES.includes(role as AgentRole)) {
+    return res.status(400).json({
+      error: 'invalid_role',
+      valid_roles: AGENT_ROLES,
+    });
+  }
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+  if (agent.is_external === 1) {
+    return res.status(400).json({
+      error: 'external_agents_have_no_role',
+      detail: 'External agents only trade markets; the role enum applies to in-game agents.',
+    });
+  }
+  if (agent.role === role) return res.json({ ok: true, role, unchanged: true });
+  setAgentRole(agentId, role);
+  addEvent('agent_role_changed', agentId, { from: agent.role, to: role });
+  notifyAgentChanged(agentId);
+  res.json({ ok: true, role });
+});
+
+/**
  * Revive a dormant agent. Spec §2: costs REVIVE_COST_FOOD (100 food).
  * Wallet-authed (only the owner can revive). Clears dormant_at_tick and
  * resets starvation_ticks. Idempotent — calling on a non-dormant agent
@@ -734,6 +770,11 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
       workplace_parcel_id: a.workplace_parcel_id,
       personality: a.personality,
       strategy: a.strategy,
+      // Phase 2/3 role enum: 'work' | 'produce' | 'craft'.
+      role: a.role ?? 'work',
+      is_external: a.is_external === 1,
+      dormant: a.dormant_at_tick != null,
+      starvation_ticks: a.starvation_ticks ?? 0,
       balance: getPlayerCredits(a.id),
       resources: getPlayerResources(a.id),
       land_count: parcels.length,

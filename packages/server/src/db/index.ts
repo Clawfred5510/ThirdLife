@@ -118,6 +118,8 @@ interface DBBackend {
   /** Phase 2 starvation state: update the agent's starvation_ticks and
    *  dormant_at_tick. Pass `dormantAtTick = null` to revive. */
   setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null): void;
+  /** Phase 2 role assignment: 'work' | 'produce' | 'craft'. */
+  setAgentRole(agentId: string, role: string): void;
   /** Phase 3 luxury items. */
   getPlayerItems(playerId: string): Record<string, number>;
   addPlayerItems(playerId: string, itemKind: string, delta: number): number;
@@ -921,6 +923,10 @@ class SQLiteDatabase implements DBBackend {
     ).run(starvationTicks, dormantAtTick, agentId);
   }
 
+  setAgentRole(agentId: string, role: string): void {
+    this.db.prepare(`UPDATE agents SET role = ? WHERE id = ?`).run(role, agentId);
+  }
+
   getPlayerItems(playerId: string): Record<string, number> {
     const rows = this.db.prepare(
       `SELECT item_kind, quantity FROM luxury_items WHERE player_id = ?`,
@@ -1445,6 +1451,12 @@ class MemoryDB implements DBBackend {
     }
   }
 
+  setAgentRole(agentId: string, role: string): void {
+    for (const a of this.agents.values()) {
+      if (a.id === agentId) { a.role = role; return; }
+    }
+  }
+
   private items = new Map<string, Map<string, number>>(); // playerId → kind → qty
   private lifetimeBurn = new Map<string, number>();
   private rankByPlayer = new Map<string, string | null>();
@@ -1682,6 +1694,9 @@ export function countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 
 }
 export function setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null) {
   backend.setAgentStarvation(agentId, starvationTicks, dormantAtTick);
+}
+export function setAgentRole(agentId: string, role: string) {
+  backend.setAgentRole(agentId, role);
 }
 export function getPlayerItems(playerId: string) { return backend.getPlayerItems(playerId); }
 export function addPlayerItems(playerId: string, itemKind: string, delta: number) {

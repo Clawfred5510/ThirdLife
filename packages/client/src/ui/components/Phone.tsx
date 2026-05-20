@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost, apiDelete, hasAuthToken } from '../../network/api';
 import {
   hasInjectedWallet,
@@ -17,7 +17,7 @@ import {
 
 type AppId =
   | 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance'
-  | 'agents' | 'closet' | 'wallet';
+  | 'agents' | 'closet' | 'wallet' | 'inventory';
 type ActiveApp = AppId | null;
 
 interface AppDef {
@@ -31,6 +31,7 @@ interface AppDef {
 // teal, sandstone, slate. Warm, painterly, no neon.
 const APPS: AppDef[] = [
   { id: 'wallet',      label: 'Wallet',      icon: '👛', color: '#3F2A6E' }, // deep violet
+  { id: 'inventory',   label: 'Inventory',   icon: '🎒', color: '#7A4F2E' }, // wood — luxury items
   { id: 'agents',      label: 'My Agents',   icon: '🤖', color: '#5C6F8A' }, // slate-blue
   { id: 'closet',      label: 'Closet',      icon: '👕', color: '#A8556B' }, // dusty rose
   { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
@@ -240,6 +241,7 @@ const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack })
         {app.id === 'events' && <EventBody />}
         {app.id === 'agents' && <AgentsBody />}
         {app.id === 'wallet' && <WalletBody />}
+        {app.id === 'inventory' && <InventoryBody />}
       </div>
     </div>
   );
@@ -492,6 +494,11 @@ interface AgentRow {
   workplace_parcel_id: number | null;
   personality: string;
   strategy: string;
+  // Phase 2/3 role enum.
+  role: 'work' | 'produce' | 'craft';
+  is_external: boolean;
+  dormant: boolean;
+  starvation_ticks: number;
   balance: number;
   resources: { food: number; materials: number; energy: number; luxury: number };
   land_count: number;
@@ -499,6 +506,19 @@ interface AgentRow {
   autopilot_enabled: boolean;
   created_at: string;
 }
+
+type AgentRole = AgentRow['role'];
+const AGENT_ROLE_LIST: AgentRole[] = ['work', 'produce', 'craft'];
+const ROLE_LABEL: Record<AgentRole, string> = {
+  work: 'Work',
+  produce: 'Produce',
+  craft: 'Craft',
+};
+const ROLE_HINT: Record<AgentRole, string> = {
+  work: 'Stands at the workplace. Will earn a flat wage (Phase 4 in progress).',
+  produce: 'Adds to the workplace’s base output every tick.',
+  craft: 'Consumes input resource to mint a named luxury item every tick.',
+};
 
 interface AgentsMine { wallet: string; agents: AgentRow[]; limit: number; }
 
@@ -684,7 +704,15 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
         </span>
         <span>·</span>
         <span>{agent.autopilot_enabled ? 'autopilot on' : 'autopilot off'}</span>
+        {agent.dormant && (<>
+          <span>·</span>
+          <span style={{ color: '#B5563A' }}>dormant ({agent.starvation_ticks}t)</span>
+        </>)}
       </div>
+      {/* Role picker. External agents are market-only and have no role. */}
+      {!agent.is_external && (
+        <RoleSwitcher agent={agent} onChange={onChange} setBusy={setBusy} busy={busy} />
+      )}
       {mode === 'idle' && (
         <div style={S.agentActions}>
           <button onClick={() => setMode('fund')} style={S.fundBtn}>Fund</button>
@@ -794,6 +822,50 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           )}
         </div>
       )}
+    </div>
+  );
+};
+
+const RoleSwitcher: React.FC<{
+  agent: AgentRow;
+  onChange: () => void;
+  busy: boolean;
+  setBusy: (b: boolean) => void;
+}> = ({ agent, onChange, busy, setBusy }) => {
+  const [err, setErr] = useState<string | null>(null);
+  const setRole = async (role: AgentRole) => {
+    if (role === agent.role) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      await apiPost(`/agents/${agent.id}/role`, { role }, { authed: true });
+      onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={S.roleSwitcher}>
+      <span style={S.roleLabel}>Role</span>
+      <div style={S.roleBtnRow}>
+        {AGENT_ROLE_LIST.map((r) => (
+          <button
+            key={r}
+            onClick={() => setRole(r)}
+            disabled={busy || agent.role === r}
+            title={ROLE_HINT[r]}
+            style={{
+              ...S.roleBtn,
+              ...(agent.role === r ? S.roleBtnActive : {}),
+            }}
+          >
+            {ROLE_LABEL[r]}
+          </button>
+        ))}
+      </div>
+      {err && <div style={S.formMsg}>{err}</div>}
     </div>
   );
 };
@@ -1170,6 +1242,199 @@ const WalletBody: React.FC = () => {
           {err && <div style={S.errMsg}>{err}</div>}
         </>
       )}
+    </div>
+  );
+};
+
+// ── Inventory app — luxury items grid + burn-on-click ──────────────────
+//
+// Each player has a 15-slot inventory (one slot per named luxury item
+// from the spec §4 catalog). Clicking a slot opens the burn dialog;
+// confirming burns the chosen quantity for rank points. Slots with no
+// owned quantity render greyed out — they're "where each item will go"
+// so players see the full catalog even when empty.
+
+interface InventoryResp {
+  items: Record<string, number>;
+  lifetime_luxury_burned: number;
+}
+
+// 15-item catalog (matches packages/shared LUXURY_ITEMS exactly). Defined
+// here to avoid the client-side bundle pulling all the server-side bits
+// from the shared package. Each entry: kind id, chain icon, label, tier,
+// burn value.
+type ItemChain = 'food' | 'materials' | 'energy';
+interface InvItem {
+  kind: string;
+  chain: ItemChain;
+  tier: 1 | 2 | 3 | 4 | 5;
+  burnValue: number;
+  label: string;
+  icon: string;
+}
+const INVENTORY_CATALOG: InvItem[] = [
+  // Food chain
+  { kind: 'artisan_jam',       chain: 'food', tier: 1, burnValue: 1,  label: 'Artisan Jam',           icon: '🍯' },
+  { kind: 'aged_charcuterie',  chain: 'food', tier: 2, burnValue: 3,  label: 'Aged Charcuterie',      icon: '🥩' },
+  { kind: 'heirloom_truffle',  chain: 'food', tier: 3, burnValue: 6,  label: 'Heirloom Truffle',      icon: '🍄' },
+  { kind: 'imperial_caviar',   chain: 'food', tier: 4, burnValue: 12, label: 'Imperial Caviar',       icon: '🥚' },
+  { kind: 'designer_wagyu',    chain: 'food', tier: 5, burnValue: 25, label: 'Designer Wagyu',        icon: '🥩' },
+  // Materials chain
+  { kind: 'cut_gemstone',      chain: 'materials', tier: 1, burnValue: 1,  label: 'Cut Gemstone',     icon: '💎' },
+  { kind: 'forged_sculpture',  chain: 'materials', tier: 2, burnValue: 3,  label: 'Forged Sculpture', icon: '🗿' },
+  { kind: 'polished_marble',   chain: 'materials', tier: 3, burnValue: 6,  label: 'Polished Marble',  icon: '🏛️' },
+  { kind: 'carbon_weave',      chain: 'materials', tier: 4, burnValue: 12, label: 'Carbon-Weave Art', icon: '🎨' },
+  { kind: 'quantum_display',   chain: 'materials', tier: 5, burnValue: 25, label: 'Quantum Display',  icon: '🖥️' },
+  // Energy chain
+  { kind: 'aaa_battery',       chain: 'energy', tier: 1, burnValue: 1,  label: 'AAA Battery',        icon: '🔋' },
+  { kind: 'aa_battery',        chain: 'energy', tier: 2, burnValue: 3,  label: 'AA Battery',         icon: '🔋' },
+  { kind: '9v_battery',        chain: 'energy', tier: 3, burnValue: 6,  label: '9V Battery',         icon: '🔋' },
+  { kind: 'industrial_cell',   chain: 'energy', tier: 4, burnValue: 12, label: 'Industrial Cell',    icon: '⚡' },
+  { kind: 'fusion_core',       chain: 'energy', tier: 5, burnValue: 25, label: 'Fusion Core',        icon: '☢️' },
+];
+
+const TIER_COLOR: Record<number, string> = {
+  1: '#CD7F32', // bronze
+  2: '#C0C0C0', // silver
+  3: '#FFD700', // gold
+  4: '#E5E4E2', // platinum
+  5: '#B9F2FF', // diamond
+};
+
+const InventoryBody: React.FC = () => {
+  const [data, setData] = useState<InventoryResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [selected, setSelected] = useState<InvItem | null>(null);
+  const signedIn = hasAuthToken();
+
+  const refresh = useCallback(() => {
+    if (!signedIn) return;
+    apiGet<InventoryResp>('/wallet/items', { authed: true })
+      .then((r) => { setData(r); setErr(null); })
+      .catch((e) => setErr((e as Error).message));
+  }, [signedIn]);
+
+  useEffect(() => {
+    if (!signedIn) return;
+    refresh();
+    const i = setInterval(refresh, 6000);
+    return () => clearInterval(i);
+  }, [signedIn, refresh]);
+
+  if (!signedIn) {
+    return (
+      <div style={S.emptyPad}>
+        Connect a wallet to see your luxury items.
+      </div>
+    );
+  }
+
+  const items = data?.items ?? {};
+  const lifetime = data?.lifetime_luxury_burned ?? 0;
+  return (
+    <>
+      <div style={S.invHeader}>
+        <span style={S.invHeaderLabel}>Lifetime burn</span>
+        <span style={S.invHeaderValue}>{lifetime.toLocaleString()}</span>
+      </div>
+      {err && <div style={S.errMsg}>{err}</div>}
+      <div style={S.invGrid}>
+        {INVENTORY_CATALOG.map((item) => {
+          const qty = items[item.kind] ?? 0;
+          const owned = qty > 0;
+          return (
+            <button
+              key={item.kind}
+              onClick={() => owned && setSelected(item)}
+              disabled={!owned}
+              style={{
+                ...S.invSlot,
+                ...(owned ? S.invSlotOwned : {}),
+                borderColor: TIER_COLOR[item.tier],
+              }}
+              title={`${item.label} · Tier ${item.tier} · burns for ${item.burnValue}`}
+              aria-label={`${item.label}, ${qty} owned`}
+            >
+              <span style={S.invIcon}>{item.icon}</span>
+              <span style={S.invQty}>{owned ? qty : '—'}</span>
+              <span style={S.invName}>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {selected && (
+        <BurnDialog
+          item={selected}
+          owned={items[selected.kind] ?? 0}
+          onClose={() => setSelected(null)}
+          onBurned={() => { setSelected(null); refresh(); }}
+        />
+      )}
+    </>
+  );
+};
+
+const BurnDialog: React.FC<{
+  item: InvItem;
+  owned: number;
+  onClose: () => void;
+  onBurned: () => void;
+}> = ({ item, owned, onClose, onBurned }) => {
+  const [qty, setQty] = useState('1');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const n = parseInt(qty, 10);
+  const validN = Number.isFinite(n) && n > 0 && n <= owned;
+  const gained = validN ? n * item.burnValue : 0;
+
+  const submit = async () => {
+    if (!validN) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost('/actions/burn', { item_kind: item.kind, quantity: n }, { authed: true });
+      onBurned();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.burnBackdrop} onClick={onClose} role="dialog" aria-label="Burn luxury">
+      <div style={S.burnPanel} onClick={(e) => e.stopPropagation()}>
+        <div style={S.burnHead}>
+          <span style={S.burnIcon}>{item.icon}</span>
+          <span style={S.burnTitle}>{item.label}</span>
+        </div>
+        <div style={S.burnMeta}>
+          Tier {item.tier} · burns for <strong>{item.burnValue}</strong> rank points each
+        </div>
+        <div style={S.burnMeta}>You own: <strong>{owned}</strong></div>
+        <div style={S.burnRow}>
+          <label style={S.burnLabel}>Burn</label>
+          <input
+            type="number" min={1} max={owned} step={1} value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            style={S.input}
+            autoFocus
+          />
+          <button onClick={() => setQty(String(owned))} style={S.maxBtn}>Max</button>
+        </div>
+        {validN && (
+          <div style={S.burnGained}>
+            +{gained.toLocaleString()} rank points
+          </div>
+        )}
+        {err && <div style={S.formMsg}>{err}</div>}
+        <div style={S.burnActions}>
+          <button onClick={onClose} disabled={busy} style={S.cancelTextBtn}>cancel</button>
+          <button onClick={submit} disabled={busy || !validN} style={S.dangerBtn}>
+            {busy ? '…' : 'Burn'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -1651,6 +1916,88 @@ const S: Record<string, React.CSSProperties> = {
   agentName: { fontSize: 13, color: '#F5E6D0', fontWeight: 600, fontFamily: 'Georgia, serif' },
   agentBal: { fontSize: 12, color: '#D89438', fontVariantNumeric: 'tabular-nums' },
   agentMeta: { fontSize: 10, color: '#7A6850', display: 'flex', flexWrap: 'wrap', gap: 4 },
+  roleSwitcher: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    marginTop: 6, padding: '4px 6px',
+    background: 'rgba(245,230,208,0.04)',
+    borderRadius: 4,
+  },
+  roleLabel: { fontSize: 10, color: '#A89378', fontWeight: 600, letterSpacing: 0.5 },
+  roleBtnRow: { display: 'flex', gap: 4, flex: 1 },
+  roleBtn: {
+    flex: 1, padding: '4px 6px', fontSize: 10, fontWeight: 600,
+    background: 'rgba(245,230,208,0.06)', color: '#A89378',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(245,230,208,0.10)',
+    borderRadius: 3, cursor: 'pointer',
+  },
+  roleBtnActive: {
+    background: 'rgba(63,122,61,0.22)', color: '#F5E6D0',
+    borderColor: '#3F7A3D', cursor: 'default',
+  },
+
+  // ── Inventory app ─────────────────────────────────────────────────
+  invHeader: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '8px 4px', marginBottom: 8,
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(245,230,208,0.10)',
+  },
+  invHeaderLabel: { fontSize: 11, color: '#A89378', letterSpacing: 0.5, textTransform: 'uppercase' },
+  invHeaderValue: { fontSize: 14, color: '#D89438', fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
+  invGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, 1fr)',
+    gap: 6,
+  },
+  invSlot: {
+    aspectRatio: '1 / 1',
+    display: 'flex', flexDirection: 'column',
+    alignItems: 'center', justifyContent: 'center',
+    gap: 2, padding: 4,
+    background: 'rgba(245,230,208,0.04)',
+    color: '#7A6850',
+    borderWidth: 1, borderStyle: 'solid',
+    borderRadius: 6,
+    cursor: 'not-allowed',
+    opacity: 0.5,
+    fontFamily: 'inherit',
+  },
+  invSlotOwned: {
+    background: 'rgba(245,230,208,0.08)',
+    color: '#F5E6D0',
+    cursor: 'pointer',
+    opacity: 1,
+  },
+  invIcon: { fontSize: 22, lineHeight: 1 },
+  invQty: { fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: '#D89438' },
+  invName: { fontSize: 8, textAlign: 'center', lineHeight: 1.1, padding: '0 1px' },
+
+  // ── Burn confirmation dialog ──────────────────────────────────────
+  burnBackdrop: {
+    position: 'absolute', inset: 0, zIndex: 50,
+    background: 'rgba(0,0,0,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 16,
+  },
+  burnPanel: {
+    background: '#1F1812', color: '#F5E6D0',
+    borderRadius: 10, padding: 16,
+    width: '100%', maxWidth: 280,
+    display: 'flex', flexDirection: 'column', gap: 8,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(216,148,56,0.18)',
+  },
+  burnHead: { display: 'flex', alignItems: 'center', gap: 8 },
+  burnIcon: { fontSize: 28 },
+  burnTitle: { fontSize: 15, fontWeight: 600, fontFamily: 'Georgia, serif' },
+  burnMeta: { fontSize: 11, color: '#A89378' },
+  burnRow: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 },
+  burnLabel: { fontSize: 11, color: '#A89378', flex: 0 },
+  maxBtn: {
+    padding: '4px 8px', fontSize: 11, fontWeight: 600,
+    background: 'rgba(245,230,208,0.08)', color: '#F5E6D0',
+    border: 'none', borderRadius: 4, cursor: 'pointer',
+  },
+  burnGained: { fontSize: 12, color: '#D89438', fontWeight: 600 },
+  burnActions: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 },
   agentActions: { display: 'flex', gap: 6, marginTop: 4 },
   fundBtn: {
     flex: 1, padding: '5px 8px', fontSize: 11, fontWeight: 600,
