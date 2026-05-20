@@ -9,8 +9,7 @@ import {
 } from '../../network/wallet';
 import {
   RESOURCE_TYPES, ResourceType,
-  GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
-  zoneForGrid,
+  GRID_COLS, GRID_ROWS, LANDMARKS,
   AGENT_PERSONALITIES, AGENT_STRATEGIES,
   AgentPersonality, AgentStrategy,
   JOBS, JOB_IDS, JobId,
@@ -1379,18 +1378,8 @@ const World2DBody: React.FC = () => {
     const cellW = W / GRID_COLS;
     const cellH = H / GRID_ROWS;
 
-    ctx.fillStyle = '#0c0e18';
+    ctx.fillStyle = '#1A1812';
     ctx.fillRect(0, 0, W, H);
-
-    // Zone tints
-    ctx.globalAlpha = 0.35;
-    for (let gx = 0; gx < GRID_COLS; gx++) {
-      for (let gy = 0; gy < GRID_ROWS; gy++) {
-        ctx.fillStyle = ZONE_COLORS[zoneForGrid(gx, gy)];
-        ctx.fillRect(gx * cellW, gy * cellH, cellW, cellH);
-      }
-    }
-    ctx.globalAlpha = 1;
 
     // Claimed parcels
     for (const p of parcels) {
@@ -1433,13 +1422,13 @@ const World2DBody: React.FC = () => {
         45×45 grid · {parcels.length} claimed parcels
       </div>
       <canvas ref={canvasRef} width={320} height={320} style={{ width: '100%', borderRadius: 4 }} />
-      <div style={S.zoneLegend}>
-        {(Object.keys(ZONE_COLORS) as Array<keyof typeof ZONE_COLORS>).map((z) => (
-          <span key={z} style={S.legendItem}>
-            <span style={{ ...S.legendSwatch, background: ZONE_COLORS[z] }} />
-            {z}
-          </span>
-        ))}
+      <div style={S.symbolLegend}>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#FFFFFF' }} aria-hidden>★</span> Town Hall</span>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#FFE08A' }} aria-hidden>⌂</span> Gate</span>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#FFE08A' }} aria-hidden>♦</span> Monument</span>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#FFE08A' }} aria-hidden>✿</span> Park</span>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#FFE08A' }} aria-hidden>⚓</span> Harbor</span>
+        <span style={S.legendItem}><span style={{ ...S.legendGlyph, color: '#4A90D9' }} aria-hidden>■</span> Claimed parcel (color = owner)</span>
       </div>
     </>
   );
@@ -1588,9 +1577,9 @@ const S: Record<string, React.CSSProperties> = {
   unitMeta: { flex: 1, fontSize: 12, color: '#F5E6D0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   unitInc: { fontSize: 11, color: '#3F7A3D', fontVariantNumeric: 'tabular-nums' },
   unitPrice: { fontSize: 12, color: '#D89438', fontVariantNumeric: 'tabular-nums', minWidth: 50, textAlign: 'right' },
-  zoneLegend: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8, fontSize: 9, color: '#A89378' },
-  legendItem: { display: 'inline-flex', alignItems: 'center', gap: 3, textTransform: 'capitalize' },
-  legendSwatch: { display: 'inline-block', width: 8, height: 8, borderRadius: 2 },
+  symbolLegend: { display: 'flex', flexWrap: 'wrap', columnGap: 10, rowGap: 3, marginTop: 8, fontSize: 10, color: '#C7B299' },
+  legendItem: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+  legendGlyph: { display: 'inline-block', minWidth: 12, textAlign: 'center', fontFamily: 'serif', fontSize: 12, fontWeight: 'bold' },
   decreeRow: { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 6px', borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'rgba(216,148,56,0.08)' },
   decreeStatus: { fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, minWidth: 56 },
   decreeSubject: { fontSize: 12, color: '#F5E6D0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  WORLD_HALF, GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
-  zoneForGrid,
+  WORLD_HALF, GRID_COLS, GRID_ROWS, LANDMARKS,
 } from '@gamestu/shared';
 import type { ParcelData } from '@gamestu/shared';
 import { apiGet } from '../../network/api';
@@ -11,15 +10,26 @@ import {
 } from '../../network/Client';
 
 /**
- * Full-screen map opened by clicking the minimap. Renders the same
- * visual layers (zones, landmarks, premium parcels, claimed parcels)
- * scaled up, plus a cursor-pointer style indicator at the local
- * player's position with their facing direction.
+ * Full-screen map opened by clicking the minimap. Shows landmarks,
+ * claimed parcels (colored by owner), the local player's position
+ * with facing direction, and remote players/agents as dots.
  */
 
 const LANDMARK_GLYPH: Record<string, string> = {
-  town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
+  town_hall: '★', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
 };
+
+/** Symbols shown on the map, paired with their meaning for the legend. */
+const LEGEND: Array<{ glyph: string; label: string; color: string }> = [
+  { glyph: '★', label: 'Town Hall',            color: '#FFFFFF' },
+  { glyph: '⌂', label: 'Gate',                 color: '#FFE08A' },
+  { glyph: '♦', label: 'Monument',             color: '#FFE08A' },
+  { glyph: '✿', label: 'Park',                 color: '#FFE08A' },
+  { glyph: '⚓', label: 'Harbor',               color: '#FFE08A' },
+  { glyph: '■', label: 'Claimed parcel (color = owner)', color: '#4A90D9' },
+  { glyph: '▲', label: 'You',                  color: '#FFFFFF' },
+  { glyph: '●', label: 'Other players & agents', color: '#FF6B6B' },
+];
 
 const STRIDE = 48; // mirror of buildings.ts
 
@@ -99,18 +109,8 @@ export const BigMap: React.FC = () => {
     const cellW = W / GRID_COLS;
     const cellH = H / GRID_ROWS;
 
-    ctx.fillStyle = '#0c0e18';
+    ctx.fillStyle = '#1A1812';
     ctx.fillRect(0, 0, W, H);
-
-    // Zones
-    ctx.globalAlpha = 0.4;
-    for (let gx = 0; gx < GRID_COLS; gx++) {
-      for (let gy = 0; gy < GRID_ROWS; gy++) {
-        ctx.fillStyle = ZONE_COLORS[zoneForGrid(gx, gy)];
-        ctx.fillRect(gx * cellW, gy * cellH, cellW, cellH);
-      }
-    }
-    ctx.globalAlpha = 1;
 
     // Claimed parcels
     for (const p of parcelsRef.current) {
@@ -199,10 +199,10 @@ export const BigMap: React.FC = () => {
         </div>
         <canvas ref={canvasRef} width={720} height={720} style={S.canvas} />
         <div style={S.legend}>
-          {(Object.keys(ZONE_COLORS) as Array<keyof typeof ZONE_COLORS>).map((z) => (
-            <span key={z} style={S.legendItem}>
-              <span style={{ ...S.legendSwatch, background: ZONE_COLORS[z] }} />
-              {z}
+          {LEGEND.map((entry) => (
+            <span key={entry.label} style={S.legendItem}>
+              <span style={{ ...S.legendGlyph, color: entry.color }} aria-hidden>{entry.glyph}</span>
+              <span>{entry.label}</span>
             </span>
           ))}
         </div>
@@ -233,7 +233,7 @@ const S: Record<string, React.CSSProperties> = {
     border: 'none', cursor: 'pointer', fontSize: 14,
   },
   canvas: { width: 'min(80vh, 720px)', height: 'min(80vh, 720px)', borderRadius: 8 },
-  legend: { display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, color: '#A89378' },
-  legendItem: { display: 'inline-flex', alignItems: 'center', gap: 4, textTransform: 'capitalize' },
-  legendSwatch: { display: 'inline-block', width: 10, height: 10, borderRadius: 2 },
+  legend: { display: 'flex', flexWrap: 'wrap', columnGap: 14, rowGap: 4, fontSize: 11, color: '#C7B299' },
+  legendItem: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+  legendGlyph: { display: 'inline-block', minWidth: 12, textAlign: 'center', fontFamily: 'serif', fontSize: 13, fontWeight: 'bold' },
 };

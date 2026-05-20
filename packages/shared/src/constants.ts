@@ -43,24 +43,7 @@ export function parcelWorldPos(grid_x: number, grid_y: number): { x: number; z: 
   };
 }
 
-// ── Phase D world map: zones + landmarks + premium parcels ────────────
-
-export type Zone =
-  | 'downtown' | 'commercial' | 'residential' | 'industrial' | 'tech'
-  | 'agricultural' | 'waterfront' | 'park' | 'public' | 'wilderness';
-
-export const ZONE_COLORS: Record<Zone, string> = {
-  downtown:     '#ffb86b',
-  commercial:   '#fde047',
-  residential:  '#86efac',
-  industrial:   '#a3a3a3',
-  tech:         '#a78bfa',
-  agricultural: '#65a30d',
-  waterfront:   '#38bdf8',
-  park:         '#22c55e',
-  public:       '#94a3b8',
-  wilderness:   '#3f3f46',
-};
+// ── Phase D world map: landmarks ──────────────────────────────────────
 
 export interface LandmarkSpec {
   id: string;
@@ -95,72 +78,6 @@ export const LANDMARKS: readonly LandmarkSpec[] = [
  * these IDs; client hides their parcel markers / claim UI.
  */
 export const RESERVED_PARCEL_IDS: readonly number[] = LANDMARKS.map((l) => l.parcelId);
-
-/** Per-zone building cost multiplier — downtown costs more, residential
- *  is cheaper. Multiplier of 1.0 means no change. */
-export const ZONE_COST_MULTIPLIER: Record<Zone, number> = {
-  downtown:     1.20,
-  commercial:   1.10,
-  residential:  0.90,
-  industrial:   1.00,
-  tech:         1.05,
-  agricultural: 0.85,
-  waterfront:   1.05,
-  park:         1.00,
-  public:       1.00,
-  wilderness:   0.80,
-};
-
-/** Per-zone income multiplier on building income tick. */
-export const ZONE_INCOME_MULTIPLIER: Record<Zone, number> = {
-  downtown:     1.20,
-  commercial:   1.10,
-  residential:  1.00,
-  industrial:   1.05,
-  tech:         1.15,
-  agricultural: 1.00,
-  waterfront:   1.10,
-  park:         0.90,
-  public:       1.00,
-  wilderness:   0.85,
-};
-
-/** Premium-parcel income bonus stacks on top of the zone multiplier. */
-export const PREMIUM_INCOME_BONUS = 1.15;
-
-/**
- * Static zone classifier from grid position. Center 5×5 = downtown,
- * surrounding ring = commercial, then residential/industrial/etc.
- * Pure function, no DB lookup — both server and client compute
- * identically.
- */
-export function zoneForGrid(gx: number, gy: number): Zone {
-  const cx = Math.floor(GRID_COLS / 2);
-  const cy = Math.floor(GRID_ROWS / 2);
-  const dx = Math.abs(gx - cx);
-  const dy = Math.abs(gy - cy);
-  const ring = Math.max(dx, dy);
-
-  if (ring <= 2) return 'downtown';
-  if (ring <= 5) return 'commercial';
-  if (ring <= 8) return 'tech';
-  if (ring <= 12) return 'residential';
-
-  // Outer ring sectors — split by quadrant for variety.
-  const isLeft = gx < cx;
-  const isTop = gy < cy;
-  if (gy === 0 || gy === GRID_ROWS - 1 || gx === 0 || gx === GRID_COLS - 1) {
-    if (gy === GRID_ROWS - 1 && isLeft) return 'waterfront';
-    if (gy === 0) return 'public';
-  }
-  if (ring <= 17) {
-    if (isTop && isLeft) return 'park';
-    if (isTop) return 'industrial';
-    if (isLeft) return 'agricultural';
-    return 'commercial';
-  }
-  return 'wilderness';
-}
 
 // ── Building types ──────────────────────────────────────────────────────
 

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import {
-  WORLD_HALF, GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
-  zoneForGrid,
+  WORLD_HALF, GRID_COLS, GRID_ROWS, LANDMARKS,
 } from '@gamestu/shared';
 import {
   onPlayerAdd,
@@ -37,30 +36,8 @@ function gridToMinimap(gx: number, gy: number): [number, number] {
   return worldToMinimap(wx, wz);
 }
 
-/** One-shot pre-rendered zone overlay. Rebuilt only on size change. */
-let zoneOverlay: HTMLCanvasElement | null = null;
-function getZoneOverlay(): HTMLCanvasElement {
-  if (zoneOverlay) return zoneOverlay;
-  const c = document.createElement('canvas');
-  c.width = SIZE;
-  c.height = SIZE;
-  const ctx = c.getContext('2d');
-  if (!ctx) return c;
-  const cellPx = (MINIMAP_STRIDE / (WORLD_HALF * 2)) * SIZE;
-  ctx.globalAlpha = 0.25;
-  for (let gx = 0; gx < GRID_COLS; gx++) {
-    for (let gy = 0; gy < GRID_ROWS; gy++) {
-      const [cx, cy] = gridToMinimap(gx, gy);
-      ctx.fillStyle = ZONE_COLORS[zoneForGrid(gx, gy)];
-      ctx.fillRect(cx - cellPx / 2, cy - cellPx / 2, cellPx, cellPx);
-    }
-  }
-  zoneOverlay = c;
-  return zoneOverlay;
-}
-
 const LANDMARK_GLYPH: Record<string, string> = {
-  town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
+  town_hall: '★', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
 };
 
 export const Minimap: React.FC = () => {
@@ -82,9 +59,6 @@ export const Minimap: React.FC = () => {
     // ── Layer 1: Background ───────────────────────────────────────────────
     ctx.fillStyle = 'rgba(10, 12, 16, 0.78)';
     ctx.fillRect(0, 0, SIZE, SIZE);
-
-    // ── Layer 1b: Zone tint overlay (Phase D) ─────────────────────────────
-    ctx.drawImage(getZoneOverlay(), 0, 0);
 
     // ── Layer 2: Parcel grid lines ────────────────────────────────────────
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
