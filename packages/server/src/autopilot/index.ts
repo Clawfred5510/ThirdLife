@@ -45,6 +45,7 @@ import {
   TICK_PRODUCTION,
   AgentStrategy,
   AgentPersonality,
+  parcelWorldPos,
 } from '@gamestu/shared';
 import { placeOrder, getBook, getBestBid } from '../market/orderBook';
 import { getNetWorth } from '../leaderboard';
@@ -74,20 +75,12 @@ const SPAWN_X = 0;
 const SPAWN_Y = 0;
 const SPAWN_Z = -80;
 
-// Market plaza — where traders "stand" while placing orders. Visual only;
-// has no effect on order book mechanics. Currently the world centre.
-const MARKET_X = 0;
-const MARKET_Y = 0;
-const MARKET_Z = 0;
-
-// Convert a parcel's grid coordinates to its world-space centre. Must
-// match the EXPLORE handler in GameRoom.ts which uses the same mapping.
-function parcelCenter(parcel: ParcelRow): { x: number; y: number; z: number } {
-  return {
-    x: parcel.grid_x * 48 - 1200 + 20,
-    y: 0,
-    z: parcel.grid_y * 48 - 1200 + 20,
-  };
+// Workplace anchor for an agent — the south edge of the parcel cell,
+// outside the building footprint so the agent is visibly standing in
+// front of their workplace rather than embedded in the wall.
+function parcelDoor(parcel: ParcelRow): { x: number; y: number; z: number } {
+  const { x, z } = parcelWorldPos(parcel.grid_x, parcel.grid_y);
+  return { x, y: 0, z: z - 12 };
 }
 
 /**
@@ -170,10 +163,10 @@ function runOne(agent: AgentRow, tick: number, parcels: Map<number, ParcelRow>):
 
   switch (personality) {
     case 'worker':      return runWorker(agent, knobs, workplace);
-    case 'trader':      return runTrader(agent, knobs);
+    case 'trader':      return runTrader(agent, knobs, workplace);
     case 'builder':     return runBuilder(agent, knobs, parcels);
     case 'accumulator': return runAccumulator(agent, workplace);
-    case 'social':      return runSocial(agent, tick);
+    case 'social':      return runSocial(agent, tick, workplace);
     case 'ambitious':   return runAmbitious(agent, knobs, workplace, parcels);
     default:            return runWorker(agent, knobs, workplace);
   }
@@ -209,25 +202,28 @@ function runWorker(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow |
   }
   void knobs;
   // Position: stand at the workplace if assigned, else stay at spawn.
-  if (workplace) return parcelCenter(workplace);
+  if (workplace) return parcelDoor(workplace);
   return spawnSpreadFor(agent.id);
 }
 
-function runTrader(agent: AgentRow, knobs: StrategyKnobs): { x: number; y: number; z: number } | null {
-  // Pick the deepest book; place a buy below mid and a sell above mid.
-  // If there's no opposing side we use BASE_MARKET_PRICES as the anchor
-  // — the market designer sets those as a fallback.
+function runTrader(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
+  // Trader is a workplace-bound role like any other — they place orders
+  // from wherever they are. Position-wise we keep them at the workplace
+  // (or spawn if unemployed); the market is server-side bookkeeping, not
+  // a physical destination.
   const balance = getPlayerCredits(agent.id);
-  if (balance < 100) return { x: MARKET_X, y: MARKET_Y, z: MARKET_Z };
+  const standAt = (): { x: number; y: number; z: number } =>
+    workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
+  if (balance < 100) return standAt();
 
   const target: ResourceType | null = pickMostLiquidResource();
-  if (!target) return { x: MARKET_X, y: MARKET_Y, z: MARKET_Z };
+  if (!target) return standAt();
 
   const book = getBook(target);
   const bestBid = book.bids[0]?.price ?? 0;
   const bestAsk = book.asks[0]?.price ?? 0;
   const mid = bestBid > 0 && bestAsk > 0 ? Math.floor((bestBid + bestAsk) / 2) : Math.max(bestBid, bestAsk, 10);
-  if (mid <= 0) return { x: MARKET_X, y: MARKET_Y, z: MARKET_Z };
+  if (mid <= 0) return standAt();
 
   const offset = Math.max(1, Math.floor(mid * knobs.spreadPct));
   const buyPrice = Math.max(1, mid - offset);
@@ -250,7 +246,7 @@ function runTrader(agent: AgentRow, knobs: StrategyKnobs): { x: number; y: numbe
     personality: 'trader', action: 'spread', resource: target,
     bid: buyPrice, ask: sellPrice, buyQty, sellQty,
   }, 'minor');
-  return { x: MARKET_X, y: MARKET_Y, z: MARKET_Z };
+  return standAt();
 }
 
 function runBuilder(agent: AgentRow, knobs: StrategyKnobs, parcels: Map<number, ParcelRow>): { x: number; y: number; z: number } | null {
@@ -279,7 +275,7 @@ function runBuilder(agent: AgentRow, knobs: StrategyKnobs, parcels: Map<number, 
       parcel: target.id, building: affordable.type, cost: affordable.cost + LAND_COST,
     }, 'major');
     const claimed = parcels.get(target.id);
-    if (claimed) return parcelCenter(claimed);
+    if (claimed) return parcelDoor(claimed);
   }
   return spawnSpreadFor(agent.id);
 }
@@ -294,14 +290,14 @@ function runAccumulator(agent: AgentRow, workplace: ParcelRow | null): { x: numb
     }, 'minor');
   }
   // Banker stands at their bank parcel if owned, else workplace, else spawn.
-  if (workplace) return parcelCenter(workplace);
+  if (workplace) return parcelDoor(workplace);
   const owned = getPlayerParcels(agent.id);
   const bank = owned.find((p) => (p as any).building_type === 'bank') ?? owned[0];
-  if (bank) return parcelCenter(bank as ParcelRow);
+  if (bank) return parcelDoor(bank as ParcelRow);
   return spawnSpreadFor(agent.id);
 }
 
-function runSocial(agent: AgentRow, tick: number): { x: number; y: number; z: number } | null {
+function runSocial(agent: AgentRow, tick: number, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
   // Cosmetic — emit a chat event so the world feels alive. Not every
   // tick (would spam) — once every 3 ticks per agent, deterministic
   // by id+tick to avoid clumping.
@@ -312,8 +308,8 @@ function runSocial(agent: AgentRow, tick: number): { x: number; y: number; z: nu
       personality: 'social', action: 'chat', message: line,
     }, 'minor');
   }
-  // Greeter stands near spawn so newcomers see them — but spread by id
-  // so multiple greeters don't overlap exactly.
+  // Stand at workplace if assigned, else near spawn so newcomers see them.
+  if (workplace) return parcelDoor(workplace);
   return spawnSpreadFor(agent.id);
 }
 
@@ -326,9 +322,9 @@ function runAmbitious(agent: AgentRow, knobs: StrategyKnobs, workplace: ParcelRo
   if (balance >= LAND_COST + 50_000) {
     return runBuilder(agent, knobs, parcels);
   } else if (balance >= 1_000) {
-    return runTrader(agent, knobs);
+    return runTrader(agent, knobs, workplace);
   }
-  if (workplace) return parcelCenter(workplace);
+  if (workplace) return parcelDoor(workplace);
   return spawnSpreadFor(agent.id);
 }
 

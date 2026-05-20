@@ -19,6 +19,7 @@ import {
   TICK_PRODUCTION,
   FOOD_PER_AGENT_PER_TICK,
   ENERGY_PER_INCOME_BUILDING_PER_TICK,
+  parcelWorldPos,
 } from '@gamestu/shared';
 import {
   getOrCreatePlayer,
@@ -439,8 +440,9 @@ export class GameRoom extends Room<GameState> {
       const ownerId = this.pid(client.sessionId);
       player.credits -= EXPLORE_COST;
       updatePlayerCredits(ownerId, player.credits);
-      player.x = target.grid_x * 48 - 1200 + 20; // approx world coords
-      player.z = target.grid_y * 48 - 1200 + 20;
+      const targetPos = parcelWorldPos(target.grid_x, target.grid_y);
+      player.x = targetPos.x;
+      player.z = targetPos.z;
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       client.send(MessageType.EXPLORE, { parcel: { id: target.id, grid_x: target.grid_x, grid_y: target.grid_y } });
@@ -616,6 +618,39 @@ export class GameRoom extends Room<GameState> {
     this.broadcast(MessageType.PLAYER_LEAVE, { id: persistentId });
   }
 
+  /**
+   * Advance each agent toward its assigned waypoint. Called every
+   * server tick from update(). PLAYER_SPEED is shared with humans —
+   * agents walk at the same pace so the world reads coherent. Once
+   * within `ARRIVE_EPSILON` of the target, we snap and stop; the avatar
+   * animation engine on the client switches from walk to idle when
+   * velocity drops to zero.
+   */
+  private stepAgents(dt: number): void {
+    const ARRIVE_EPSILON = 0.5;
+    const step = PLAYER_SPEED * dt;
+    this.agentPlayers.forEach((a) => {
+      if (a.targetX === undefined || a.targetZ === undefined) return;
+      const dx = a.targetX - a.x;
+      const dz = a.targetZ - a.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist <= ARRIVE_EPSILON) {
+        a.x = a.targetX;
+        a.z = a.targetZ;
+        return;
+      }
+      if (dist <= step) {
+        a.x = a.targetX;
+        a.z = a.targetZ;
+      } else {
+        a.x += (dx / dist) * step;
+        a.z += (dz / dist) * step;
+      }
+      // Face the direction of motion so the walk animation looks right.
+      a.rotation = Math.atan2(dx, dz);
+    });
+  }
+
   private snapshotPlayer(p: PlayerData) {
     return {
       id: p.id,
@@ -669,6 +704,9 @@ export class GameRoom extends Room<GameState> {
         color: appearance.shirt_color,
         appearance,
         bot_kind: a.autopilot_enabled === 1 ? 'auto' : 'agent',
+        // Start with no pending target — they stand still until the
+        // first autopilot tick assigns a workplace/spawn waypoint.
+        targetX: row.x, targetY: row.y, targetZ: row.z,
       };
       this.agentPlayers.set(a.id, pd);
       if (!initial) {
@@ -685,6 +723,14 @@ export class GameRoom extends Room<GameState> {
 
   update(deltaTime: number) {
     const dt = deltaTime / 1000;
+
+    // ---- Step agents toward their waypoints ----
+    // Walks each agent toward (targetX, targetZ) at PLAYER_SPEED. When
+    // within arrival epsilon they snap and stop (target == position).
+    // Position diffs propagate to clients via the periodic PLAYER_STATE
+    // broadcast below, which includes agents — the client lerps over
+    // the 100ms broadcast interval, so the result is a smooth walk.
+    this.stepAgents(dt);
 
     this.pendingInputs.forEach((input, sessionId) => {
       const player = this.players.get(sessionId);
@@ -726,11 +772,17 @@ export class GameRoom extends Room<GameState> {
     });
 
     // ---- Broadcast player positions at fixed rate ----
+    // Includes agents so the client's PLAYER_STATE handler (which removes
+    // any player not in the snapshot) doesn't delete them every 100ms. The
+    // agent positions are stepped by stepAgents() each tick.
     this.lastBroadcastTick += deltaTime;
     if (this.lastBroadcastTick >= PLAYER_BROADCAST_INTERVAL_MS && this.players.size > 0) {
       this.lastBroadcastTick = 0;
       this.broadcast(MessageType.PLAYER_STATE, {
-        players: Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+        players: [
+          ...Array.from(this.players.values()).map((p) => this.snapshotPlayer(p)),
+          ...Array.from(this.agentPlayers.values()).map((p) => this.snapshotPlayer(p)),
+        ],
       });
     }
 
@@ -753,16 +805,16 @@ export class GameRoom extends Room<GameState> {
 
       // Phase B autopilot — every registered agent with autopilot
       // enabled acts according to its personality + strategy. Wrapped
-      // in try/catch by runAutopilotPass per-agent. Returns the agents
-      // that moved this tick so we can broadcast PLAYER_UPDATE for them.
+      // in try/catch by runAutopilotPass per-agent. Returns the agents'
+      // target waypoints — the per-frame stepAgents() walks them there
+      // at PLAYER_SPEED, rather than teleporting.
       const moves = runAutopilotPass();
       // Pick up new agents that were registered since the last tick.
       this.refreshAgents(false);
       for (const m of moves) {
         const a = this.agentPlayers.get(m.agentId);
         if (!a) continue;
-        a.x = m.x; a.y = m.y; a.z = m.z;
-        this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(a));
+        a.targetX = m.x; a.targetY = m.y; a.targetZ = m.z;
       }
 
       // Phase B.2 reputation: each owned shop consumes 1 luxury; owner

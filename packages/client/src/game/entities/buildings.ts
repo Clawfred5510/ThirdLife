@@ -11,7 +11,10 @@ import {
   InstancedMesh,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
-import { GRID_COLS, GRID_ROWS } from '@gamestu/shared';
+import {
+  GRID_COLS, GRID_ROWS, CELL_SIZE, ROAD_WIDTH, PARCEL_STRIDE as STRIDE,
+  GRID_TOTAL_W, GRID_TOTAL_H, parcelWorldPos,
+} from '@gamestu/shared';
 
 // ---------------------------------------------------------------------------
 // Parcel grid configuration
@@ -26,11 +29,6 @@ export interface ParcelDef {
 }
 
 export { GRID_COLS, GRID_ROWS };
-const CELL_SIZE = 40;
-const ROAD_WIDTH = 8;
-const GRID_TOTAL_W = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * ROAD_WIDTH;
-const GRID_TOTAL_H = GRID_ROWS * CELL_SIZE + (GRID_ROWS - 1) * ROAD_WIDTH;
-const STRIDE = CELL_SIZE + ROAD_WIDTH;
 
 // ---------------------------------------------------------------------------
 // Grid generation
@@ -40,8 +38,7 @@ export function generateParcelGrid(): ParcelDef[] {
   const parcels: ParcelDef[] = [];
   for (let gy = 0; gy < GRID_ROWS; gy++) {
     for (let gx = 0; gx < GRID_COLS; gx++) {
-      const x = gx * STRIDE - GRID_TOTAL_W / 2 + CELL_SIZE / 2;
-      const z = gy * STRIDE - GRID_TOTAL_H / 2 + CELL_SIZE / 2;
+      const { x, z } = parcelWorldPos(gx, gy);
       parcels.push({ id: gx * GRID_COLS + gy, grid_x: gx, grid_y: gy, x, z });
     }
   }

@@ -18,6 +18,31 @@ export const EXPLORE_COST = 69;
 export const GRID_COLS = 45;
 export const GRID_ROWS = 45;
 
+/** Per-cell footprint (the buildable square inside a parcel). */
+export const CELL_SIZE = 40;
+/** Road width between cells. */
+export const ROAD_WIDTH = 8;
+/** Distance between adjacent parcel centres (cell + road). */
+export const PARCEL_STRIDE = CELL_SIZE + ROAD_WIDTH;
+/** Total grid extent in world units. Matches WORLD_SIZE. */
+export const GRID_TOTAL_W = GRID_COLS * CELL_SIZE + (GRID_COLS - 1) * ROAD_WIDTH;
+export const GRID_TOTAL_H = GRID_ROWS * CELL_SIZE + (GRID_ROWS - 1) * ROAD_WIDTH;
+
+/**
+ * World-space centre of a parcel given its grid coordinates. Canonical
+ * formula used by both client (rendering buildings) and server (agent
+ * positions, EXPLORE teleport, autopilot targets). Keep them in sync —
+ * before this util existed, the server used `grid * 48 - 1200 + 20`
+ * (correct for a 50×50 grid) while the client used the 45×45 form,
+ * so agent teleports landed ~124 units away from the visible parcel.
+ */
+export function parcelWorldPos(grid_x: number, grid_y: number): { x: number; z: number } {
+  return {
+    x: grid_x * PARCEL_STRIDE - GRID_TOTAL_W / 2 + CELL_SIZE / 2,
+    z: grid_y * PARCEL_STRIDE - GRID_TOTAL_H / 2 + CELL_SIZE / 2,
+  };
+}
+
 // ── Phase D world map: zones + landmarks + premium parcels ────────────
 
 export type Zone =

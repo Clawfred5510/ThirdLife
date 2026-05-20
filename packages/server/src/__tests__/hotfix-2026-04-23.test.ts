@@ -51,7 +51,7 @@ function section(name: string) {
 // ── Setup ────────────────────────────────────────────────────────────────
 seedParcels();
 const parcels = getAllParcels();
-check('seedParcels populates grid', parcels.length === 2500, `got ${parcels.length}`);
+check('seedParcels populates grid', parcels.length === 2025, `got ${parcels.length}`);
 
 // ── Bug 1: LAND_COST split-brain ─────────────────────────────────────────
 section('Bug 1: LAND_COST');

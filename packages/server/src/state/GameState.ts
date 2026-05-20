@@ -33,4 +33,15 @@ export interface PlayerData {
    * external API key (third-party AI runtime). Humans omit this entirely.
    */
   bot_kind?: 'auto' | 'agent';
+  /**
+   * Agent waypoint navigation. The autopilot sets `target*` once per
+   * INCOME_TICK_MS; the GameRoom per-frame step walks the agent toward
+   * the target at PLAYER_SPEED until it arrives, then snaps and clears
+   * the target. Humans don't use these — their position is driven by
+   * input. Initialised to current position on agent load so they don't
+   * drift before the first autopilot tick.
+   */
+  targetX?: number;
+  targetY?: number;
+  targetZ?: number;
 }
