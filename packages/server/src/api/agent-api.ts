@@ -28,7 +28,7 @@ import {
   buyLand,
 } from '../db';
 import { economy, WORLD_TREASURY_ID } from '../economy';
-import { inGameAgentCapFor, rankFor } from '../ranks';
+import { inGameAgentCapFor, externalAgentCapFor, rankFor } from '../ranks';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
@@ -529,6 +529,122 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     },
     initial_fund: initialFunded,
     initial_fund_error: initialFundError,
+  });
+});
+
+/**
+ * Phase 5: external agent registration.
+ *
+ *   POST /api/v1/agents/register-external
+ *     Authorization: Bearer <wallet-session-token>
+ *     body: { name: string, budget_ameta?: number }
+ *
+ * Creates an `is_external = 1` agent owned by the caller's wallet. The
+ * agent gets its own `tl_sk_` api_key (returned ONCE in the response —
+ * see spec §4). Optional `budget_ameta` allocates initial trading capital
+ * from the wallet to the new agent's balance; if omitted, the agent
+ * starts at 0 and the owner can top up later via /agents/:id/allocate.
+ *
+ * The "wallet-signed" requirement from spec §4 is satisfied by the SIWE
+ * wallet session token itself — it's a hot key the wallet authorised at
+ * login. Issuing a fresh EIP-712 signature per agent-create adds friction
+ * without raising security beyond what the session token already proves.
+ * When the on-chain bridge ships (Phase 9), this endpoint will gain an
+ * extra signed payload that authorises the on-chain budget allocation.
+ *
+ * Differences from /agents/register (in-game):
+ *   • is_external = 1 (autopilot skips it; cannot call /actions/*)
+ *   • cost = EXTERNAL_AGENT_COST_AMETA (0 per spec §9)
+ *   • cap   = EXTERNAL_AGENT_CAP_BY_RANK[rank]
+ *   • api_key IS returned in the response (in-game agents hide theirs).
+ *   • No job / workplace / appearance — external agents are headless
+ *     trading processes, not in-world workers.
+ */
+router.post('/agents/register-external', authWallet, async (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const body = (req.body ?? {}) as { name?: string; budget_ameta?: number };
+
+  if (!body.name || typeof body.name !== 'string' || body.name.length === 0) {
+    return res.status(400).json({ error: 'name (string) required' });
+  }
+
+  const externalCap = externalAgentCapFor(wallet);
+  const externalCount = countAgentsByWalletAndKind(wallet, 1);
+  if (externalCount >= externalCap) {
+    return res.status(409).json({
+      error: 'wallet_at_external_agent_cap',
+      limit: externalCap,
+      current: externalCount,
+      rank: 'bronze',
+    });
+  }
+
+  const budget = typeof body.budget_ameta === 'number' && Number.isInteger(body.budget_ameta)
+    ? body.budget_ameta : 0;
+  if (budget < 0) {
+    return res.status(400).json({ error: 'budget_ameta must be non-negative' });
+  }
+  if (budget > 0) {
+    const bal = await economy().getBalance(wallet);
+    if (bal < budget) {
+      return res.status(400).json({
+        error: 'insufficient_balance',
+        wallet_balance: bal,
+        requested_budget: budget,
+      });
+    }
+  }
+
+  const id = `${wallet}:agent:${crypto.randomBytes(8).toString('hex')}`;
+  const apiKey = generateApiKey();
+
+  try {
+    registerAgent(
+      id, body.name, 'worker', 'balanced', apiKey, wallet,
+      null, null, null,
+    );
+    // Flip to external + initialise the trading budget marker on the row.
+    const rawDb = _rawDb();
+    rawDb.prepare(
+      `UPDATE agents SET is_external = 1, role = 'work', trading_budget_ameta = ? WHERE id = ?`,
+    ).run(budget, id);
+  } catch (err) {
+    const e = err as Error;
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Agent name already taken' });
+    return res.status(500).json({ error: 'Registration failed', detail: e.message });
+  }
+
+  // Allocate the budget atomically — fee-free intra-wallet transfer.
+  let allocated = 0;
+  let allocateError: string | undefined;
+  if (budget > 0) {
+    try {
+      const r = await economy().allocate(wallet, id, budget, 'fund');
+      if (r.ok) allocated = budget;
+      else allocateError = r.reason ?? 'allocate_failed';
+    } catch (e) {
+      allocateError = (e as Error).message;
+    }
+  }
+
+  addEvent('external_agent_registered', id, {
+    name: body.name, owner_wallet: wallet, budget_ameta: allocated,
+  });
+  notifyAgentChanged(id);
+
+  res.json({
+    ok: true,
+    agent: {
+      id,
+      name: body.name,
+      owner_wallet: wallet,
+      is_external: true,
+      balance: allocated,
+      trading_budget_ameta: budget,
+    },
+    api_key: apiKey,
+    note: 'Save this API key — it is only shown once. Treat it like a password.',
+    allocate_error: allocateError,
   });
 });
 
