@@ -107,6 +107,13 @@ interface DBBackend {
   /** Phase 2 starvation state: update the agent's starvation_ticks and
    *  dormant_at_tick. Pass `dormantAtTick = null` to revive. */
   setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null): void;
+  /** Phase 3 luxury items. */
+  getPlayerItems(playerId: string): Record<string, number>;
+  addPlayerItems(playerId: string, itemKind: string, delta: number): number;
+  /** Returns the new lifetime burn total. */
+  burnLuxuryItems(playerId: string, itemKind: string, quantity: number, burnValue: number): { ok: boolean; reason?: string; lifetime?: number; gained?: number };
+  /** Cumulative luxury burned. 0 if the player has never burned. */
+  getLifetimeLuxuryBurned(playerId: string): number;
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
@@ -199,10 +206,31 @@ class SQLiteDatabase implements DBBackend {
       } catch (_) { /* exists */ }
     }
 
+    // Phase 3 (2026-05-20): cumulative luxury burn drives the rank
+    // system (Phase 4). NULL → not yet ranked; 0 → has clicked Burn but
+    // chose 0 quantity (impossible today). Treat as 0 for all reads.
+    try {
+      this.db.exec(`ALTER TABLE players ADD COLUMN lifetime_luxury_burned INTEGER DEFAULT 0`);
+    } catch (_) { /* exists */ }
+
     // Building type on parcels (apartment, house, shop, farm, etc.)
     try {
       this.db.exec(`ALTER TABLE parcels ADD COLUMN building_type TEXT`);
     } catch (_) { /* exists */ }
+
+    // Phase 3: named luxury items per wallet. One row per (player_id,
+    // item_kind) pair; quantity rolls up. Items are produced by craft
+    // agents, tradeable on the marketplace, and burnable for rank.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS luxury_items (
+        player_id TEXT NOT NULL,
+        item_kind TEXT NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (player_id, item_kind),
+        FOREIGN KEY (player_id) REFERENCES players(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_luxury_items_player ON luxury_items(player_id);
+    `);
 
     // Pre-launch one-shot: any player still parked at the legacy spawn
     // (400, 0, -200) gets teleported to the new rocket-facing spawn.
@@ -838,6 +866,76 @@ class SQLiteDatabase implements DBBackend {
     ).run(starvationTicks, dormantAtTick, agentId);
   }
 
+  getPlayerItems(playerId: string): Record<string, number> {
+    const rows = this.db.prepare(
+      `SELECT item_kind, quantity FROM luxury_items WHERE player_id = ?`,
+    ).all(playerId) as Array<{ item_kind: string; quantity: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.item_kind] = r.quantity;
+    return out;
+  }
+
+  addPlayerItems(playerId: string, itemKind: string, delta: number): number {
+    if (delta === 0) {
+      const row = this.db.prepare(
+        `SELECT quantity FROM luxury_items WHERE player_id = ? AND item_kind = ?`,
+      ).get(playerId, itemKind) as { quantity: number } | undefined;
+      return row?.quantity ?? 0;
+    }
+    // Upsert with bounded-by-0 guard.
+    const txn = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        `SELECT quantity FROM luxury_items WHERE player_id = ? AND item_kind = ?`,
+      ).get(playerId, itemKind) as { quantity: number } | undefined;
+      const cur = existing?.quantity ?? 0;
+      const next = Math.max(0, cur + delta);
+      if (existing) {
+        this.db.prepare(
+          `UPDATE luxury_items SET quantity = ? WHERE player_id = ? AND item_kind = ?`,
+        ).run(next, playerId, itemKind);
+      } else if (next > 0) {
+        this.db.prepare(
+          `INSERT INTO luxury_items (player_id, item_kind, quantity) VALUES (?, ?, ?)`,
+        ).run(playerId, itemKind, next);
+      }
+      return next;
+    });
+    return txn();
+  }
+
+  burnLuxuryItems(
+    playerId: string, itemKind: string, quantity: number, burnValue: number,
+  ): { ok: boolean; reason?: string; lifetime?: number; gained?: number } {
+    if (quantity <= 0) return { ok: false, reason: 'quantity_must_be_positive' };
+    const txn = this.db.transaction(() => {
+      const row = this.db.prepare(
+        `SELECT quantity FROM luxury_items WHERE player_id = ? AND item_kind = ?`,
+      ).get(playerId, itemKind) as { quantity: number } | undefined;
+      const have = row?.quantity ?? 0;
+      if (have < quantity) return { ok: false as const, reason: 'insufficient_items' };
+      const remaining = have - quantity;
+      this.db.prepare(
+        `UPDATE luxury_items SET quantity = ? WHERE player_id = ? AND item_kind = ?`,
+      ).run(remaining, playerId, itemKind);
+      const gained = quantity * burnValue;
+      this.db.prepare(
+        `UPDATE players SET lifetime_luxury_burned = COALESCE(lifetime_luxury_burned, 0) + ? WHERE id = ?`,
+      ).run(gained, playerId);
+      const totalRow = this.db.prepare(
+        `SELECT lifetime_luxury_burned AS n FROM players WHERE id = ?`,
+      ).get(playerId) as { n: number } | undefined;
+      return { ok: true as const, lifetime: totalRow?.n ?? 0, gained };
+    });
+    return txn();
+  }
+
+  getLifetimeLuxuryBurned(playerId: string): number {
+    const row = this.db.prepare(
+      `SELECT lifetime_luxury_burned AS n FROM players WHERE id = ?`,
+    ).get(playerId) as { n: number | null } | undefined;
+    return row?.n ?? 0;
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
@@ -1253,6 +1351,48 @@ class MemoryDB implements DBBackend {
     }
   }
 
+  private items = new Map<string, Map<string, number>>(); // playerId → kind → qty
+  private lifetimeBurn = new Map<string, number>();
+
+  getPlayerItems(playerId: string): Record<string, number> {
+    const m = this.items.get(playerId);
+    if (!m) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of m) out[k] = v;
+    return out;
+  }
+
+  addPlayerItems(playerId: string, itemKind: string, delta: number): number {
+    let m = this.items.get(playerId);
+    if (!m) { m = new Map(); this.items.set(playerId, m); }
+    const next = Math.max(0, (m.get(itemKind) ?? 0) + delta);
+    if (next === 0) m.delete(itemKind);
+    else m.set(itemKind, next);
+    return next;
+  }
+
+  burnLuxuryItems(
+    playerId: string, itemKind: string, quantity: number, burnValue: number,
+  ): { ok: boolean; reason?: string; lifetime?: number; gained?: number } {
+    if (quantity <= 0) return { ok: false, reason: 'quantity_must_be_positive' };
+    const m = this.items.get(playerId);
+    const have = m?.get(itemKind) ?? 0;
+    if (have < quantity) return { ok: false, reason: 'insufficient_items' };
+    if (m) {
+      const remaining = have - quantity;
+      if (remaining === 0) m.delete(itemKind);
+      else m.set(itemKind, remaining);
+    }
+    const gained = quantity * burnValue;
+    const lifetime = (this.lifetimeBurn.get(playerId) ?? 0) + gained;
+    this.lifetimeBurn.set(playerId, lifetime);
+    return { ok: true, lifetime, gained };
+  }
+
+  getLifetimeLuxuryBurned(playerId: string): number {
+    return this.lifetimeBurn.get(playerId) ?? 0;
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     for (const a of this.agents.values()) {
       if (a.id === agentId) { a.workplace_parcel_id = parcelId; return; }
@@ -1432,6 +1572,16 @@ export function countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 
 }
 export function setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null) {
   backend.setAgentStarvation(agentId, starvationTicks, dormantAtTick);
+}
+export function getPlayerItems(playerId: string) { return backend.getPlayerItems(playerId); }
+export function addPlayerItems(playerId: string, itemKind: string, delta: number) {
+  return backend.addPlayerItems(playerId, itemKind, delta);
+}
+export function burnLuxuryItems(playerId: string, itemKind: string, quantity: number, burnValue: number) {
+  return backend.burnLuxuryItems(playerId, itemKind, quantity, burnValue);
+}
+export function getLifetimeLuxuryBurned(playerId: string) {
+  return backend.getLifetimeLuxuryBurned(playerId);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }

@@ -113,6 +113,11 @@ export enum MessageType {
   EVENTS = 'events',
   EVENT = 'event',
   LEADERBOARD = 'leaderboard',
+  // Phase 3 — luxury burn + item inventory sync
+  BURN_LUXURY = 'burn_luxury',
+  BURN_EFFECT = 'burn_effect',          // S→C broadcast for the particle effect
+  ITEM_UPDATE = 'item_update',          // S→C player's luxury_items snapshot
+  RANK_UP = 'rank_up',                  // S→C broadcast on rank promotion (Phase 4)
 }
 
 export interface PlayerResources {

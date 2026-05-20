@@ -241,6 +241,65 @@ export function emitsPassiveLuxury(type: BuildingType): boolean {
 export const BUILDING_LIST: BuildingSpec[] = Object.values(BUILDINGS);
 export const RESOURCE_TYPES: ResourceType[] = ['food', 'materials', 'energy', 'luxury'];
 
+// ── Luxury items catalog (spec §4) ─────────────────────────────────────
+// 15 named, tradeable items. One per production building. A craft agent
+// at building B mints items_per_tick (= tier_multiplier) units of B's
+// item per tick, consuming CRAFT_RESOURCES_PER_ITEM × items_per_tick of
+// B's input resource. Each item burns for tier-specific rank points.
+
+export type LuxuryItemKind =
+  // Food chain
+  | 'artisan_jam' | 'aged_charcuterie' | 'heirloom_truffle' | 'imperial_caviar' | 'designer_wagyu'
+  // Materials chain
+  | 'cut_gemstone' | 'forged_sculpture' | 'polished_marble' | 'carbon_weave' | 'quantum_display'
+  // Energy chain
+  | 'aaa_battery' | 'aa_battery' | '9v_battery' | 'industrial_cell' | 'fusion_core';
+
+export interface LuxuryItemSpec {
+  kind: LuxuryItemKind;
+  /** Production building that crafts this item (1:1 mapping). */
+  building: BuildingType;
+  /** Input resource consumed at CRAFT_RESOURCES_PER_ITEM each. */
+  chain: 'food' | 'materials' | 'energy';
+  /** Tier of the source building. Determines items-per-tick and burn value. */
+  tier: 1 | 2 | 3 | 4 | 5;
+  /** Rank points granted per item burned. */
+  burnValue: number;
+  /** Display label shown in inventory + marketplace. */
+  label: string;
+}
+
+export const LUXURY_ITEMS: Record<LuxuryItemKind, LuxuryItemSpec> = {
+  // Food chain
+  artisan_jam:       { kind: 'artisan_jam',       building: 'farm',                  chain: 'food',      tier: 1, burnValue: 1,  label: 'Artisan Jam' },
+  aged_charcuterie:  { kind: 'aged_charcuterie',  building: 'ranch',                 chain: 'food',      tier: 2, burnValue: 3,  label: 'Aged Charcuterie Board' },
+  heirloom_truffle:  { kind: 'heirloom_truffle',  building: 'hydroponic_tower',      chain: 'food',      tier: 3, burnValue: 6,  label: 'Heirloom Truffle Box' },
+  imperial_caviar:   { kind: 'imperial_caviar',   building: 'vertical_farm_complex', chain: 'food',      tier: 4, burnValue: 12, label: 'Imperial Caviar' },
+  designer_wagyu:    { kind: 'designer_wagyu',    building: 'synthetic_protein_lab', chain: 'food',      tier: 5, burnValue: 25, label: 'Designer Wagyu Reserve' },
+  // Materials chain
+  cut_gemstone:      { kind: 'cut_gemstone',      building: 'mine',                  chain: 'materials', tier: 1, burnValue: 1,  label: 'Cut Gemstone' },
+  forged_sculpture:  { kind: 'forged_sculpture',  building: 'iron_works',            chain: 'materials', tier: 2, burnValue: 3,  label: 'Forged Sculpture' },
+  polished_marble:   { kind: 'polished_marble',   building: 'refinery',              chain: 'materials', tier: 3, burnValue: 6,  label: 'Polished Marble Bust' },
+  carbon_weave:      { kind: 'carbon_weave',      building: 'composite_plant',       chain: 'materials', tier: 4, burnValue: 12, label: 'Carbon-Weave Art Piece' },
+  quantum_display:   { kind: 'quantum_display',   building: 'chip_manufacturing',    chain: 'materials', tier: 5, burnValue: 25, label: 'Quantum-Etched Display' },
+  // Energy chain (all batteries)
+  aaa_battery:       { kind: 'aaa_battery',       building: 'factory',               chain: 'energy',    tier: 1, burnValue: 1,  label: 'AAA Battery' },
+  aa_battery:        { kind: 'aa_battery',        building: 'wind_farm',             chain: 'energy',    tier: 2, burnValue: 3,  label: 'AA Battery' },
+  '9v_battery':      { kind: '9v_battery',        building: 'solar_farm',            chain: 'energy',    tier: 3, burnValue: 6,  label: '9V Battery' },
+  industrial_cell:   { kind: 'industrial_cell',   building: 'nuclear_plant',         chain: 'energy',    tier: 4, burnValue: 12, label: 'Industrial Power Cell' },
+  fusion_core:       { kind: 'fusion_core',       building: 'cold_fusion_facility',  chain: 'energy',    tier: 5, burnValue: 25, label: 'Fusion Core' },
+};
+
+export const LUXURY_ITEM_KINDS: LuxuryItemKind[] = Object.keys(LUXURY_ITEMS) as LuxuryItemKind[];
+
+/** Map a production building back to the item it crafts. Used by the
+ *  crafting tick to look up output kind per parcel. */
+export const ITEM_FOR_BUILDING: Partial<Record<BuildingType, LuxuryItemKind>> = (() => {
+  const out: Partial<Record<BuildingType, LuxuryItemKind>> = {};
+  for (const spec of Object.values(LUXURY_ITEMS)) out[spec.building] = spec.kind;
+  return out;
+})();
+
 // Legacy market prices kept for any caller that still hardcodes them.
 // New code should use NPC_SEED_PRICE_AMETA from pricing.ts (10× lower —
 // the locked v1 anchor prices are 50/100/150/250).

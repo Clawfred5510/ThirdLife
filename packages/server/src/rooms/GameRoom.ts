@@ -23,6 +23,10 @@ import {
   LUXURY_PASSIVE_PER_TICK_BY_TIER,
   LAND_COST_AMETA as LAND_COST,
   STARVATION_GRACE_TICKS,
+  CRAFT_RESOURCES_PER_ITEM,
+  LuxuryItemKind,
+  LUXURY_ITEMS,
+  ITEM_FOR_BUILDING,
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
@@ -49,6 +53,9 @@ import {
   getRawDb,
   getAllAgents,
   setAgentStarvation,
+  getPlayerItems,
+  addPlayerItems,
+  burnLuxuryItems,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -463,6 +470,46 @@ export class GameRoom extends Room<GameState> {
     // purpose in the new tier+rank loop. Players move with WASD; parcel
     // discovery happens via the World Map UI.
 
+    // ---- BURN_LUXURY: spec §6 — commit luxury items for rank points ----
+    this.onMessage(MessageType.BURN_LUXURY, (client: Client, data: { item_kind: string; quantity: number }) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      if (typeof data?.item_kind !== 'string') return;
+      if (!Number.isInteger(data.quantity) || data.quantity <= 0) return;
+
+      const spec = LUXURY_ITEMS[data.item_kind as LuxuryItemKind];
+      if (!spec) { client.send(MessageType.BURN_LUXURY, { error: 'unknown_item' }); return; }
+      const ownerId = this.pid(client.sessionId);
+      const r = burnLuxuryItems(ownerId, data.item_kind, data.quantity, spec.burnValue);
+      if (!r.ok) { client.send(MessageType.BURN_LUXURY, { error: r.reason ?? 'burn_failed' }); return; }
+
+      client.send(MessageType.BURN_LUXURY, {
+        ok: true,
+        item_kind: data.item_kind,
+        burned: data.quantity,
+        rank_points_gained: r.gained,
+        lifetime: r.lifetime,
+      });
+      client.send(MessageType.ITEM_UPDATE, getPlayerItems(ownerId));
+
+      // Broadcast the visual effect to nearby clients (Phase 3 stub —
+      // client-side particle system reacts to this).
+      this.broadcast(MessageType.BURN_EFFECT, {
+        player_id: ownerId,
+        item_kind: data.item_kind,
+        quantity: data.quantity,
+        x: player.x, z: player.z,
+      });
+
+      addEvent(
+        'burn_luxury', ownerId,
+        { item_kind: data.item_kind, quantity: data.quantity, rank_points_gained: r.gained, lifetime: r.lifetime },
+        // Spec §6: global feed announcement when a single burn ≥ 1000 rank points.
+        (r.gained ?? 0) >= 1000 ? 'major' : 'minor',
+      );
+      console.log(`${player.name} burned ${data.quantity}× ${spec.label} (+${r.gained} rank, lifetime ${r.lifetime})`);
+    });
+
     // ---- EVENTS: return recent events ----
     this.onMessage(MessageType.EVENTS, (client: Client) => {
       client.send(MessageType.EVENTS, { events: getEvents(50) });
@@ -869,6 +916,7 @@ export class GameRoom extends Room<GameState> {
       const allAgents = getAllAgents();
       const activeAgentsByOwner = new Map<string, typeof allAgents>();
       const produceAgentsByParcel = new Map<number, number>();
+      const craftAgentsByParcel = new Map<number, number>();
       for (const a of allAgents) {
         if (a.dormant_at_tick != null) continue;
         if (a.owner_wallet) {
@@ -877,14 +925,19 @@ export class GameRoom extends Room<GameState> {
           activeAgentsByOwner.set(a.owner_wallet, list);
         }
         if (
-          a.autopilot_enabled === 1 &&
-          a.is_external !== 1 &&
-          a.role === 'produce' &&
-          a.workplace_parcel_id != null
-        ) {
+          a.autopilot_enabled !== 1 ||
+          a.is_external === 1 ||
+          a.workplace_parcel_id == null
+        ) continue;
+        if (a.role === 'produce') {
           produceAgentsByParcel.set(
             a.workplace_parcel_id,
             (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
+          );
+        } else if (a.role === 'craft') {
+          craftAgentsByParcel.set(
+            a.workplace_parcel_id,
+            (craftAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
           );
         }
       }
@@ -894,7 +947,9 @@ export class GameRoom extends Room<GameState> {
         parcelId: number;
         category: BuildingCategory;
         tier: number;
-        agents: number;
+        produceAgents: number;
+        craftAgents: number;
+        itemKind: LuxuryItemKind | null;
       }
       interface OwnerBucket {
         producers: Producer[];                 // need 1 energy each
@@ -926,7 +981,9 @@ export class GameRoom extends Room<GameState> {
             parcelId: row.id,
             category: spec.category,
             tier: spec.tier,
-            agents: produceAgentsByParcel.get(row.id) ?? 0,
+            produceAgents: produceAgentsByParcel.get(row.id) ?? 0,
+            craftAgents: craftAgentsByParcel.get(row.id) ?? 0,
+            itemKind: ITEM_FOR_BUILDING[bt] ?? null,
           });
         } else if (emitsPassiveLuxury(bt)) {
           const idx = Math.max(0, spec.tier - 1);
@@ -945,6 +1002,7 @@ export class GameRoom extends Room<GameState> {
         const bucket = byOwner.get(ownerId);
         const resources = getPlayerResources(ownerId);
 
+        const itemDeltas = new Map<LuxuryItemKind, number>();
         if (bucket) {
           // Producing buildings: gated by current energy pool. Sort by
           // parcelId so the priority is deterministic (oldest parcel
@@ -959,10 +1017,36 @@ export class GameRoom extends Room<GameState> {
           for (let i = 0; i < poweredCount; i++) {
             const p = sorted[i];
             const mult = TIER_MULTIPLIER[p.tier - 1] ?? 0;
-            const out = mult * (1 + p.agents);
-            if (p.category === 'food')           resources.food      += out;
-            else if (p.category === 'materials') resources.materials += out;
-            else if (p.category === 'energy')    resources.energy    += out;
+            // Production: every produce-agent + the base passive.
+            const produceOut = mult * (1 + p.produceAgents);
+            if (p.category === 'food')           resources.food      += produceOut;
+            else if (p.category === 'materials') resources.materials += produceOut;
+            else if (p.category === 'energy')    resources.energy    += produceOut;
+
+            // Crafting: each craft-agent consumes CRAFT_RESOURCES_PER_ITEM
+            // × tier_multiplier of the building's input resource per tick
+            // and mints `tier_multiplier` items. Per spec §4: "If a
+            // building lacks its required 1 energy for a tick … no agents
+            // assigned to that building can craft either" — already
+            // guaranteed because we're inside the powered-count block.
+            if (p.craftAgents > 0 && p.itemKind) {
+              for (let c = 0; c < p.craftAgents; c++) {
+                const itemsThisAgent = mult;
+                const cost = CRAFT_RESOURCES_PER_ITEM * itemsThisAgent;
+                let available: number;
+                if (p.category === 'food')      available = resources.food;
+                else if (p.category === 'materials') available = resources.materials;
+                else /* energy */               available = resources.energy;
+                if (available < cost) break; // idle this agent; rest can also try
+                if (p.category === 'food')           resources.food      -= cost;
+                else if (p.category === 'materials') resources.materials -= cost;
+                else if (p.category === 'energy')    resources.energy    -= cost;
+                itemDeltas.set(
+                  p.itemKind,
+                  (itemDeltas.get(p.itemKind) ?? 0) + itemsThisAgent,
+                );
+              }
+            }
           }
 
           // Passive luxury (housing + civic) — no energy gating.
@@ -974,6 +1058,16 @@ export class GameRoom extends Room<GameState> {
           resources.materials += bucket.legacyAdd.materials;
           resources.energy    += bucket.legacyAdd.energy;
           resources.luxury    += bucket.legacyAdd.luxury;
+        }
+
+        // Persist any items crafted this tick + notify the client.
+        if (itemDeltas.size > 0) {
+          for (const [kind, qty] of itemDeltas) {
+            addPlayerItems(ownerId, kind, qty);
+          }
+          const allItems = getPlayerItems(ownerId);
+          const client = this.clients.find((c) => c.sessionId === sessionId);
+          if (client) client.send(MessageType.ITEM_UPDATE, allItems);
         }
 
         // ── Phase 2 starvation state machine ─────────────────────────

@@ -19,6 +19,9 @@ import {
   countAgentsByWallet,
   countAgentsByWalletAndKind,
   setAgentStarvation,
+  burnLuxuryItems,
+  getPlayerItems,
+  getLifetimeLuxuryBurned,
   getAuthSessionPlayerId,
   workProduce,
   buyLand,
@@ -59,6 +62,8 @@ import {
   STARTING_BALANCE,
   IN_GAME_AGENT_COST_AMETA,
   REVIVE_COST_FOOD,
+  LUXURY_ITEMS,
+  LuxuryItemKind,
   AGENT_PERSONALITIES,
   AGENT_STRATEGIES,
   AgentPersonality,
@@ -671,6 +676,18 @@ router.get('/agents', (_req: Request, res: Response) => {
   res.json({ agents: out });
 });
 
+/**
+ * Phase 3: wallet's luxury item inventory + lifetime burn total. Used by
+ * the Phone "Wallet" app to render owned items and the rank progress bar.
+ */
+router.get('/wallet/items', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  res.json({
+    items: getPlayerItems(wallet),
+    lifetime_luxury_burned: getLifetimeLuxuryBurned(wallet),
+  });
+});
+
 router.get('/agents/me', authAgent, (req: Request, res: Response) => {
   const id = (req as any).agentId;
   const credits = getPlayerCredits(id);
@@ -1058,6 +1075,44 @@ router.post('/actions/trade', authPlayer, rateLimit, async (req: Request, res: R
 // feature, not a transactable action. Humans use the Colyseus CHAT
 // broadcast; agents that want to "say something" can do so by emitting
 // game events via their owner's session, not the public API.
+
+/**
+ * Phase 3: burn luxury items for rank points (spec §6).
+ *
+ *   POST /api/v1/actions/burn { item_kind, quantity }
+ *
+ * Wallet-only — in-game agents and external agents can't burn directly,
+ * since the rank lives with the wallet. The wallet's lifetime_luxury_burned
+ * column accumulates `quantity × burn_value[tier]` per call.
+ */
+router.post('/actions/burn', authWallet, rateLimit, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const { item_kind, quantity } = req.body ?? {};
+  if (typeof item_kind !== 'string' || !LUXURY_ITEMS[item_kind as LuxuryItemKind]) {
+    return res.status(400).json({ error: 'unknown_item' });
+  }
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    return res.status(400).json({ error: 'quantity_must_be_positive_integer' });
+  }
+  const spec = LUXURY_ITEMS[item_kind as LuxuryItemKind];
+  const result = burnLuxuryItems(wallet, item_kind, quantity, spec.burnValue);
+  if (!result.ok) {
+    const status = result.reason === 'insufficient_items' ? 400 : 400;
+    return res.status(status).json({ error: result.reason });
+  }
+  addEvent(
+    'burn_luxury', wallet,
+    { item_kind, quantity, rank_points_gained: result.gained, lifetime: result.lifetime },
+    (result.gained ?? 0) >= 1000 ? 'major' : 'minor',
+  );
+  res.json({
+    ok: true,
+    item_kind,
+    burned: quantity,
+    rank_points_gained: result.gained,
+    lifetime: result.lifetime,
+  });
+});
 
 // ──────────────────────────────────────────────────────────────────────
 // Market (order book) — Phase A.1
