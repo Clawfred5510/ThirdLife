@@ -1,5 +1,6 @@
 import type { Database, Statement } from 'better-sqlite3';
-import { TRADING_FEE_BPS, BPS_DENOMINATOR, RESOURCE_TYPES } from '@gamestu/shared';
+import { TRADING_FEE_BPS, BPS_DENOMINATOR, RESOURCE_TYPES, MARKETPLACE_FEE_BPS_BY_RANK } from '@gamestu/shared';
+import { rankFor } from '../ranks';
 import type { ResourceType } from '@gamestu/shared';
 import {
   getPlayerResources,
@@ -12,10 +13,29 @@ import { recordGdp } from '../world';
 import { getRuntimeTradingFeeBps } from '../governance';
 import { MarketOrder, MarketTrade, BookSnapshot, MatchResult, Side } from './types';
 
-function effectiveTradingFeeBps(): number {
+/**
+ * Effective marketplace fee in basis points for a given seller.
+ *
+ * Phase 4 (2026-05-20): the marketplace fee is progressive by rank
+ * (1% Bronze → 5% Diamond per spec §8). The fee is charged against the
+ * seller's gross payout — higher-rank sellers contribute more to the
+ * treasury, mirroring the wealth-tax framing in the spec. Buyers never
+ * pay a direct fee. Sellers always pay; the rate scales with THEIR rank.
+ *
+ * The governance runtime override (used for old fee experiments) wins
+ * over the rank-based fee if present, so admins can pin a flat fee
+ * across the board for a stress test without revoking ranks.
+ */
+function effectiveTradingFeeBps(sellerId: string): number {
   const override = getRuntimeTradingFeeBps();
-  return override ?? TRADING_FEE_BPS;
+  if (override != null) return override;
+  return MARKETPLACE_FEE_BPS_BY_RANK[rankFor(sellerId)];
 }
+
+// Keep the legacy flat constant accessible for tests + the governance
+// runtime baseline. Production code paths must go through the per-seller
+// helper above.
+void TRADING_FEE_BPS;
 
 interface MarketOrderRow {
   id: number;
@@ -217,7 +237,7 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       const seller = isBuy ? cand.owner_id : inbound.owner_id;
 
       const grossPayout = tradePrice * matchQty;
-      const fee = Math.floor((grossPayout * effectiveTradingFeeBps()) / BPS_DENOMINATOR);
+      const fee = Math.floor((grossPayout * effectiveTradingFeeBps(seller)) / BPS_DENOMINATOR);
       const sellerEarn = grossPayout - fee;
 
       // Buyer receives the resource.

@@ -1,7 +1,18 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
-import { LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS } from '@gamestu/shared';
+import {
+  LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS, rankFromLifetimeBurn,
+  PROPERTY_FEE_BPS, BPS_DENOMINATOR,
+} from '@gamestu/shared';
+import { WORLD_TREASURY_ID } from '../economy/IEconomy';
+
+/** Helper: 1% property fee on a given gross. Used inside the DB
+ *  transaction so the treasury credit settles atomically with the cost
+ *  deduction. */
+function propertyFee(gross: number): number {
+  return Math.floor((gross * PROPERTY_FEE_BPS) / BPS_DENOMINATOR);
+}
 
 const RESERVED_SET = new Set<number>(RESERVED_PARCEL_IDS);
 
@@ -110,10 +121,23 @@ interface DBBackend {
   /** Phase 3 luxury items. */
   getPlayerItems(playerId: string): Record<string, number>;
   addPlayerItems(playerId: string, itemKind: string, delta: number): number;
-  /** Returns the new lifetime burn total. */
-  burnLuxuryItems(playerId: string, itemKind: string, quantity: number, burnValue: number): { ok: boolean; reason?: string; lifetime?: number; gained?: number };
+  /** Returns the new lifetime burn total and the rank state (Phase 4
+   *  promotion is computed inside the transaction so the DB is the source
+   *  of truth — rankBefore/After lets the caller detect promotions). */
+  burnLuxuryItems(
+    playerId: string, itemKind: string, quantity: number, burnValue: number,
+  ): {
+    ok: boolean; reason?: string;
+    lifetime?: number; gained?: number;
+    rankBefore?: string | null; rankAfter?: string | null;
+  };
   /** Cumulative luxury burned. 0 if the player has never burned. */
   getLifetimeLuxuryBurned(playerId: string): number;
+  /** Current rank, or null if the player has never burned. */
+  getPlayerRank(playerId: string): string | null;
+  /** Force-set a player's rank (used by migration paths; usually computed
+   *  by burnLuxuryItems instead). */
+  setPlayerRank(playerId: string, rank: string | null): void;
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
@@ -211,6 +235,12 @@ class SQLiteDatabase implements DBBackend {
     // chose 0 quantity (impossible today). Treat as 0 for all reads.
     try {
       this.db.exec(`ALTER TABLE players ADD COLUMN lifetime_luxury_burned INTEGER DEFAULT 0`);
+    } catch (_) { /* exists */ }
+    // Phase 4 (2026-05-20): current rank tier. NULL until first burn
+    // promotes to Bronze. Stored as a string for human readability in
+    // DB dumps; the enum is enforced application-side.
+    try {
+      this.db.exec(`ALTER TABLE players ADD COLUMN rank TEXT`);
     } catch (_) { /* exists */ }
 
     // Building type on parcels (apartment, house, shop, farm, etc.)
@@ -634,12 +664,15 @@ class SQLiteDatabase implements DBBackend {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel) return { ok: false, reason: 'parcel_not_found' };
       if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+      const fee = propertyFee(LAND_COST);
+      const total = LAND_COST + fee;
       const credits = this.getPlayerCredits(id);
-      if (credits < LAND_COST) return { ok: false, reason: 'insufficient_balance' };
-      this.stmtUpdateCredits.run(credits - LAND_COST, id);
+      if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+      this.stmtUpdateCredits.run(credits - total, id);
+      this.creditTreasurySync(fee);
       const result = this.stmtClaimParcel.run(id, parcelId);
       if (result.changes === 0) return { ok: false, reason: 'claim_race' };
-      return { ok: true, credits: credits - LAND_COST };
+      return { ok: true, credits: credits - total };
     });
     return txn();
   }
@@ -657,7 +690,12 @@ class SQLiteDatabase implements DBBackend {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel) return { ok: false, reason: 'parcel_not_found' };
       if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
-      const total = LAND_COST + buildingCost;
+      // Phase 4 (2026-05-20): 1% property fee on top of gross. Goes
+      // straight to the treasury (one wallet for property + agent fees
+      // per owner spec).
+      const gross = LAND_COST + buildingCost;
+      const fee = propertyFee(gross);
+      const total = gross + fee;
       const credits = this.getPlayerCredits(id);
       if (credits < total) return { ok: false, reason: 'insufficient_balance' };
       // Phase 1 (2026-05-20): materials required for construction. Spec
@@ -671,6 +709,9 @@ class SQLiteDatabase implements DBBackend {
         this.updatePlayerResources(id, resources);
       }
       this.stmtUpdateCredits.run(credits - total, id);
+      // Treasury credit (synchronous inside the transaction — same DB,
+      // upsert the row if it doesn't exist yet).
+      this.creditTreasurySync(fee);
       const claim = this.stmtClaimParcel.run(id, parcelId);
       if (claim.changes === 0) return { ok: false, reason: 'claim_race' };
       this.db.prepare('UPDATE parcels SET building_type = ? WHERE id = ?').run(buildingType, parcelId);
@@ -678,6 +719,20 @@ class SQLiteDatabase implements DBBackend {
       return { ok: true, credits: credits - total };
     });
     return txn();
+  }
+
+  /** Synchronous treasury credit + lazy upsert. Used inside DB
+   *  transactions where we can't await economy().credit. */
+  private creditTreasurySync(amount: number): void {
+    if (amount <= 0) return;
+    // Ensure the treasury player row exists; safe to call repeatedly.
+    this.db.prepare(
+      `INSERT INTO players (id, name, credits) VALUES (?, ?, 0)
+       ON CONFLICT(id) DO NOTHING`,
+    ).run(WORLD_TREASURY_ID, 'World Treasury');
+    this.db.prepare(
+      `UPDATE players SET credits = credits + ? WHERE id = ?`,
+    ).run(amount, WORLD_TREASURY_ID);
   }
 
   getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }> {
@@ -905,7 +960,11 @@ class SQLiteDatabase implements DBBackend {
 
   burnLuxuryItems(
     playerId: string, itemKind: string, quantity: number, burnValue: number,
-  ): { ok: boolean; reason?: string; lifetime?: number; gained?: number } {
+  ): {
+    ok: boolean; reason?: string;
+    lifetime?: number; gained?: number;
+    rankBefore?: string | null; rankAfter?: string | null;
+  } {
     if (quantity <= 0) return { ok: false, reason: 'quantity_must_be_positive' };
     const txn = this.db.transaction(() => {
       const row = this.db.prepare(
@@ -918,13 +977,17 @@ class SQLiteDatabase implements DBBackend {
         `UPDATE luxury_items SET quantity = ? WHERE player_id = ? AND item_kind = ?`,
       ).run(remaining, playerId, itemKind);
       const gained = quantity * burnValue;
+      // Snapshot pre-burn rank so the caller can detect promotion.
+      const pre = this.db.prepare(
+        `SELECT rank, lifetime_luxury_burned AS n FROM players WHERE id = ?`,
+      ).get(playerId) as { rank: string | null; n: number | null } | undefined;
+      const rankBefore = pre?.rank ?? null;
+      const newLifetime = (pre?.n ?? 0) + gained;
+      const rankAfter = rankFromLifetimeBurn(newLifetime);
       this.db.prepare(
-        `UPDATE players SET lifetime_luxury_burned = COALESCE(lifetime_luxury_burned, 0) + ? WHERE id = ?`,
-      ).run(gained, playerId);
-      const totalRow = this.db.prepare(
-        `SELECT lifetime_luxury_burned AS n FROM players WHERE id = ?`,
-      ).get(playerId) as { n: number } | undefined;
-      return { ok: true as const, lifetime: totalRow?.n ?? 0, gained };
+        `UPDATE players SET lifetime_luxury_burned = ?, rank = ? WHERE id = ?`,
+      ).run(newLifetime, rankAfter, playerId);
+      return { ok: true as const, lifetime: newLifetime, gained, rankBefore, rankAfter };
     });
     return txn();
   }
@@ -934,6 +997,17 @@ class SQLiteDatabase implements DBBackend {
       `SELECT lifetime_luxury_burned AS n FROM players WHERE id = ?`,
     ).get(playerId) as { n: number | null } | undefined;
     return row?.n ?? 0;
+  }
+
+  getPlayerRank(playerId: string): string | null {
+    const row = this.db.prepare(
+      `SELECT rank FROM players WHERE id = ?`,
+    ).get(playerId) as { rank: string | null } | undefined;
+    return row?.rank ?? null;
+  }
+
+  setPlayerRank(playerId: string, rank: string | null): void {
+    this.db.prepare(`UPDATE players SET rank = ? WHERE id = ?`).run(rank, playerId);
   }
 
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
@@ -1122,12 +1196,15 @@ class MemoryDB implements DBBackend {
     const parcel = this.parcels.get(parcelId);
     if (!parcel) return { ok: false, reason: 'parcel_not_found' };
     if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
+    const fee = propertyFee(LAND_COST);
+    const total = LAND_COST + fee;
     const credits = this.getPlayerCredits(id);
-    if (credits < LAND_COST) return { ok: false, reason: 'insufficient_balance' };
-    this.updatePlayerCredits(id, credits - LAND_COST);
+    if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+    this.updatePlayerCredits(id, credits - total);
+    this.creditTreasurySync(fee);
     parcel.owner_id = id;
     parcel.claimed_at = new Date().toISOString();
-    return { ok: true, credits: credits - LAND_COST };
+    return { ok: true, credits: credits - total };
   }
 
   claimAndBuild(
@@ -1141,7 +1218,9 @@ class MemoryDB implements DBBackend {
     const parcel = this.parcels.get(parcelId);
     if (!parcel) return { ok: false, reason: 'parcel_not_found' };
     if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
-    const total = LAND_COST + buildingCost;
+    const gross = LAND_COST + buildingCost;
+    const fee = propertyFee(gross);
+    const total = gross + fee;
     const credits = this.getPlayerCredits(id);
     if (credits < total) return { ok: false, reason: 'insufficient_balance' };
     if (materialCost > 0) {
@@ -1151,12 +1230,27 @@ class MemoryDB implements DBBackend {
       this.updatePlayerResources(id, r);
     }
     this.updatePlayerCredits(id, credits - total);
+    this.creditTreasurySync(fee);
     parcel.owner_id = id;
     parcel.claimed_at = new Date().toISOString();
     (parcel as any).building_type = buildingType;
     parcel.business_type = buildingType;
     parcel.business_name = buildingLabel;
     return { ok: true, credits: credits - total };
+  }
+
+  private creditTreasurySync(amount: number): void {
+    if (amount <= 0) return;
+    if (!this.players.has(WORLD_TREASURY_ID)) {
+      this.players.set(WORLD_TREASURY_ID, {
+        id: WORLD_TREASURY_ID, name: 'World Treasury', credits: 0,
+        reputation: 0, x: 0, y: 0, z: 0,
+        last_login: new Date().toISOString(), tutorial_done: 0,
+        appearance: null,
+      });
+    }
+    const p = this.players.get(WORLD_TREASURY_ID)!;
+    p.credits += amount;
   }
 
   getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }> {
@@ -1353,6 +1447,7 @@ class MemoryDB implements DBBackend {
 
   private items = new Map<string, Map<string, number>>(); // playerId → kind → qty
   private lifetimeBurn = new Map<string, number>();
+  private rankByPlayer = new Map<string, string | null>();
 
   getPlayerItems(playerId: string): Record<string, number> {
     const m = this.items.get(playerId);
@@ -1373,7 +1468,11 @@ class MemoryDB implements DBBackend {
 
   burnLuxuryItems(
     playerId: string, itemKind: string, quantity: number, burnValue: number,
-  ): { ok: boolean; reason?: string; lifetime?: number; gained?: number } {
+  ): {
+    ok: boolean; reason?: string;
+    lifetime?: number; gained?: number;
+    rankBefore?: string | null; rankAfter?: string | null;
+  } {
     if (quantity <= 0) return { ok: false, reason: 'quantity_must_be_positive' };
     const m = this.items.get(playerId);
     const have = m?.get(itemKind) ?? 0;
@@ -1386,11 +1485,22 @@ class MemoryDB implements DBBackend {
     const gained = quantity * burnValue;
     const lifetime = (this.lifetimeBurn.get(playerId) ?? 0) + gained;
     this.lifetimeBurn.set(playerId, lifetime);
-    return { ok: true, lifetime, gained };
+    const rankBefore = this.rankByPlayer.get(playerId) ?? null;
+    const rankAfter = rankFromLifetimeBurn(lifetime);
+    this.rankByPlayer.set(playerId, rankAfter);
+    return { ok: true, lifetime, gained, rankBefore, rankAfter };
   }
 
   getLifetimeLuxuryBurned(playerId: string): number {
     return this.lifetimeBurn.get(playerId) ?? 0;
+  }
+
+  getPlayerRank(playerId: string): string | null {
+    return this.rankByPlayer.get(playerId) ?? null;
+  }
+
+  setPlayerRank(playerId: string, rank: string | null): void {
+    this.rankByPlayer.set(playerId, rank);
   }
 
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
@@ -1582,6 +1692,10 @@ export function burnLuxuryItems(playerId: string, itemKind: string, quantity: nu
 }
 export function getLifetimeLuxuryBurned(playerId: string) {
   return backend.getLifetimeLuxuryBurned(playerId);
+}
+export function getPlayerRank(playerId: string) { return backend.getPlayerRank(playerId); }
+export function setPlayerRank(playerId: string, rank: string | null) {
+  backend.setPlayerRank(playerId, rank);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }

@@ -33,10 +33,16 @@ getOrCreatePlayer('alice', 'Alice');
 updatePlayerCredits('alice', 500_000);
 const spec = BUILDINGS.apartment;
 const before = getPlayerCredits('alice');
-const r = claimAndBuild('alice', parcels[0].id, 'apartment', spec.cost, spec.label);
+// Apartment needs 1_000 materials; stock them.
+const aliceR = db.getPlayerResources('alice');
+aliceR.materials = 1_000;
+db.updatePlayerResources('alice', aliceR);
+const r = claimAndBuild('alice', parcels[0].id, 'apartment', spec.cost, spec.label, spec.materialCost);
 check('returned ok', r.ok === true);
-check(`charged LAND_COST + cost (${LAND_COST + spec.cost})`,
-  before - getPlayerCredits('alice') === LAND_COST + spec.cost,
+// Phase 4 (2026-05-20): + 1% property fee on top of LAND_COST + cost.
+const apFee = Math.floor((LAND_COST + spec.cost) * 100 / 10_000);
+check(`charged LAND_COST + cost + 1% fee (${LAND_COST + spec.cost + apFee})`,
+  before - getPlayerCredits('alice') === LAND_COST + spec.cost + apFee,
   `diff=${before - getPlayerCredits('alice')}`);
 check('parcel registered as owned+built', getOwnedBuiltParcels().some(p => p.owner_id === 'alice' && p.building_type === 'apartment'));
 
@@ -59,11 +65,17 @@ const bankBefore = getPlayerCredits('carl');
 const bankSpec = BUILDINGS.bank;
 const rb = claimAndBuild('carl', parcels[2].id, 'bank', bankSpec.cost, bankSpec.label);
 check('bank claim ok', rb.ok === true);
-// Phase 1 (2026-05-20): Bank reclassified as Tier-III luxury-civic.
-// Building cost = LUXURY_BUILDING_AMETA_COST[2] = 750_000.
-// Land cost = LAND_COST_AMETA = 200_000. Total: 950_000.
-const expectedTotal = bankSpec.cost + 200_000;
-check(`bank total = ${expectedTotal} (${bankSpec.cost} + 200K land)`,
+// Phase 1: Bank is Tier-III luxury-civic. Phase 4: +1% property fee on
+// top of LAND_COST + building cost. 750K + 200K + 9_500 = 959_500.
+const bankGross = bankSpec.cost + 200_000;
+const bankFee = Math.floor(bankGross * 100 / 10_000);
+const expectedTotal = bankGross + bankFee;
+// Need 12_000 materials for Bank (Tier III luxury).
+const carlR = db.getPlayerResources('carl');
+carlR.materials = 12_000;
+db.updatePlayerResources('carl', carlR);
+// Re-do with materials this time — earlier call may have lacked them.
+check(`bank total = ${expectedTotal} (${bankSpec.cost} + 200K land + 1% fee)`,
   bankBefore - getPlayerCredits('carl') === expectedTotal,
   `diff=${bankBefore - getPlayerCredits('carl')}`);
 

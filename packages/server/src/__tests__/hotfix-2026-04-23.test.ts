@@ -68,15 +68,18 @@ check(
 );
 
 // Bug 1b: buyLand atomic (no double-charge)
+// Phase 4 (2026-05-20): buyLand now also charges a 1% property fee on
+// top of LAND_COST per spec §8. Update assertion accordingly.
+const landFee = Math.floor((LAND_COST * 100) / 10_000);
 getOrCreatePlayer('bob', 'Bob');
-updatePlayerCredits('bob', LAND_COST + 1000);
+updatePlayerCredits('bob', LAND_COST + landFee + 1000);
 const bobBefore = getPlayerCredits('bob');
 const bl = buyLand('bob', parcels[1].id);
 check('buyLand ok', bl.ok === true);
 const bobAfter = getPlayerCredits('bob');
 check(
-  `buyLand charges exactly LAND_COST once (${LAND_COST})`,
-  bobAfter === bobBefore - LAND_COST,
+  `buyLand charges LAND_COST + 1% fee once (${LAND_COST + landFee})`,
+  bobAfter === bobBefore - (LAND_COST + landFee),
   `before=${bobBefore} after=${bobAfter}`,
 );
 

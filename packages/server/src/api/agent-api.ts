@@ -27,7 +27,7 @@ import {
   buyLand,
 } from '../db';
 import { economy, WORLD_TREASURY_ID } from '../economy';
-import { inGameAgentCapFor } from '../ranks';
+import { inGameAgentCapFor, rankFor } from '../ranks';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
@@ -64,6 +64,9 @@ import {
   REVIVE_COST_FOOD,
   LUXURY_ITEMS,
   LuxuryItemKind,
+  TIER_INDEX,
+  PROPERTY_FEE_BPS,
+  BPS_DENOMINATOR,
   AGENT_PERSONALITIES,
   AGENT_STRATEGIES,
   AgentPersonality,
@@ -991,11 +994,25 @@ router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, r
   const spec = BUILDINGS[building_type as BuildingType];
   if (!spec) return res.status(400).json({ error: 'Unknown building type', valid: Object.keys(BUILDINGS) });
 
+  // Phase 4: cost = spec.cost + 1% property fee.
+  const propFee = Math.floor((spec.cost * PROPERTY_FEE_BPS) / BPS_DENOMINATOR);
+  const grossCost = spec.cost + propFee;
+
   const credits = getPlayerCredits(agentId);
-  if (credits < spec.cost) return res.status(400).json({ error: 'Insufficient balance', cost: spec.cost });
+  if (credits < grossCost) return res.status(400).json({ error: 'Insufficient balance', cost: grossCost });
 
   const parcels = getPlayerParcels(agentId);
   if (!parcels.find(p => p.id === pid)) return res.status(400).json({ error: 'You do not own this parcel' });
+
+  // Phase 4: rank gate. Use the agent's owning wallet rank (rankFor walks
+  // up to owner_wallet automatically).
+  if (TIER_INDEX[rankFor(agentId)] < TIER_INDEX[spec.minRank]) {
+    return res.status(403).json({
+      error: 'rank_required',
+      required_rank: spec.minRank,
+      current_rank: rankFor(agentId),
+    });
+  }
 
   // Phase 1: enforce material build cost.
   if (spec.materialCost > 0) {
@@ -1007,15 +1024,16 @@ router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, r
     updatePlayerResources(agentId, r);
   }
 
-  updatePlayerCredits(agentId, credits - spec.cost);
+  updatePlayerCredits(agentId, credits - grossCost);
+  if (propFee > 0) economy().credit(WORLD_TREASURY_ID, propFee, 'property_fee').catch(() => {});
   setBuildingType(pid, building_type);
   updateBusiness(pid, agentId, { type: building_type, name: spec.label });
   // Phase C: apartments/offices generate sub-units on build.
   const unitsCreated = buildingHasUnits(building_type)
     ? generateUnitsForParcel(pid, building_type, agentId)
     : 0;
-  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, material_cost: spec.materialCost, units_created: unitsCreated }, 'major');
-  res.json({ ok: true, building: building_type, cost: spec.cost, material_cost: spec.materialCost, units_created: unitsCreated });
+  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost, units_created: unitsCreated }, 'major');
+  res.json({ ok: true, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost, units_created: unitsCreated });
 });
 
 router.post('/actions/work', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {

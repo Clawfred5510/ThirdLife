@@ -1,11 +1,12 @@
 /**
  * Rank lookup + cap helpers.
  *
- * Phase 2 (2026-05-20): the rank system itself ships in Phase 4 — players
- * are promoted from Bronze → Silver → Gold → Platinum → Diamond when
- * lifetime luxury burn crosses each threshold. Until then, every player
- * defaults to Bronze. These helpers are the place that read the rank,
- * so Phase 4 only has to populate `players.rank` and update one helper.
+ * Ranks are driven by lifetime luxury burn (see RANK_BURN_THRESHOLD in
+ * @gamestu/shared). Players are promoted at burn time inside
+ * backend.burnLuxuryItems, which writes the current rank to
+ * `players.rank`. These helpers read that column and fall back to Bronze
+ * for any actor that has never burned but is interacting with rank-gated
+ * mechanics (e.g. an in-game agent's owner inherits the wallet's rank).
  */
 
 import {
@@ -14,18 +15,32 @@ import {
   EXTERNAL_AGENT_CAP_BY_RANK,
   LAND_CAP_BY_RANK,
   MARKETPLACE_FEE_BPS_BY_RANK,
-  RANK_PRODUCTION_BONUS,
+  TIER_NAMES,
 } from '@gamestu/shared';
+import { getPlayerRank, getAgentById } from './db';
+
+const VALID_RANKS: ReadonlySet<string> = new Set(TIER_NAMES);
 
 /**
- * Resolve a player's current rank. Phase 4 will compute this from
- * `players.lifetime_luxury_burned`; for now everyone is Bronze.
+ * Resolve a player's current rank.
  *
- * Accepts a player id (wallet or agent) but only wallet-owned players
- * have a real rank — agents inherit their owner's rank for cap math.
+ * Wallet ids (0x…) → read players.rank directly.
+ * Agent ids (wallet:agent:…) → resolve to the owning wallet's rank so
+ * an in-game agent's actions inherit the owner's caps + fee tier.
+ *
+ * Defaults to Bronze for any actor with no recorded rank (e.g. a new
+ * wallet that hasn't burned yet, or a legacy agent).
  */
-export function rankFor(_playerId: string): Tier {
-  // TODO Phase 4: read players.rank from DB
+export function rankFor(playerId: string): Tier {
+  let rank = getPlayerRank(playerId);
+  if (!rank) {
+    // Agent? Walk up to the owning wallet.
+    const agent = getAgentById(playerId);
+    if (agent?.owner_wallet) {
+      rank = getPlayerRank(agent.owner_wallet);
+    }
+  }
+  if (rank && VALID_RANKS.has(rank)) return rank as Tier;
   return 'bronze';
 }
 
@@ -49,7 +64,6 @@ export function marketplaceFeeBpsFor(playerId: string): number {
   return MARKETPLACE_FEE_BPS_BY_RANK[rankFor(playerId)];
 }
 
-/** Multiplicative production bonus from rank (0 below Platinum). */
-export function productionBonusFor(playerId: string): number {
-  return RANK_PRODUCTION_BONUS[rankFor(playerId)];
-}
+// productionBonusFor() intentionally removed — owner override 2026-05-20:
+// rank gives caps + access only, no passive production multiplier.
+// Production = building_tier × (1 + agents) regardless of rank.

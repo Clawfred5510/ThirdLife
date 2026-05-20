@@ -179,6 +179,19 @@ export const RANK_BURN_THRESHOLD: Record<Tier, number> = {
   diamond: 1_500_000,
 };
 
+/** Returns the highest rank the given lifetime burn qualifies for, or
+ *  null if the player has never burned. Single source of truth for
+ *  promotion math — used by both the DB layer and the API. */
+export function rankFromLifetimeBurn(lifetime: number): Tier | null {
+  if (lifetime <= 0) return null;
+  if (lifetime >= RANK_BURN_THRESHOLD.diamond)  return 'diamond';
+  if (lifetime >= RANK_BURN_THRESHOLD.platinum) return 'platinum';
+  if (lifetime >= RANK_BURN_THRESHOLD.gold)     return 'gold';
+  if (lifetime >= RANK_BURN_THRESHOLD.silver)   return 'silver';
+  if (lifetime >= RANK_BURN_THRESHOLD.bronze)   return 'bronze';
+  return null;
+}
+
 /** In-game agent cap (purchasable + assignable) by player rank. */
 export const IN_GAME_AGENT_CAP_BY_RANK: Record<Tier, number> = {
   bronze: 5,
@@ -207,15 +220,12 @@ export const LAND_CAP_BY_RANK: Record<Tier, number> = {
   diamond: 200,
 };
 
-/** Additive production bonus applied to every owned producing building.
- *  Stacks on top of tier multiplier. Spec §5. */
-export const RANK_PRODUCTION_BONUS: Record<Tier, number> = {
-  bronze: 0,
-  silver: 0,
-  gold: 0,
-  platinum: 0.05,
-  diamond: 0.15,
-};
+// Note: the spec doc mentions a Platinum +5% / Diamond +15% production
+// bonus, but owner override 2026-05-20: there is **no** rank-based
+// production multiplier at any tier. Production is determined purely by
+// (building_tier × (1 + assigned_produce_agents)) gated by binary
+// energy. The economic edge from ranking up comes from caps, access to
+// higher-tier buildings, and lower fees — not from a passive multiplier.
 
 // ──────────────────────────────────────────────────────────────────────
 // Fees (spec §8, basis points; 100 = 1%)

@@ -65,6 +65,11 @@ export interface PlayerSnapshot {
    * is only acting via its external API key. Humans omit this entirely.
    */
   bot_kind?: 'auto' | 'agent';
+  /**
+   * Phase 4: player's current rank (null if they've never burned luxury).
+   * Drives the nameplate color in the 3D world.
+   */
+  rank?: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
 }
 
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;

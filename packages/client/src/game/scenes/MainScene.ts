@@ -76,9 +76,11 @@ interface RemotePlayer {
   root: TransformNode;
   avatar: Avatar;
   label: Rectangle;
+  labelText: TextBlock;
   /** Optional bot-kind badge above the name (AUTO / AGENT). Humans null. */
   badge: Rectangle | null;
   badgeKind: 'auto' | 'agent' | null;
+  rank: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
   targetX: number;
   targetY: number;
   targetZ: number;
@@ -87,6 +89,20 @@ interface RemotePlayer {
   appearanceKey: string;
   prevX: number;
   prevZ: number;
+}
+
+/** Phase 4: nameplate color per rank. White for the unranked default
+ *  matches the legacy look; the metallic palette differentiates the five
+ *  tiers without losing readability against the warm world palette. */
+function rankNameplateColor(rank: PlayerSnapshot['rank']): string {
+  switch (rank) {
+    case 'bronze':   return '#CD7F32';
+    case 'silver':   return '#C0C0C0';
+    case 'gold':     return '#FFD700';
+    case 'platinum': return '#E5E4E2';
+    case 'diamond':  return '#B9F2FF';
+    default:         return '#FFFFFF';
+  }
 }
 
 /** Per-parcel rendering data. */
@@ -720,7 +736,7 @@ export class MainScene {
     labelRect.thickness = 0;
 
     const labelText = new TextBlock(`labelText_${sessionId}`, player.name);
-    labelText.color = 'white';
+    labelText.color = rankNameplateColor(player.rank ?? null);
     labelText.fontSize = 14;
     labelText.resizeToFit = true;
     labelRect.addControl(labelText);
@@ -742,8 +758,10 @@ export class MainScene {
       root: avatar.root,
       avatar,
       label: labelRect,
+      labelText,
       badge,
       badgeKind: player.bot_kind ?? null,
+      rank: player.rank ?? null,
       targetX: player.x,
       targetY: player.y,
       targetZ: player.z,
@@ -853,6 +871,13 @@ export class MainScene {
 
       // Server may have toggled the agent's autopilot. Reconcile the badge.
       this.syncBotBadge(sessionId, remote, player.bot_kind);
+
+      // Rank may have changed (promotion via burn). Recolor the nameplate.
+      const newRank = player.rank ?? null;
+      if (newRank !== remote.rank) {
+        remote.rank = newRank;
+        remote.labelText.color = rankNameplateColor(newRank);
+      }
 
       // Appearance diff — apply only when the full object actually changed.
       if (player.appearance) {

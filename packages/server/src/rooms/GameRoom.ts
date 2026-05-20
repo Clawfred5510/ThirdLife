@@ -27,6 +27,9 @@ import {
   LuxuryItemKind,
   LUXURY_ITEMS,
   ITEM_FOR_BUILDING,
+  TIER_INDEX,
+  PROPERTY_FEE_BPS,
+  BPS_DENOMINATOR,
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
@@ -59,6 +62,8 @@ import {
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
+import { rankFor } from '../ranks';
+import { economy, WORLD_TREASURY_ID } from '../economy';
 import { onAgentChanged } from '../events/agentEvents';
 import { generateUnitsForParcel, buildingHasUnits, tickPropertyIncome, backfillSubUnits } from '../properties';
 import { resolveDecreesTick } from '../governance';
@@ -246,6 +251,15 @@ export class GameRoom extends Room<GameState> {
       }
 
       const ownerId = this.pid(client.sessionId);
+      // Phase 4: enforce minRank gate before charging anything.
+      if (TIER_INDEX[rankFor(ownerId)] < TIER_INDEX[spec.minRank]) {
+        client.send(MessageType.CLAIM_PARCEL, {
+          error: 'rank_required',
+          required_rank: spec.minRank,
+          current_rank: rankFor(ownerId),
+        });
+        return;
+      }
       const result = claimAndBuild(
         ownerId, data.parcelId, data.building_type, spec.cost, spec.label, spec.materialCost,
       );
@@ -384,9 +398,24 @@ export class GameRoom extends Room<GameState> {
       if (typeof data.parcelId !== 'number' || typeof data.buildingType !== 'string') return;
       const spec = BUILDINGS[data.buildingType as BuildingType];
       if (!spec) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Unknown building type' }); return; }
-      if (player.credits < spec.cost) { client.send(MessageType.BUILD_STRUCTURE, { error: 'Insufficient credits', cost: spec.cost }); return; }
+      // Phase 4: cost = spec.cost + 1% property fee.
+      const propFee = Math.floor((spec.cost * PROPERTY_FEE_BPS) / BPS_DENOMINATOR);
+      const grossCost = spec.cost + propFee;
+      if (player.credits < grossCost) {
+        client.send(MessageType.BUILD_STRUCTURE, { error: 'Insufficient credits', cost: grossCost });
+        return;
+      }
 
       const ownerId = this.pid(client.sessionId);
+      // Phase 4: rank gate.
+      if (TIER_INDEX[rankFor(ownerId)] < TIER_INDEX[spec.minRank]) {
+        client.send(MessageType.BUILD_STRUCTURE, {
+          error: 'rank_required',
+          required_rank: spec.minRank,
+          current_rank: rankFor(ownerId),
+        });
+        return;
+      }
       const parcels = getPlayerParcels(ownerId);
       const parcel = parcels.find(p => p.id === data.parcelId);
       if (!parcel) { client.send(MessageType.BUILD_STRUCTURE, { error: 'You do not own this parcel' }); return; }
@@ -403,8 +432,10 @@ export class GameRoom extends Room<GameState> {
         client.send(MessageType.RESOURCE_UPDATE, r);
       }
 
-      player.credits -= spec.cost;
+      player.credits -= grossCost;
       updatePlayerCredits(ownerId, player.credits);
+      // Treasury gets the property fee.
+      if (propFee > 0) economy().credit(WORLD_TREASURY_ID, propFee, 'property_fee').catch(() => {});
       setBuildingType(data.parcelId, data.buildingType);
       updateBusinessInDb(data.parcelId, ownerId, { type: data.buildingType, name: spec.label });
       const unitsCreated = buildingHasUnits(data.buildingType)
@@ -722,6 +753,9 @@ export class GameRoom extends Room<GameState> {
       color: p.color,
       appearance: p.appearance,
       bot_kind: p.bot_kind,
+      // Phase 4: nameplate color is driven by rank on the client. Agents
+      // inherit their owner wallet's rank automatically (rankFor walks).
+      rank: rankFor(p.id),
     };
   }
 
