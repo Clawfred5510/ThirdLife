@@ -30,6 +30,7 @@ import {
   TIER_INDEX,
   PROPERTY_FEE_BPS,
   BPS_DENOMINATOR,
+  WORK_WAGE_AMETA_PER_TICK,
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
@@ -947,10 +948,22 @@ export class GameRoom extends Room<GameState> {
       // Dormant agents skip everything — they don't produce, don't eat,
       // don't accumulate starvation. Only an owner-initiated `revive`
       // (which costs 100 food) brings them back.
+      // Snapshot parcels once so the agent-indexing pass can look up the
+      // workplace's building category in O(1). Reused below in the
+      // owner-bucket loop.
+      const parcelById = new Map<number, ReturnType<typeof getAllParcels>[number]>();
+      for (const p of getAllParcels()) parcelById.set(p.id, p);
+
       const allAgents = getAllAgents();
       const activeAgentsByOwner = new Map<string, typeof allAgents>();
       const produceAgentsByParcel = new Map<number, number>();
       const craftAgentsByParcel = new Map<number, number>();
+      // Phase 6: work-role agents at luxury buildings earn WORK_WAGE_AMETA
+      // _PER_TICK into the AGENT's balance (owner reclaims via /allocate).
+      // Indexed by owner wallet here so the per-player settle loop can
+      // pay them all in one pass.
+      const wageAgentsByOwner = new Map<string, string[]>();
+
       for (const a of allAgents) {
         if (a.dormant_at_tick != null) continue;
         if (a.owner_wallet) {
@@ -963,16 +976,47 @@ export class GameRoom extends Room<GameState> {
           a.is_external === 1 ||
           a.workplace_parcel_id == null
         ) continue;
-        if (a.role === 'produce') {
-          produceAgentsByParcel.set(
-            a.workplace_parcel_id,
-            (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
-          );
-        } else if (a.role === 'craft') {
-          craftAgentsByParcel.set(
-            a.workplace_parcel_id,
-            (craftAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
-          );
+
+        // Resolve workplace category — drives the role/output mapping.
+        // Owner clarification 2026-05-20:
+        //   • Agent at production (food/materials/energy):
+        //       role='work' or 'produce' → +1 produce-agent for the
+        //         parcel's resource output ("work at a production place
+        //         makes that desired resource")
+        //       role='craft' → +1 craft-agent (already existing)
+        //   • Agent at luxury (housing/civic):
+        //       role='work' → wage payout each tick
+        //       other roles → no effect (produce/craft are inert at
+        //         luxury buildings; the building itself emits passive
+        //         luxury already)
+        const parcel = parcelById.get(a.workplace_parcel_id);
+        if (!parcel) continue;
+        const bt = (parcel as { building_type?: string }).building_type as BuildingType | undefined;
+        if (!bt) continue;
+        const spec = BUILDINGS[bt];
+        if (!spec) continue;
+
+        const isProduction = spec.category === 'food' || spec.category === 'materials' || spec.category === 'energy';
+        const isLuxury = spec.category === 'luxury-housing' || spec.category === 'luxury-civic';
+
+        if (isProduction) {
+          if (a.role === 'craft') {
+            craftAgentsByParcel.set(
+              a.workplace_parcel_id,
+              (craftAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
+            );
+          } else {
+            // role='produce' or 'work' both produce the resource at
+            // production buildings.
+            produceAgentsByParcel.set(
+              a.workplace_parcel_id,
+              (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
+            );
+          }
+        } else if (isLuxury && a.role === 'work' && a.owner_wallet) {
+          const list = wageAgentsByOwner.get(a.owner_wallet) ?? [];
+          list.push(a.id);
+          wageAgentsByOwner.set(a.owner_wallet, list);
         }
       }
 
@@ -1102,6 +1146,23 @@ export class GameRoom extends Room<GameState> {
           const allItems = getPlayerItems(ownerId);
           const client = this.clients.find((c) => c.sessionId === sessionId);
           if (client) client.send(MessageType.ITEM_UPDATE, allItems);
+        }
+
+        // ── Phase 6 work wages ───────────────────────────────────────
+        // Per spec §4 + §9 (with owner clarification 2026-05-20):
+        // every active in-game agent with role='work' assigned to a
+        // luxury Housing or Civic building earns WORK_WAGE_AMETA_PER_TICK
+        // into the AGENT's balance. The owner reclaims via /allocate
+        // 'reclaim'. Server-funded (no counterparty wallet is debited).
+        const myWageAgentIds = wageAgentsByOwner.get(ownerId) ?? [];
+        if (myWageAgentIds.length > 0) {
+          for (const agentId of myWageAgentIds) {
+            const cur = getPlayerCreditsFromDb(agentId);
+            updatePlayerCredits(agentId, cur + WORK_WAGE_AMETA_PER_TICK);
+          }
+          // GDP attribution: aggregate wage emission this tick for this
+          // wallet so the world stat reflects work-role income.
+          recordGdp(myWageAgentIds.length * WORK_WAGE_AMETA_PER_TICK);
         }
 
         // ── Phase 2 starvation state machine ─────────────────────────
