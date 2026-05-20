@@ -17,11 +17,14 @@ import {
   getAgentById,
   getAgentsByWallet,
   countAgentsByWallet,
+  countAgentsByWalletAndKind,
+  setAgentStarvation,
   getAuthSessionPlayerId,
   workProduce,
   buyLand,
 } from '../db';
-import { economy } from '../economy';
+import { economy, WORLD_TREASURY_ID } from '../economy';
+import { inGameAgentCapFor } from '../ranks';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
@@ -54,6 +57,8 @@ import {
   RESOURCE_TYPES,
   LAND_COST,
   STARTING_BALANCE,
+  IN_GAME_AGENT_COST_AMETA,
+  REVIVE_COST_FOOD,
   AGENT_PERSONALITIES,
   AGENT_STRATEGIES,
   AgentPersonality,
@@ -225,14 +230,98 @@ function authWallet(req: Request, res: Response, next: NextFunction): void {
   });
 }
 
+/**
+ * Phase 2 (2026-05-20): role-scoped agent auth.
+ *
+ * Per spec §4 the new agent model splits in-game (server-driven, no API)
+ * from external (REST-driven, marketplace-only). Both share the `tl_sk_`
+ * token format for legacy reasons, but the endpoints they can call differ.
+ *
+ *   authExternalAgent — only accepts keys whose agent has is_external=1.
+ *                       Used by /market/order POST + DELETE and any other
+ *                       endpoint that external strategy AIs need.
+ *   authInGameAgentLegacy — only accepts keys whose agent has is_external=0.
+ *                       Used by world-mutating actions (/actions/work,
+ *                       /actions/build, /actions/buy-land) until Phase 5
+ *                       removes those from the API surface entirely. New
+ *                       in-game agents created from Phase 2 onward don't
+ *                       call these — the autopilot runs them server-side —
+ *                       but legacy scripts pre-dating the role split keep
+ *                       working through this gate.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function authExternalAgent(req: Request, res: Response, next: NextFunction): void {
+  authAgent(req, res, () => {
+    const agentId = (req as { agentId?: string }).agentId;
+    if (!agentId) {
+      res.status(403).json({ error: 'agent_resolution_failed' });
+      return;
+    }
+    const agent = getAgentById(agentId);
+    if (!agent || agent.is_external !== 1) {
+      res.status(403).json({
+        error: 'external_agent_required',
+        detail: 'This endpoint is for external (marketplace-only) agents. Use a wallet session token to drive your in-game agent.',
+      });
+      return;
+    }
+    next();
+  });
+}
+
+function authInGameAgentLegacy(req: Request, res: Response, next: NextFunction): void {
+  authAgent(req, res, () => {
+    const agentId = (req as { agentId?: string }).agentId;
+    if (!agentId) {
+      res.status(403).json({ error: 'agent_resolution_failed' });
+      return;
+    }
+    const agent = getAgentById(agentId);
+    if (!agent || agent.is_external === 1) {
+      res.status(403).json({
+        error: 'in_game_agent_required',
+        detail: 'External agents cannot call world-mutating actions. Use /market/order to trade.',
+      });
+      return;
+    }
+    next();
+  });
+}
+
+/**
+ * Market auth: wallet session token (human players) OR external agent
+ * key. In-game agent keys are explicitly rejected — in-game agents
+ * cannot trade markets per spec §4.
+ */
+function authMarket(req: Request, res: Response, next: NextFunction): void {
+  authPlayer(req, res, () => {
+    const r = req as AuthedRequest;
+    if (r.tokenKind === 'wallet') { next(); return; }
+    // agent key — must be external
+    const agentId = (req as { agentId?: string }).agentId;
+    if (!agentId) {
+      res.status(403).json({ error: 'agent_resolution_failed' });
+      return;
+    }
+    const agent = getAgentById(agentId);
+    if (!agent || agent.is_external !== 1) {
+      res.status(403).json({
+        error: 'market_requires_wallet_or_external',
+        detail: 'In-game agents cannot place market orders. Use your wallet session token or an external agent key.',
+      });
+      return;
+    }
+    next();
+  });
+}
+
 // ── Registration (wallet-gated) ─────────────────────────────────────────
 //
 // Every agent is owned by exactly one wallet. The caller must present a
 // wallet session token; the new agent's owner_wallet is set to that wallet.
-// Cap: 10 agents per wallet. New agents start at 0 balance — owners fund
-// them via POST /agents/:id/allocate.
-
-const MAX_AGENTS_PER_WALLET = 10;
+// Cap: IN_GAME_AGENT_CAP_BY_RANK[rank] (Bronze = 5 by default until the
+// rank system lands in Phase 4). Cost: IN_GAME_AGENT_COST_AMETA (200K)
+// per spec §9.
 
 router.post('/agents/register', authWallet, async (req: Request, res: Response) => {
   const wallet = (req as AuthedRequest).walletId!;
@@ -273,9 +362,31 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     return res.status(400).json({ error: `job required, one of: ${JOB_IDS.join(', ')}` });
   }
 
-  if (countAgentsByWallet(wallet) >= MAX_AGENTS_PER_WALLET) {
-    return res.status(409).json({ error: 'wallet_at_agent_cap', limit: MAX_AGENTS_PER_WALLET });
+  // Rank-gated in-game cap. Phase 4 will populate the rank; until then
+  // every player is Bronze → 5 in-game agents max.
+  const inGameCap = inGameAgentCapFor(wallet);
+  const inGameCount = countAgentsByWalletAndKind(wallet, 0);
+  if (inGameCount >= inGameCap) {
+    return res.status(409).json({
+      error: 'wallet_at_agent_cap',
+      limit: inGameCap,
+      current: inGameCount,
+      rank: 'bronze',
+    });
   }
+
+  // 200K $AMETA agent purchase fee (spec §9). Routed to the world treasury.
+  // TEST_BALANCE-overridden test wallets pay this too — but they get
+  // re-topped on every login so it's a no-op for owner testing.
+  const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
+  if (!purchaseDebit.ok) {
+    return res.status(400).json({
+      error: 'insufficient_balance',
+      cost: IN_GAME_AGENT_COST_AMETA,
+      reason: purchaseDebit.reason,
+    });
+  }
+  await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
 
   // Workplace resolution. If the job needs a parcel, pick one:
   //   1. caller passed an explicit workplace_parcel_id → validate match
@@ -483,6 +594,42 @@ router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) =>
   res.json({ ok: true, workplace_parcel_id: p.id });
 });
 
+/**
+ * Revive a dormant agent. Spec §2: costs REVIVE_COST_FOOD (100 food).
+ * Wallet-authed (only the owner can revive). Clears dormant_at_tick and
+ * resets starvation_ticks. Idempotent — calling on a non-dormant agent
+ * returns 400 so the caller knows it was a no-op.
+ */
+router.post('/agents/:id/revive', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const agentId = String(req.params.id);
+
+  const agent = getAgentById(agentId);
+  if (!agent) return res.status(404).json({ error: 'agent_not_found' });
+  if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
+    return res.status(403).json({ error: 'not_owner' });
+  }
+  if (agent.dormant_at_tick == null) {
+    return res.status(400).json({ error: 'not_dormant' });
+  }
+
+  const resources = getPlayerResources(wallet);
+  if (resources.food < REVIVE_COST_FOOD) {
+    return res.status(400).json({
+      error: 'insufficient_food',
+      required: REVIVE_COST_FOOD,
+      current: resources.food,
+    });
+  }
+  resources.food -= REVIVE_COST_FOOD;
+  updatePlayerResources(wallet, resources);
+  setAgentStarvation(agentId, 0, null);
+  addEvent('agent_revived', agentId, { food_paid: REVIVE_COST_FOOD });
+  notifyAgentChanged(agentId);
+
+  res.json({ ok: true, food_paid: REVIVE_COST_FOOD, food_remaining: resources.food });
+});
+
 // ── Public info endpoints ──────────────────────────────────────────────
 
 router.get('/world', (_req: Request, res: Response) => {
@@ -576,7 +723,7 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
       created_at: a.created_at,
     };
   });
-  res.json({ wallet, agents: out, limit: MAX_AGENTS_PER_WALLET });
+  res.json({ wallet, agents: out, limit: inGameAgentCapFor(wallet), rank: 'bronze' });
 });
 
 // Public catalog of job presets — used by the Phone create flow so the
@@ -801,7 +948,7 @@ router.get('/spec', (_req: Request, res: Response) => {
 // querying /api/v1/world?unclaimed=true. Walking to a parcel happens by
 // claiming it (the autopilot already routes agents to new purchases).
 
-router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/buy-land', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { parcel_id, x, y } = req.body ?? {};
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
@@ -818,7 +965,7 @@ router.post('/actions/buy-land', authAgent, rateLimit, (req: Request, res: Respo
   res.json({ ok: true, parcel_id: pid, cost: LAND_COST, balance: result.credits });
 });
 
-router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { parcel_id, x, y, building_type } = req.body ?? {};
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
@@ -854,7 +1001,7 @@ router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response
   res.json({ ok: true, building: building_type, cost: spec.cost, material_cost: spec.materialCost, units_created: unitsCreated });
 });
 
-router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/work', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const parcels = getPlayerParcels(agentId);
   const resources = getPlayerResources(agentId);
@@ -916,7 +1063,7 @@ router.post('/actions/trade', authPlayer, rateLimit, async (req: Request, res: R
 // Market (order book) — Phase A.1
 // ──────────────────────────────────────────────────────────────────────
 
-router.post('/market/order', authPlayer, rateLimit, async (req: Request, res: Response) => {
+router.post('/market/order', authMarket, rateLimit, async (req: Request, res: Response) => {
   const playerId = (req as AuthedRequest).playerId!;
   const { resource, side, price, quantity } = req.body ?? {};
   if (!Number.isInteger(price) || !Number.isInteger(quantity)) {
@@ -932,7 +1079,7 @@ router.post('/market/order', authPlayer, rateLimit, async (req: Request, res: Re
   }
 });
 
-router.delete('/market/order/:id', authPlayer, rateLimit, async (req: Request, res: Response) => {
+router.delete('/market/order/:id', authMarket, rateLimit, async (req: Request, res: Response) => {
   const playerId = (req as AuthedRequest).playerId!;
   const id = parseInt(String(req.params.id), 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
@@ -996,7 +1143,7 @@ router.get('/properties', (req: Request, res: Response) => {
   return res.json({ properties: getAllForSale() });
 });
 
-router.post('/actions/list-property', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/list-property', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { property_id, price } = req.body ?? {};
   const r = listProperty(agentId, Number(property_id), Math.floor(Number(price)));
@@ -1004,7 +1151,7 @@ router.post('/actions/list-property', authAgent, rateLimit, (req: Request, res: 
   res.json({ ok: true });
 });
 
-router.post('/actions/unlist-property', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/actions/unlist-property', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { property_id } = req.body ?? {};
   const r = unlistProperty(agentId, Number(property_id));
@@ -1012,7 +1159,7 @@ router.post('/actions/unlist-property', authAgent, rateLimit, (req: Request, res
   res.json({ ok: true });
 });
 
-router.post('/actions/buy-property', authAgent, rateLimit, async (req: Request, res: Response) => {
+router.post('/actions/buy-property', authInGameAgentLegacy, rateLimit, async (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { property_id } = req.body ?? {};
   try {
@@ -1029,7 +1176,7 @@ router.post('/actions/buy-property', authAgent, rateLimit, async (req: Request, 
 // Governance / Decrees — Phase E.3
 // ──────────────────────────────────────────────────────────────────────
 
-router.post('/governance/propose', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/governance/propose', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { subject, body, action_type, action_params, vote_window_ticks } = req.body ?? {};
   if (typeof action_type !== 'string' || !isValidActionType(action_type)) {
@@ -1044,7 +1191,7 @@ router.post('/governance/propose', authAgent, rateLimit, (req: Request, res: Res
   res.json({ ok: true, id: r.id });
 });
 
-router.post('/governance/vote', authAgent, rateLimit, (req: Request, res: Response) => {
+router.post('/governance/vote', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
   const agentId = (req as any).agentId;
   const { decree_id, choice } = req.body ?? {};
   const c = choice === 1 || choice === true || choice === 'yes' ? 1 : 0;

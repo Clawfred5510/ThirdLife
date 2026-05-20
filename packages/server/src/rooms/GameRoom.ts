@@ -22,6 +22,7 @@ import {
   TIER_MULTIPLIER,
   LUXURY_PASSIVE_PER_TICK_BY_TIER,
   LAND_COST_AMETA as LAND_COST,
+  STARVATION_GRACE_TICKS,
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
@@ -47,6 +48,7 @@ import {
   tickReputation,
   getRawDb,
   getAllAgents,
+  setAgentStarvation,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -860,18 +862,31 @@ export class GameRoom extends Room<GameState> {
       //   • $AMETA wages for role='work' agents and rank production
       //     bonuses are wired in Phase 4.
       //
-      // Step A: count produce-role agents per parcel.
+      // Step A: snapshot agents once + index by owner + by workplace parcel.
+      // Dormant agents skip everything — they don't produce, don't eat,
+      // don't accumulate starvation. Only an owner-initiated `revive`
+      // (which costs 100 food) brings them back.
+      const allAgents = getAllAgents();
+      const activeAgentsByOwner = new Map<string, typeof allAgents>();
       const produceAgentsByParcel = new Map<number, number>();
-      for (const a of getAllAgents()) {
-        if (a.autopilot_enabled !== 1) continue;
-        if (a.is_external === 1) continue;
-        if (a.role !== 'produce') continue;
+      for (const a of allAgents) {
         if (a.dormant_at_tick != null) continue;
-        if (a.workplace_parcel_id == null) continue;
-        produceAgentsByParcel.set(
-          a.workplace_parcel_id,
-          (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
-        );
+        if (a.owner_wallet) {
+          const list = activeAgentsByOwner.get(a.owner_wallet) ?? [];
+          list.push(a);
+          activeAgentsByOwner.set(a.owner_wallet, list);
+        }
+        if (
+          a.autopilot_enabled === 1 &&
+          a.is_external !== 1 &&
+          a.role === 'produce' &&
+          a.workplace_parcel_id != null
+        ) {
+          produceAgentsByParcel.set(
+            a.workplace_parcel_id,
+            (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
+          );
+        }
       }
 
       // Step B: bucket owners' producing buildings + passive luxury.
@@ -961,9 +976,36 @@ export class GameRoom extends Room<GameState> {
           resources.luxury    += bucket.legacyAdd.luxury;
         }
 
-        // Agent food consumption. Floored at 0; starvation handling
-        // (3-tick grace → dormant) lands in Phase 2.
-        resources.food = Math.max(0, resources.food - FOOD_PER_AGENT_PER_TICK);
+        // ── Phase 2 starvation state machine ─────────────────────────
+        // Each active (non-dormant) agent eats 1 food/tick. If the pool
+        // can't cover the full demand, ALL active agents starve this tick
+        // and accumulate starvation_ticks. After STARVATION_GRACE_TICKS
+        // consecutive starvation ticks, they go dormant. Reviving costs
+        // REVIVE_COST_FOOD via /api/v1/agents/:id/revive.
+        const myAgents = activeAgentsByOwner.get(ownerId) ?? [];
+        const foodDemand = myAgents.length * FOOD_PER_AGENT_PER_TICK;
+        if (foodDemand > 0) {
+          if (resources.food >= foodDemand) {
+            resources.food -= foodDemand;
+            // Reset any non-zero starvation counters — the wallet fed
+            // everyone this tick.
+            for (const a of myAgents) {
+              if (a.starvation_ticks > 0) setAgentStarvation(a.id, 0, null);
+            }
+          } else {
+            // Underfed. Empty the food pool; everyone ticks toward dormancy.
+            resources.food = 0;
+            const tickNow = getWorldTick();
+            for (const a of myAgents) {
+              const next = (a.starvation_ticks ?? 0) + 1;
+              if (next >= STARVATION_GRACE_TICKS) {
+                setAgentStarvation(a.id, next, tickNow);
+              } else {
+                setAgentStarvation(a.id, next, null);
+              }
+            }
+          }
+        }
 
         updatePlayerResources(ownerId, resources);
 

@@ -102,6 +102,11 @@ interface DBBackend {
   /** Single agent's record, including its owning wallet (or null for legacy unowned agents). */
   getAgentById(agentId: string): AgentRow | null;
   countAgentsByWallet(walletAddress: string): number;
+  /** Count only in-game (is_external=0) or only external (=1) agents. */
+  countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 | 1): number;
+  /** Phase 2 starvation state: update the agent's starvation_ticks and
+   *  dormant_at_tick. Pass `dormantAtTick = null` to revive. */
+  setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null): void;
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
@@ -820,6 +825,19 @@ class SQLiteDatabase implements DBBackend {
     return row.n;
   }
 
+  countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 | 1): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM agents WHERE owner_wallet = ? AND is_external = ?`,
+    ).get(walletAddress.toLowerCase(), isExternal) as { n: number };
+    return row.n;
+  }
+
+  setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null): void {
+    this.db.prepare(
+      `UPDATE agents SET starvation_ticks = ?, dormant_at_tick = ? WHERE id = ?`,
+    ).run(starvationTicks, dormantAtTick, agentId);
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
@@ -1216,6 +1234,25 @@ class MemoryDB implements DBBackend {
     return n;
   }
 
+  countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 | 1): number {
+    const addr = walletAddress.toLowerCase();
+    let n = 0;
+    for (const a of this.agents.values()) {
+      if (a.owner_wallet === addr && a.is_external === isExternal) n += 1;
+    }
+    return n;
+  }
+
+  setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null): void {
+    for (const a of this.agents.values()) {
+      if (a.id === agentId) {
+        a.starvation_ticks = starvationTicks;
+        a.dormant_at_tick = dormantAtTick;
+        return;
+      }
+    }
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     for (const a of this.agents.values()) {
       if (a.id === agentId) { a.workplace_parcel_id = parcelId; return; }
@@ -1390,6 +1427,12 @@ export function getAllAgents() { return backend.getAllAgents(); }
 export function getAgentsByWallet(walletAddress: string) { return backend.getAgentsByWallet(walletAddress); }
 export function getAgentById(agentId: string) { return backend.getAgentById(agentId); }
 export function countAgentsByWallet(walletAddress: string) { return backend.countAgentsByWallet(walletAddress); }
+export function countAgentsByWalletAndKind(walletAddress: string, isExternal: 0 | 1) {
+  return backend.countAgentsByWalletAndKind(walletAddress, isExternal);
+}
+export function setAgentStarvation(agentId: string, starvationTicks: number, dormantAtTick: number | null) {
+  backend.setAgentStarvation(agentId, starvationTicks, dormantAtTick);
+}
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }
 export function playerExists(id: string) { return backend.playerExists(id); }
