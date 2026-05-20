@@ -4,6 +4,7 @@ import {
   getAllParcels,
   getAllPlayers,
   getPlayerResources,
+  updatePlayerResources,
   getPlayerCredits,
   updatePlayerCredits,
   getPlayerParcels,
@@ -832,6 +833,16 @@ router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response
   const parcels = getPlayerParcels(agentId);
   if (!parcels.find(p => p.id === pid)) return res.status(400).json({ error: 'You do not own this parcel' });
 
+  // Phase 1: enforce material build cost.
+  if (spec.materialCost > 0) {
+    const r = getPlayerResources(agentId);
+    if (r.materials < spec.materialCost) {
+      return res.status(400).json({ error: 'Insufficient materials', required_materials: spec.materialCost });
+    }
+    r.materials -= spec.materialCost;
+    updatePlayerResources(agentId, r);
+  }
+
   updatePlayerCredits(agentId, credits - spec.cost);
   setBuildingType(pid, building_type);
   updateBusiness(pid, agentId, { type: building_type, name: spec.label });
@@ -839,8 +850,8 @@ router.post('/actions/build', authAgent, rateLimit, (req: Request, res: Response
   const unitsCreated = buildingHasUnits(building_type)
     ? generateUnitsForParcel(pid, building_type, agentId)
     : 0;
-  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, units_created: unitsCreated }, 'major');
-  res.json({ ok: true, building: building_type, cost: spec.cost, units_created: unitsCreated });
+  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, material_cost: spec.materialCost, units_created: unitsCreated }, 'major');
+  res.json({ ok: true, building: building_type, cost: spec.cost, material_cost: spec.materialCost, units_created: unitsCreated });
 });
 
 router.post('/actions/work', authAgent, rateLimit, (req: Request, res: Response) => {

@@ -124,9 +124,10 @@ interface DBBackend {
     buildingType: string,
     buildingCost: number,
     buildingLabel: string,
+    materialCost?: number,
   ): { ok: boolean; reason?: string; credits?: number };
   /** All owned parcels with a building set — single scan for the income tick. */
-  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }>;
+  getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }>;
   // Wallet auth
   createAuthNonce(address: string, nonce: string, expiresAt: number): void;
   consumeAuthNonce(address: string, nonce: string): boolean;
@@ -616,6 +617,7 @@ class SQLiteDatabase implements DBBackend {
     buildingType: string,
     buildingCost: number,
     buildingLabel: string,
+    materialCost = 0,
   ): { ok: boolean; reason?: string; credits?: number } {
     if (RESERVED_SET.has(parcelId)) return { ok: false, reason: 'reserved_landmark' };
     const txn = this.db.transaction(() => {
@@ -625,6 +627,16 @@ class SQLiteDatabase implements DBBackend {
       const total = LAND_COST + buildingCost;
       const credits = this.getPlayerCredits(id);
       if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+      // Phase 1 (2026-05-20): materials required for construction. Spec
+      // §9 sets per-tier costs; legacy (tier 0) buildings have 0 materials.
+      if (materialCost > 0) {
+        const resources = this.getPlayerResources(id);
+        if (resources.materials < materialCost) {
+          return { ok: false, reason: 'insufficient_materials' };
+        }
+        resources.materials -= materialCost;
+        this.updatePlayerResources(id, resources);
+      }
       this.stmtUpdateCredits.run(credits - total, id);
       const claim = this.stmtClaimParcel.run(id, parcelId);
       if (claim.changes === 0) return { ok: false, reason: 'claim_race' };
@@ -635,11 +647,11 @@ class SQLiteDatabase implements DBBackend {
     return txn();
   }
 
-  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
+  getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }> {
     return this.db
-      .prepare(`SELECT owner_id, building_type FROM parcels
+      .prepare(`SELECT id, owner_id, building_type FROM parcels
                 WHERE owner_id IS NOT NULL AND building_type IS NOT NULL`)
-      .all() as Array<{ owner_id: string; building_type: string }>;
+      .all() as Array<{ id: number; owner_id: string; building_type: string }>;
   }
 
   updateBusiness(parcelId: number, playerId: string, data: BusinessUpdate): boolean {
@@ -1008,6 +1020,7 @@ class MemoryDB implements DBBackend {
     buildingType: string,
     buildingCost: number,
     buildingLabel: string,
+    materialCost = 0,
   ): { ok: boolean; reason?: string; credits?: number } {
     const parcel = this.parcels.get(parcelId);
     if (!parcel) return { ok: false, reason: 'parcel_not_found' };
@@ -1015,6 +1028,12 @@ class MemoryDB implements DBBackend {
     const total = LAND_COST + buildingCost;
     const credits = this.getPlayerCredits(id);
     if (credits < total) return { ok: false, reason: 'insufficient_balance' };
+    if (materialCost > 0) {
+      const r = this.getPlayerResources(id);
+      if (r.materials < materialCost) return { ok: false, reason: 'insufficient_materials' };
+      r.materials -= materialCost;
+      this.updatePlayerResources(id, r);
+    }
     this.updatePlayerCredits(id, credits - total);
     parcel.owner_id = id;
     parcel.claimed_at = new Date().toISOString();
@@ -1024,11 +1043,11 @@ class MemoryDB implements DBBackend {
     return { ok: true, credits: credits - total };
   }
 
-  getOwnedBuiltParcels(): Array<{ owner_id: string; building_type: string }> {
-    const out: Array<{ owner_id: string; building_type: string }> = [];
+  getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }> {
+    const out: Array<{ id: number; owner_id: string; building_type: string }> = [];
     for (const p of this.parcels.values()) {
       const bt = (p as any).building_type as string | null;
-      if (p.owner_id && bt) out.push({ owner_id: p.owner_id, building_type: bt });
+      if (p.owner_id && bt) out.push({ id: p.id, owner_id: p.owner_id, building_type: bt });
     }
     return out;
   }
@@ -1383,7 +1402,8 @@ export function workProduce(
 export function buyLand(id: string, parcelId: number) { return backend.buyLand(id, parcelId); }
 export function claimAndBuild(
   id: string, parcelId: number, buildingType: string, buildingCost: number, buildingLabel: string,
-) { return backend.claimAndBuild(id, parcelId, buildingType, buildingCost, buildingLabel); }
+  materialCost = 0,
+) { return backend.claimAndBuild(id, parcelId, buildingType, buildingCost, buildingLabel, materialCost); }
 export function getOwnedBuiltParcels() { return backend.getOwnedBuiltParcels(); }
 export function createAuthNonce(address: string, nonce: string, expiresAt: number) {
   backend.createAuthNonce(address, nonce, expiresAt);

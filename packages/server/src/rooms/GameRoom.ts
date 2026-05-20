@@ -13,11 +13,17 @@ import {
   DEFAULT_APPEARANCE,
   BUILDINGS,
   BuildingType,
+  BuildingCategory,
   INCOME_TICK_MS,
   ResourceType,
   TICK_PRODUCTION,
   FOOD_PER_AGENT_PER_TICK,
-  ENERGY_PER_INCOME_BUILDING_PER_TICK,
+  ENERGY_PER_PRODUCING_BUILDING_PER_TICK,
+  TIER_MULTIPLIER,
+  LUXURY_PASSIVE_PER_TICK_BY_TIER,
+  LAND_COST_AMETA as LAND_COST,
+  consumesEnergy,
+  emitsPassiveLuxury,
   parcelWorldPos,
 } from '@gamestu/shared';
 import {
@@ -232,12 +238,16 @@ export class GameRoom extends Room<GameState> {
 
       const ownerId = this.pid(client.sessionId);
       const result = claimAndBuild(
-        ownerId, data.parcelId, data.building_type, spec.cost, spec.label,
+        ownerId, data.parcelId, data.building_type, spec.cost, spec.label, spec.materialCost,
       );
       if (!result.ok) {
         client.send(MessageType.CLAIM_PARCEL, {
           error: result.reason,
-          detail: result.reason === 'insufficient_balance' ? { required: spec.cost + 150000 } : undefined,
+          detail: result.reason === 'insufficient_balance'
+            ? { required_ameta: spec.cost + LAND_COST }
+            : result.reason === 'insufficient_materials'
+              ? { required_materials: spec.materialCost }
+              : undefined,
         });
         return;
       }
@@ -254,10 +264,11 @@ export class GameRoom extends Room<GameState> {
         ? generateUnitsForParcel(data.parcelId, data.building_type, ownerId)
         : 0;
       addEvent('claim_and_build', ownerId, {
-        parcel: data.parcelId, building: data.building_type, cost: spec.cost + 150000,
+        parcel: data.parcelId, building: data.building_type,
+        cost_ameta: spec.cost + LAND_COST, cost_materials: spec.materialCost,
         units_created: unitsCreated,
       }, 'major');
-      console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + 150000} $AMETA)`);
+      console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + LAND_COST} $AMETA, -${spec.materialCost} materials)`);
     });
 
     this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {
@@ -303,15 +314,22 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Refund 50% of the building's original cost (land cost stays
-      // sunk; the parcel remains owned and can be rebuilt on).
+      // Refund 50% of the building's original $AMETA and materials cost
+      // (land cost stays sunk; the parcel remains owned + rebuild-able).
       const spec = BUILDINGS[buildingType];
-      const refund = spec ? Math.floor(spec.cost / 2) : 0;
-      if (refund > 0) {
-        const newCredits = player.credits + refund;
+      const refundAmeta = spec ? Math.floor(spec.cost / 2) : 0;
+      const refundMaterials = spec ? Math.floor(spec.materialCost / 2) : 0;
+      if (refundAmeta > 0) {
+        const newCredits = player.credits + refundAmeta;
         updatePlayerCredits(ownerId, newCredits);
         player.credits = newCredits;
         client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
+      }
+      if (refundMaterials > 0) {
+        const r = getPlayerResources(ownerId);
+        r.materials += refundMaterials;
+        updatePlayerResources(ownerId, r);
+        client.send(MessageType.RESOURCE_UPDATE, r);
       }
 
       // Clear the building from the parcel + any sub-units associated
@@ -334,9 +352,10 @@ export class GameRoom extends Room<GameState> {
       });
 
       addEvent('demolish', ownerId, {
-        parcel: data.parcelId, building: buildingType, refund,
+        parcel: data.parcelId, building: buildingType,
+        refund_ameta: refundAmeta, refund_materials: refundMaterials,
       }, 'major');
-      console.log(`${player.name} demolished ${buildingType} on parcel #${data.parcelId} (refund ${refund} $AMETA)`);
+      console.log(`${player.name} demolished ${buildingType} on parcel #${data.parcelId} (refund ${refundAmeta} $AMETA + ${refundMaterials} materials)`);
     });
 
     this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {
@@ -362,6 +381,18 @@ export class GameRoom extends Room<GameState> {
       const parcels = getPlayerParcels(ownerId);
       const parcel = parcels.find(p => p.id === data.parcelId);
       if (!parcel) { client.send(MessageType.BUILD_STRUCTURE, { error: 'You do not own this parcel' }); return; }
+
+      // Phase 1: materials required for construction (Tier-II+ buildings).
+      if (spec.materialCost > 0) {
+        const r = getPlayerResources(ownerId);
+        if (r.materials < spec.materialCost) {
+          client.send(MessageType.BUILD_STRUCTURE, { error: 'Insufficient materials', required_materials: spec.materialCost });
+          return;
+        }
+        r.materials -= spec.materialCost;
+        updatePlayerResources(ownerId, r);
+        client.send(MessageType.RESOURCE_UPDATE, r);
+      }
 
       player.credits -= spec.cost;
       updatePlayerCredits(ownerId, player.credits);
@@ -812,80 +843,134 @@ export class GameRoom extends Room<GameState> {
         console.error('[governance] resolve failed:', err);
       });
 
+      // ── Phase 1 production tick ──────────────────────────────────
+      //
+      // Per spec §2 / §7 / §9:
+      //   • Every producing building (food/materials/energy) consumes
+      //     exactly 1 energy/tick. If the owner can't supply that energy,
+      //     the building produces 0 this tick (binary, not proportional).
+      //   • Output = TIER_MULTIPLIER[tier-1] × (1 + agentsAtThisParcel).
+      //     The "1" is the base passive output; agents amplify it.
+      //   • Only agents with role='produce', autopilot enabled, not
+      //     external, and not dormant count toward the agent term.
+      //   • Luxury Housing + Civic emit LUXURY_PASSIVE_PER_TICK_BY_TIER
+      //     for free (no energy consumed).
+      //   • Legacy types (shop/hall/etc.) still produce via the deprecated
+      //     TICK_PRODUCTION shim so existing players don't lose value.
+      //   • $AMETA wages for role='work' agents and rank production
+      //     bonuses are wired in Phase 4.
+      //
+      // Step A: count produce-role agents per parcel.
+      const produceAgentsByParcel = new Map<number, number>();
+      for (const a of getAllAgents()) {
+        if (a.autopilot_enabled !== 1) continue;
+        if (a.is_external === 1) continue;
+        if (a.role !== 'produce') continue;
+        if (a.dormant_at_tick != null) continue;
+        if (a.workplace_parcel_id == null) continue;
+        produceAgentsByParcel.set(
+          a.workplace_parcel_id,
+          (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
+        );
+      }
+
+      // Step B: bucket owners' producing buildings + passive luxury.
+      interface Producer {
+        parcelId: number;
+        category: BuildingCategory;
+        tier: number;
+        agents: number;
+      }
       interface OwnerBucket {
-        produce: { food: number; materials: number; energy: number; luxury: number };
-        incomeBuildings: number;    // count of buildings with income > 0
-        pendingIncomePer: number[]; // income per building (same length as incomeBuildings)
+        producers: Producer[];                 // need 1 energy each
+        passiveLuxury: number;                 // sum of housing/civic
+        legacyAdd: { food: number; materials: number; energy: number; luxury: number };
       }
       const byOwner = new Map<string, OwnerBucket>();
-      const getBucket = (id: string) => {
+      const getBucket = (id: string): OwnerBucket => {
         let b = byOwner.get(id);
         if (!b) {
-          b = { produce: { food: 0, materials: 0, energy: 0, luxury: 0 }, incomeBuildings: 0, pendingIncomePer: [] };
+          b = {
+            producers: [],
+            passiveLuxury: 0,
+            legacyAdd: { food: 0, materials: 0, energy: 0, luxury: 0 },
+          };
           byOwner.set(id, b);
         }
         return b;
       };
 
       for (const row of getOwnedBuiltParcels()) {
-        const spec = BUILDINGS[row.building_type as BuildingType];
+        const bt = row.building_type as BuildingType;
+        const spec = BUILDINGS[bt];
         if (!spec) continue;
-        const tick = TICK_PRODUCTION[row.building_type as BuildingType];
         const b = getBucket(row.owner_id);
-        if (tick) b.produce[tick.resource] += tick.rate;
-        if (spec.income > 0) {
-          b.incomeBuildings += 1;
-          b.pendingIncomePer.push(spec.income);
+
+        if (consumesEnergy(bt)) {
+          b.producers.push({
+            parcelId: row.id,
+            category: spec.category,
+            tier: spec.tier,
+            agents: produceAgentsByParcel.get(row.id) ?? 0,
+          });
+        } else if (emitsPassiveLuxury(bt)) {
+          const idx = Math.max(0, spec.tier - 1);
+          b.passiveLuxury += LUXURY_PASSIVE_PER_TICK_BY_TIER[idx] ?? 0;
+        } else if (spec.category === 'legacy') {
+          // Legacy bridge — TICK_PRODUCTION shim keeps shop/skyscraper/etc.
+          // earning until the player demolishes and rebuilds.
+          const tick = TICK_PRODUCTION[bt];
+          if (tick) b.legacyAdd[tick.resource] += tick.rate;
         }
       }
 
+      // Step C: settle each connected player.
       this.players.forEach((player, sessionId) => {
-        // byOwner is keyed by persistent owner_id from the parcels table;
-        // DB resource/credits ops use the same persistent ID. The
-        // sessionId here is only used to find the network client to push to.
         const ownerId = player.id;
         const bucket = byOwner.get(ownerId);
         const resources = getPlayerResources(ownerId);
 
-        // 1. Apply tick production
         if (bucket) {
-          resources.food += bucket.produce.food;
-          resources.materials += bucket.produce.materials;
-          resources.energy += bucket.produce.energy;
-          resources.luxury += bucket.produce.luxury;
+          // Producing buildings: gated by current energy pool. Sort by
+          // parcelId so the priority is deterministic (oldest parcel
+          // gets powered first if there's a shortage).
+          const sorted = [...bucket.producers].sort((a, b2) => a.parcelId - b2.parcelId);
+          const poweredCount = Math.min(
+            sorted.length,
+            Math.floor(resources.energy / ENERGY_PER_PRODUCING_BUILDING_PER_TICK),
+          );
+          resources.energy -= poweredCount * ENERGY_PER_PRODUCING_BUILDING_PER_TICK;
+
+          for (let i = 0; i < poweredCount; i++) {
+            const p = sorted[i];
+            const mult = TIER_MULTIPLIER[p.tier - 1] ?? 0;
+            const out = mult * (1 + p.agents);
+            if (p.category === 'food')           resources.food      += out;
+            else if (p.category === 'materials') resources.materials += out;
+            else if (p.category === 'energy')    resources.energy    += out;
+          }
+
+          // Passive luxury (housing + civic) — no energy gating.
+          resources.luxury += bucket.passiveLuxury;
+
+          // Legacy types contribute their old flat rates (no energy gate,
+          // since we don't want to break ownership economics mid-migration).
+          resources.food      += bucket.legacyAdd.food;
+          resources.materials += bucket.legacyAdd.materials;
+          resources.energy    += bucket.legacyAdd.energy;
+          resources.luxury    += bucket.legacyAdd.luxury;
         }
 
-        // 2. Agent food consumption (floor at 0 — going "inactive" is a
-        // soft state; we still deduct so the penalty is economic, not
-        // mechanical. No negatives.)
+        // Agent food consumption. Floored at 0; starvation handling
+        // (3-tick grace → dormant) lands in Phase 2.
         resources.food = Math.max(0, resources.food - FOOD_PER_AGENT_PER_TICK);
 
-        // 3. Burn energy to pay income. Each income building needs
-        // ENERGY_PER_INCOME_BUILDING_PER_TICK energy; buildings beyond the
-        // available energy pay nothing this tick.
-        let paidIncome = 0;
-        if (bucket && bucket.incomeBuildings > 0) {
-          const maxPayouts = Math.floor(resources.energy / ENERGY_PER_INCOME_BUILDING_PER_TICK);
-          const payouts = Math.min(maxPayouts, bucket.incomeBuildings);
-          resources.energy -= payouts * ENERGY_PER_INCOME_BUILDING_PER_TICK;
-          // Pay the `payouts` highest-income buildings for fairness.
-          const sorted = [...bucket.pendingIncomePer].sort((a, b) => b - a);
-          for (let i = 0; i < payouts; i++) paidIncome += sorted[i] ?? 0;
-        }
-
         updatePlayerResources(ownerId, resources);
-        if (paidIncome > 0) {
-          const newCredits = player.credits + paidIncome;
-          updatePlayerCredits(ownerId, newCredits);
-          player.credits = newCredits;
-          recordGdp(paidIncome);
-        }
 
-        // Push state to the connected client
+        // Push state to the connected client.
         const client = this.clients.find((c) => c.sessionId === sessionId);
         if (client) {
           client.send(MessageType.RESOURCE_UPDATE, resources);
-          if (paidIncome > 0) client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
         }
       });
     }

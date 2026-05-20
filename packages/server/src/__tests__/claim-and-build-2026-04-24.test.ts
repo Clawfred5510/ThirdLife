@@ -52,17 +52,19 @@ check('underfunded rejected', r3.ok === false && r3.reason === 'insufficient_bal
 check('bob balance unchanged', getPlayerCredits('bob') === 100);
 check('parcel still unclaimed', getAllParcels().find(p => p.id === parcels[1].id)?.owner_id === null);
 
-section('Bank (2M building) costs full 2M + land');
+section('Bank charges full building cost + land');
 getOrCreatePlayer('carl', 'Carl');
 updatePlayerCredits('carl', 2_500_000);
 const bankBefore = getPlayerCredits('carl');
 const bankSpec = BUILDINGS.bank;
 const rb = claimAndBuild('carl', parcels[2].id, 'bank', bankSpec.cost, bankSpec.label);
 check('bank claim ok', rb.ok === true);
-// Phase 0 (2026-05-20): LAND_COST moved from 150K → 200K per locked v1
-// pricing. Bank total is now 2M (building) + 200K (land) = 2.2M.
-check(`bank total = 2_200_000 (2M + 200K land)`,
-  bankBefore - getPlayerCredits('carl') === 2_200_000,
+// Phase 1 (2026-05-20): Bank reclassified as Tier-III luxury-civic.
+// Building cost = LUXURY_BUILDING_AMETA_COST[2] = 750_000.
+// Land cost = LAND_COST_AMETA = 200_000. Total: 950_000.
+const expectedTotal = bankSpec.cost + 200_000;
+check(`bank total = ${expectedTotal} (${bankSpec.cost} + 200K land)`,
+  bankBefore - getPlayerCredits('carl') === expectedTotal,
   `diff=${bankBefore - getPlayerCredits('carl')}`);
 
 fs.rmSync(tmp, { recursive: true, force: true });
