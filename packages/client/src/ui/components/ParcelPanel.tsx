@@ -201,7 +201,7 @@ export const ParcelPanel: React.FC = () => {
               marginBottom: 10,
             }}
           >
-            {BUILDING_LIST.map((b) => {
+            {BUILDING_LIST.filter((b) => b.category !== 'legacy').map((b) => {
               const total = b.cost + CLAIM_COST;
               const affordable = credits >= total;
               const selected = pickedBuilding === b.type;
@@ -210,7 +210,7 @@ export const ParcelPanel: React.FC = () => {
                   key={b.type}
                   role="radio"
                   aria-checked={selected}
-                  aria-label={`${b.label}, total ${total.toLocaleString()} $${CURRENCY_NAME}`}
+                  aria-label={`${b.label}, Tier ${b.tier}, total ${total.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`}
                   disabled={!affordable}
                   onClick={() => setPickedBuilding(b.type)}
                   style={{
@@ -227,7 +227,13 @@ export const ParcelPanel: React.FC = () => {
                   }}
                 >
                   <div style={{ fontWeight: 'bold' }}>{b.label}</div>
+                  <div style={{ opacity: 0.6, fontSize: 8, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                    T{b.tier} · {b.category.replace('luxury-', '')}
+                  </div>
                   <div style={{ opacity: 0.75, fontSize: 9 }}>{b.cost.toLocaleString()}</div>
+                  {b.materialCost > 0 && (
+                    <div style={{ opacity: 0.6, fontSize: 8 }}>+{b.materialCost.toLocaleString()} mat</div>
+                  )}
                 </button>
               );
             })}
