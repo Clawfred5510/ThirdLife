@@ -162,17 +162,6 @@ export function zoneForGrid(gx: number, gy: number): Zone {
   return 'wilderness';
 }
 
-/** Stable premium-parcel set: ~3% of parcels, deterministic from id.
- *  These get a +15% income modifier (gold-bordered on the minimap). */
-export function isPremiumParcel(parcelId: number): boolean {
-  // Hash mixing — picks a deterministic ~3% of ids without an explicit list.
-  // Quick rule: id whose digits sum is a multiple of 13 (yields ~7% which
-  // we further filter by parity).
-  if (RESERVED_PARCEL_IDS.includes(parcelId)) return false;
-  const h = ((parcelId * 2654435761) >>> 0) % 100;
-  return h < 3;
-}
-
 // ── Building types ──────────────────────────────────────────────────────
 
 export type BuildingType =

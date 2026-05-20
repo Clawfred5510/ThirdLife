@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import {
   WORLD_HALF, GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
-  zoneForGrid, isPremiumParcel,
+  zoneForGrid,
 } from '@gamestu/shared';
 import {
   onPlayerAdd,
@@ -59,30 +59,6 @@ function getZoneOverlay(): HTMLCanvasElement {
   return zoneOverlay;
 }
 
-/** One-shot pre-rendered premium-parcel gold-border overlay. */
-let premiumOverlay: HTMLCanvasElement | null = null;
-function getPremiumOverlay(): HTMLCanvasElement {
-  if (premiumOverlay) return premiumOverlay;
-  const c = document.createElement('canvas');
-  c.width = SIZE;
-  c.height = SIZE;
-  const ctx = c.getContext('2d');
-  if (!ctx) return c;
-  const cellPx = (MINIMAP_STRIDE / (WORLD_HALF * 2)) * SIZE;
-  ctx.strokeStyle = '#FFD24A';
-  ctx.lineWidth = 1;
-  for (let gx = 0; gx < GRID_COLS; gx++) {
-    for (let gy = 0; gy < GRID_ROWS; gy++) {
-      const id = gx * GRID_COLS + gy;
-      if (!isPremiumParcel(id)) continue;
-      const [cx, cy] = gridToMinimap(gx, gy);
-      ctx.strokeRect(cx - cellPx / 2 + 0.5, cy - cellPx / 2 + 0.5, cellPx - 1, cellPx - 1);
-    }
-  }
-  premiumOverlay = c;
-  return premiumOverlay;
-}
-
 const LANDMARK_GLYPH: Record<string, string> = {
   town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',
 };
@@ -109,9 +85,6 @@ export const Minimap: React.FC = () => {
 
     // ── Layer 1b: Zone tint overlay (Phase D) ─────────────────────────────
     ctx.drawImage(getZoneOverlay(), 0, 0);
-
-    // ── Layer 1c: Premium parcel gold borders ─────────────────────────────
-    ctx.drawImage(getPremiumOverlay(), 0, 0);
 
     // ── Layer 2: Parcel grid lines ────────────────────────────────────────
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';

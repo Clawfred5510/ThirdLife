@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   WORLD_HALF, GRID_COLS, GRID_ROWS, ZONE_COLORS, LANDMARKS,
-  zoneForGrid, isPremiumParcel,
+  zoneForGrid,
 } from '@gamestu/shared';
 import type { ParcelData } from '@gamestu/shared';
 import { apiGet } from '../../network/api';
@@ -111,16 +111,6 @@ export const BigMap: React.FC = () => {
       }
     }
     ctx.globalAlpha = 1;
-
-    // Premium gold borders
-    ctx.strokeStyle = '#FFD24A';
-    ctx.lineWidth = 1;
-    for (let gx = 0; gx < GRID_COLS; gx++) {
-      for (let gy = 0; gy < GRID_ROWS; gy++) {
-        if (!isPremiumParcel(gx * GRID_COLS + gy)) continue;
-        ctx.strokeRect(gx * cellW + 0.5, gy * cellH + 0.5, cellW - 1, cellH - 1);
-      }
-    }
 
     // Claimed parcels
     for (const p of parcelsRef.current) {
