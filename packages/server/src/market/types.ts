@@ -1,11 +1,11 @@
-import type { ResourceType } from '@gamestu/shared';
+import type { MarketKind } from '@gamestu/shared';
 
 export type Side = 'buy' | 'sell';
 export type OrderStatus = 'open' | 'filled' | 'cancelled';
 
 export interface MarketOrder {
   id: number;
-  resource: ResourceType;
+  resource: MarketKind;
   side: Side;
   owner_id: string;
   price: number;       // unit price in $AMETA, integer
@@ -17,7 +17,7 @@ export interface MarketOrder {
 
 export interface MarketTrade {
   id: number;
-  resource: ResourceType;
+  resource: MarketKind;
   buyer_id: string;
   seller_id: string;
   price: number;
@@ -27,7 +27,7 @@ export interface MarketTrade {
 }
 
 export interface BookSnapshot {
-  resource: ResourceType;
+  resource: MarketKind;
   bids: { price: number; quantity: number }[]; // descending price
   asks: { price: number; quantity: number }[]; // ascending price
   recentTrades: MarketTrade[];

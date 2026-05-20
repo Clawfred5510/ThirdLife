@@ -300,6 +300,22 @@ export const ITEM_FOR_BUILDING: Partial<Record<BuildingType, LuxuryItemKind>> = 
   return out;
 })();
 
+/** True if the string is one of the 4 base RESOURCE_TYPES. */
+export function isResourceType(s: string): s is ResourceType {
+  return RESOURCE_TYPES.includes(s as ResourceType);
+}
+
+/** True if the string is one of the 15 LuxuryItemKind values. */
+export function isLuxuryItemKind(s: string): s is LuxuryItemKind {
+  return s in LUXURY_ITEMS;
+}
+
+/** Marketplace order kind: a resource or a luxury item, validated. */
+export type MarketKind = ResourceType | LuxuryItemKind;
+export function isMarketKind(s: string): s is MarketKind {
+  return isResourceType(s) || isLuxuryItemKind(s);
+}
+
 // Legacy market prices kept for any caller that still hardcodes them.
 // New code should use NPC_SEED_PRICE_AMETA from pricing.ts (10× lower —
 // the locked v1 anchor prices are 50/100/150/250).

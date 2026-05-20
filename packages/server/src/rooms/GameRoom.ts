@@ -31,6 +31,7 @@ import {
   PROPERTY_FEE_BPS,
   BPS_DENOMINATOR,
   WORK_WAGE_AMETA_PER_TICK,
+  MAX_OFFLINE_TICKS,
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
@@ -60,6 +61,8 @@ import {
   getPlayerItems,
   addPlayerItems,
   burnLuxuryItems,
+  getLastSettledTick,
+  setLastSettledTick,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -634,6 +637,17 @@ export class GameRoom extends Room<GameState> {
     const displayName = options.name || `Player_${persistentId.slice(0, 4)}`;
     const row = getOrCreatePlayer(persistentId, displayName);
 
+    // ── Phase 6: offline accrual ──────────────────────────────────────
+    // Replay (capped) missed ticks of the passive income loop so a
+    // returning player isn't punished for sleeping. Only the time-
+    // independent flows accrue: luxury Housing/Civic passive luxury and
+    // work-role wages on agents owned by this wallet. Production +
+    // crafting + food + starvation are NOT replayed — they require
+    // continuous resource/energy balancing that this player wasn't
+    // around to manage. The current tick logic still applies to all of
+    // those once they're connected. See `applyOfflineAccrual` below.
+    const offlineRecap = this.applyOfflineAccrual(persistentId);
+
     let appearance: Appearance = { ...DEFAULT_APPEARANCE };
     if (row.appearance) {
       try {
@@ -644,6 +658,7 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
+    const refreshedCredits = getPlayerCreditsFromDb(persistentId);
     const player: PlayerData = {
       id: persistentId,
       name: row.name,
@@ -651,7 +666,7 @@ export class GameRoom extends Room<GameState> {
       y: row.y,
       z: row.z,
       rotation: 0,
-      credits: row.credits,
+      credits: refreshedCredits,
       color: appearance.shirt_color,
       appearance,
     };
@@ -672,6 +687,12 @@ export class GameRoom extends Room<GameState> {
     // Initial credits + resources UI sync
     client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
     client.send(MessageType.RESOURCE_UPDATE, getPlayerResources(persistentId));
+
+    // Phase 6 offline-accrual recap. Only send if anything actually
+    // happened — first-time logins or sub-tick reconnects get no popup.
+    if (offlineRecap.missedTicks > 0 && (offlineRecap.luxury > 0 || offlineRecap.wages > 0)) {
+      client.send(MessageType.OFFLINE_RECAP, offlineRecap);
+    }
 
     // Parcel snapshot
     const snapshot = getAllParcels().map((p) => ({
@@ -698,6 +719,9 @@ export class GameRoom extends Room<GameState> {
     const persistentId = this.pid(client.sessionId);
     if (player) {
       savePlayerPosition(persistentId, player.x, player.y, player.z);
+      // Phase 6: stamp the accrual baseline so the next login starts
+      // counting from now, not from the last rank/burn write.
+      this.settleOnLeave(persistentId);
       console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}) — position saved`);
     }
     this.players.delete(client.sessionId);
@@ -741,6 +765,107 @@ export class GameRoom extends Room<GameState> {
       // Face the direction of motion so the walk animation looks right.
       a.rotation = Math.atan2(dx, dz);
     });
+  }
+
+  /**
+   * Phase 6 offline accrual.
+   *
+   * Replays (capped) missed ticks of the time-independent passive
+   * income for the connecting wallet: per-tick luxury Housing/Civic
+   * emission + per-tick wages for work-role agents at luxury buildings.
+   * Production, crafting, food, and starvation are intentionally NOT
+   * replayed — those require energy/inventory balancing the player
+   * wasn't present to manage. The current tick still applies once
+   * they're connected.
+   *
+   * Returns a summary the join handler forwards to the client.
+   */
+  private applyOfflineAccrual(walletId: string): {
+    missedTicks: number; luxury: number; wages: number;
+  } {
+    const currentTick = getWorldTick();
+    const lastSettled = getLastSettledTick(walletId);
+    // First settle ever (column default 0) — just stamp now, no accrual.
+    if (lastSettled === 0) {
+      setLastSettledTick(walletId, currentTick);
+      return { missedTicks: 0, luxury: 0, wages: 0 };
+    }
+    const elapsed = Math.max(0, currentTick - lastSettled);
+    const missedTicks = Math.min(elapsed, MAX_OFFLINE_TICKS);
+    if (missedTicks === 0) return { missedTicks: 0, luxury: 0, wages: 0 };
+
+    // Per-tick passive luxury emission across this wallet's housing/civic
+    // buildings. Energy not required for these.
+    let perTickLuxury = 0;
+    for (const row of getOwnedBuiltParcels()) {
+      if (row.owner_id !== walletId) continue;
+      const bt = row.building_type as BuildingType;
+      const spec = BUILDINGS[bt];
+      if (!spec) continue;
+      if (emitsPassiveLuxury(bt)) {
+        const idx = Math.max(0, spec.tier - 1);
+        perTickLuxury += LUXURY_PASSIVE_PER_TICK_BY_TIER[idx] ?? 0;
+      }
+    }
+
+    // Per-tick wages = count of this wallet's active work-role agents
+    // currently stationed at a luxury building.
+    let wageAgentCount = 0;
+    const wageAgentIds: string[] = [];
+    const parcels = new Map<number, ReturnType<typeof getAllParcels>[number]>();
+    for (const p of getAllParcels()) parcels.set(p.id, p);
+    for (const a of getAllAgents()) {
+      if (a.owner_wallet !== walletId) continue;
+      if (a.dormant_at_tick != null) continue;
+      if (a.autopilot_enabled !== 1) continue;
+      if (a.is_external === 1) continue;
+      if (a.role !== 'work') continue;
+      if (a.workplace_parcel_id == null) continue;
+      const wp = parcels.get(a.workplace_parcel_id);
+      if (!wp) continue;
+      const bt = (wp as { building_type?: string }).building_type as BuildingType | undefined;
+      if (!bt) continue;
+      const spec = BUILDINGS[bt];
+      if (!spec) continue;
+      if (spec.category === 'luxury-housing' || spec.category === 'luxury-civic') {
+        wageAgentCount += 1;
+        wageAgentIds.push(a.id);
+      }
+    }
+    const perTickWage = wageAgentCount * WORK_WAGE_AMETA_PER_TICK;
+
+    const luxuryDelta = perTickLuxury * missedTicks;
+    const wageTotal = perTickWage * missedTicks;
+
+    // Apply: luxury to the wallet's resource pool; wages divided equally
+    // across the qualifying agents (per-agent balance, just like a live
+    // tick).
+    if (luxuryDelta > 0) {
+      const r = getPlayerResources(walletId);
+      r.luxury += luxuryDelta;
+      updatePlayerResources(walletId, r);
+    }
+    if (wageTotal > 0) {
+      const perAgent = WORK_WAGE_AMETA_PER_TICK * missedTicks;
+      for (const id of wageAgentIds) {
+        const cur = getPlayerCreditsFromDb(id);
+        updatePlayerCredits(id, cur + perAgent);
+      }
+      recordGdp(wageTotal);
+    }
+
+    setLastSettledTick(walletId, currentTick);
+    addEvent('offline_accrual', walletId, {
+      missed_ticks: missedTicks, luxury: luxuryDelta, wages: wageTotal,
+    }, 'minor');
+    return { missedTicks, luxury: luxuryDelta, wages: wageTotal };
+  }
+
+  /** Mark the wallet as settled at the current tick on disconnect so
+   *  the next join's accrual window starts from now, not from the last
+   *  burn / rank update. */
+  private settleOnLeave(walletId: string): void {
+    setLastSettledTick(walletId, getWorldTick());
   }
 
   private snapshotPlayer(p: PlayerData) {

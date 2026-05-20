@@ -1,10 +1,16 @@
 import type { Database, Statement } from 'better-sqlite3';
-import { TRADING_FEE_BPS, BPS_DENOMINATOR, RESOURCE_TYPES, MARKETPLACE_FEE_BPS_BY_RANK } from '@gamestu/shared';
+import {
+  TRADING_FEE_BPS, BPS_DENOMINATOR, RESOURCE_TYPES,
+  MARKETPLACE_FEE_BPS_BY_RANK,
+  isResourceType, isLuxuryItemKind, isMarketKind,
+} from '@gamestu/shared';
 import { rankFor } from '../ranks';
-import type { ResourceType } from '@gamestu/shared';
+import type { ResourceType, MarketKind } from '@gamestu/shared';
 import {
   getPlayerResources,
   updatePlayerResources,
+  getPlayerItems,
+  addPlayerItems,
   addEvent,
   getRawDb,
 } from '../db';
@@ -148,29 +154,47 @@ function rowToOrder(row: MarketOrderRow): MarketOrder {
 
 /**
  * Place a limit order. Validates the placer can afford it (sell: has the
- * resources; buy: has the credits), escrows what's needed, then runs the
- * match engine. Returns trades produced and the final state of the order.
+ * resources/items; buy: has the credits), escrows what's needed, then
+ * runs the match engine. Returns trades produced and the final state of
+ * the order.
+ *
+ * Phase 6 (2026-05-20): `resource` is the kind being traded — either a
+ * RESOURCE_TYPE (food/materials/energy/luxury) or one of the 15
+ * LuxuryItemKind values (artisan_jam, cut_gemstone, ..., fusion_core).
+ * The market_orders.resource column stores the string verbatim and the
+ * match logic branches on the kind to know which inventory to debit on
+ * fill. Same order book, same price/time priority — just more SKUs.
  *
  * Match policy: price-time priority FIFO. Within a price level, oldest
  * order matches first. Partial fills are supported.
  */
 export async function placeOrder(
   ownerId: string,
-  resource: ResourceType,
+  resource: MarketKind,
   side: Side,
   price: number,
   quantity: number,
 ): Promise<{ ok: boolean; reason?: string; result?: MatchResult }> {
-  if (!RESOURCE_TYPES.includes(resource)) return { ok: false, reason: 'invalid_resource' };
+  if (!isMarketKind(resource)) return { ok: false, reason: 'invalid_kind' };
   if (side !== 'buy' && side !== 'sell') return { ok: false, reason: 'invalid_side' };
   if (!Number.isInteger(price) || price <= 0) return { ok: false, reason: 'invalid_price' };
   if (!Number.isInteger(quantity) || quantity <= 0) return { ok: false, reason: 'invalid_quantity' };
 
   if (side === 'sell') {
-    const res = getPlayerResources(ownerId);
-    if (res[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
-    const updated = { ...res, [resource]: res[resource] - quantity };
-    updatePlayerResources(ownerId, updated);
+    // Phase 6: sell-side escrow branches by kind. Resources escrow from
+    // PlayerResources; luxury items escrow from luxury_items via the
+    // signed-delta helper (decrement clamps at 0).
+    if (isResourceType(resource)) {
+      const res = getPlayerResources(ownerId);
+      if (res[resource] < quantity) return { ok: false, reason: 'insufficient_resource' };
+      const updated = { ...res, [resource]: res[resource] - quantity };
+      updatePlayerResources(ownerId, updated);
+    } else {
+      // Luxury item kind.
+      const inv = getPlayerItems(ownerId);
+      if ((inv[resource] ?? 0) < quantity) return { ok: false, reason: 'insufficient_items' };
+      addPlayerItems(ownerId, resource, -quantity);
+    }
   } else {
     const debitResult = await economy().debit(ownerId, price * quantity, 'market_order_buy_escrow');
     if (!debitResult.ok) return { ok: false, reason: debitResult.reason };
@@ -240,10 +264,16 @@ function matchOrder(inbound: MarketOrder): MatchResult {
       const fee = Math.floor((grossPayout * effectiveTradingFeeBps(seller)) / BPS_DENOMINATOR);
       const sellerEarn = grossPayout - fee;
 
-      // Buyer receives the resource.
-      const buyerRes = getPlayerResources(buyer);
-      const buyerResNew = { ...buyerRes, [inbound.resource]: buyerRes[inbound.resource] + matchQty };
-      updatePlayerResources(buyer, buyerResNew);
+      // Buyer receives the asset. Resources land in PlayerResources;
+      // luxury items in luxury_items via the signed-delta helper.
+      if (isResourceType(inbound.resource as string)) {
+        const buyerRes = getPlayerResources(buyer);
+        const key = inbound.resource as ResourceType;
+        const buyerResNew = { ...buyerRes, [key]: buyerRes[key] + matchQty };
+        updatePlayerResources(buyer, buyerResNew);
+      } else {
+        addPlayerItems(buyer, inbound.resource as string, matchQty);
+      }
 
       // Seller receives net payout. Buyer's escrow already held the funds.
       // Routed through economy() so swapping to OnChainEconomy later moves
@@ -327,9 +357,16 @@ export async function cancelOrder(
   const remaining = order.quantity - order.filled;
   if (remaining > 0) {
     if (order.side === 'sell') {
-      const res = getPlayerResources(ownerId);
-      const updated = { ...res, [order.resource]: res[order.resource] + remaining };
-      updatePlayerResources(ownerId, updated);
+      // Refund escrowed inventory — resources to PlayerResources, luxury
+      // items back to luxury_items.
+      if (isResourceType(order.resource as string)) {
+        const res = getPlayerResources(ownerId);
+        const key = order.resource as ResourceType;
+        const updated = { ...res, [key]: res[key] + remaining };
+        updatePlayerResources(ownerId, updated);
+      } else {
+        addPlayerItems(ownerId, order.resource as string, remaining);
+      }
     } else {
       await economy().credit(ownerId, order.price * remaining, 'market_order_cancel_refund');
     }
@@ -339,7 +376,7 @@ export async function cancelOrder(
 }
 
 /** Snapshot of bids/asks (aggregated by price) + last 50 trades for a resource. */
-export function getBook(resource: ResourceType): BookSnapshot {
+export function getBook(resource: MarketKind): BookSnapshot {
   const s = getStmts();
   const bids = s.bookBids.all(resource) as Array<{ price: number; quantity: number }>;
   const asks = s.bookAsks.all(resource) as Array<{ price: number; quantity: number }>;
@@ -366,7 +403,7 @@ export function getOwnerOrders(ownerId: string): MarketOrder[] {
  *  market price when no explicit limit is given. Returns 0 if the book
  *  is empty.
  */
-export function getBestBid(resource: ResourceType): number {
+export function getBestBid(resource: MarketKind): number {
   const s = getStmts();
   const row = s.bestBid.get(resource) as { p: number | null } | undefined;
   return row?.p ?? 0;

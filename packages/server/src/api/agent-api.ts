@@ -70,6 +70,7 @@ import {
   BPS_DENOMINATOR,
   AGENT_ROLES,
   AgentRole,
+  isMarketKind,
   AGENT_PERSONALITIES,
   AGENT_STRATEGIES,
   AgentPersonality,
@@ -1324,11 +1325,13 @@ router.delete('/market/order/:id', authMarket, rateLimit, async (req: Request, r
 });
 
 router.get('/market/book/:resource', (req: Request, res: Response) => {
-  const r = req.params.resource;
-  if (!RESOURCE_TYPES.includes(r as ResourceType)) {
-    return res.status(400).json({ error: 'invalid resource' });
+  const r = String(req.params.resource ?? '');
+  // Phase 6: resource can be one of the 4 RESOURCE_TYPES or one of the
+  // 15 LuxuryItemKind values — all share the same order book schema.
+  if (!isMarketKind(r)) {
+    return res.status(400).json({ error: 'invalid kind', valid: 'food|materials|energy|luxury|<item_kind>' });
   }
-  res.json(getBook(r as ResourceType));
+  res.json(getBook(r));
 });
 
 router.get('/market/orders', authPlayer, (req: Request, res: Response) => {

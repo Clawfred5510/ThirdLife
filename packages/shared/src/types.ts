@@ -118,6 +118,9 @@ export enum MessageType {
   BURN_EFFECT = 'burn_effect',          // S→C broadcast for the particle effect
   ITEM_UPDATE = 'item_update',          // S→C player's luxury_items snapshot
   RANK_UP = 'rank_up',                  // S→C broadcast on rank promotion (Phase 4)
+  // Phase 6 — offline accrual recap shown on login when the wallet has
+  // missed > 0 ticks of passive income (wages + housing/civic luxury).
+  OFFLINE_RECAP = 'offline_recap',
 }
 
 export interface PlayerResources {

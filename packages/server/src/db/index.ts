@@ -140,6 +140,10 @@ interface DBBackend {
   /** Force-set a player's rank (used by migration paths; usually computed
    *  by burnLuxuryItems instead). */
   setPlayerRank(playerId: string, rank: string | null): void;
+  /** Phase 6 offline accrual: last world tick at which this player's
+   *  state was settled. 0 = never. */
+  getLastSettledTick(playerId: string): number;
+  setLastSettledTick(playerId: string, tick: number): void;
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
@@ -243,6 +247,13 @@ class SQLiteDatabase implements DBBackend {
     // DB dumps; the enum is enforced application-side.
     try {
       this.db.exec(`ALTER TABLE players ADD COLUMN rank TEXT`);
+    } catch (_) { /* exists */ }
+    // Phase 6 (2026-05-20): offline accrual ledger. 0 means "never
+    // settled" — first login treats this as no-missed-ticks. Otherwise
+    // it's the world tick at the last settle. The accrual window caps
+    // at MAX_OFFLINE_TICKS so sleep doesn't reward unbounded.
+    try {
+      this.db.exec(`ALTER TABLE players ADD COLUMN last_settled_tick INTEGER DEFAULT 0`);
     } catch (_) { /* exists */ }
 
     // Building type on parcels (apartment, house, shop, farm, etc.)
@@ -1016,6 +1027,17 @@ class SQLiteDatabase implements DBBackend {
     this.db.prepare(`UPDATE players SET rank = ? WHERE id = ?`).run(rank, playerId);
   }
 
+  getLastSettledTick(playerId: string): number {
+    const row = this.db.prepare(
+      `SELECT last_settled_tick AS n FROM players WHERE id = ?`,
+    ).get(playerId) as { n: number | null } | undefined;
+    return row?.n ?? 0;
+  }
+
+  setLastSettledTick(playerId: string, tick: number): void {
+    this.db.prepare(`UPDATE players SET last_settled_tick = ? WHERE id = ?`).run(tick, playerId);
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
@@ -1515,6 +1537,14 @@ class MemoryDB implements DBBackend {
     this.rankByPlayer.set(playerId, rank);
   }
 
+  private lastSettledByPlayer = new Map<string, number>();
+  getLastSettledTick(playerId: string): number {
+    return this.lastSettledByPlayer.get(playerId) ?? 0;
+  }
+  setLastSettledTick(playerId: string, tick: number): void {
+    this.lastSettledByPlayer.set(playerId, tick);
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     for (const a of this.agents.values()) {
       if (a.id === agentId) { a.workplace_parcel_id = parcelId; return; }
@@ -1711,6 +1741,10 @@ export function getLifetimeLuxuryBurned(playerId: string) {
 export function getPlayerRank(playerId: string) { return backend.getPlayerRank(playerId); }
 export function setPlayerRank(playerId: string, rank: string | null) {
   backend.setPlayerRank(playerId, rank);
+}
+export function getLastSettledTick(playerId: string) { return backend.getLastSettledTick(playerId); }
+export function setLastSettledTick(playerId: string, tick: number) {
+  backend.setLastSettledTick(playerId, tick);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }

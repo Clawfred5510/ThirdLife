@@ -523,6 +523,14 @@ export class MainScene {
       parcelInfo.height = meta?.height ?? 4;
     }
 
+    // Phase 6: clicking any built Market building opens the Phone's
+    // Market app directly. The plot-side shortcut from spec §8 — no
+    // need to fish through the home grid. ParcelPanel still opens too,
+    // so the player keeps the usual context (claim / demolish / etc.).
+    if (parcelInfo.business_type === 'market') {
+      window.dispatchEvent(new CustomEvent('tl-open-app', { detail: { app: 'market' } }));
+    }
+
     selectParcel(parcelInfo);
   }
 

@@ -128,6 +128,22 @@ export const Phone: React.FC = () => {
     return () => clearInterval(id);
   }, []);
 
+  // Phase 6: world-side shortcut — clicking a built Market building (or
+  // any future plot-side trigger) dispatches `tl-open-app` with the
+  // target app id, which the Phone opens directly.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ app?: AppId }>).detail;
+      if (!detail?.app) return;
+      const known = APPS.find((a) => a.id === detail.app);
+      if (!known) return;
+      setOpen(true);
+      setActiveApp(detail.app);
+    };
+    window.addEventListener('tl-open-app', handler);
+    return () => window.removeEventListener('tl-open-app', handler);
+  }, []);
+
   const close = () => { setOpen(false); setActiveApp(null); };
   const goHome = () => setActiveApp(null);
 
