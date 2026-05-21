@@ -28,11 +28,15 @@ export interface PlayerData {
   color: string;
   appearance: Appearance;
   /**
-   * Only set for AI agents. `'auto'` = server autopilot is driving the
-   * agent; `'agent'` = autopilot is off and the agent only acts via its
-   * external API key (third-party AI runtime). Humans omit this entirely.
+   * Only set for AI agents.
+   *   `'auto'`     = server autopilot is driving an in-game agent
+   *   `'agent'`    = in-game agent with autopilot off (acts via API key)
+   *   `'external'` = wallet-signed REST agent (is_external=1). Renders
+   *                  with a green AGENT badge so they stand out from
+   *                  the brownish-yellow in-game agents.
+   *   Humans omit this entirely.
    */
-  bot_kind?: 'auto' | 'agent';
+  bot_kind?: 'auto' | 'agent' | 'external';
   /**
    * Agent waypoint navigation. The autopilot sets `target*` once per
    * INCOME_TICK_MS; the GameRoom per-frame step walks the agent toward

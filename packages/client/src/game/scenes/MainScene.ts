@@ -79,7 +79,7 @@ interface RemotePlayer {
   labelText: TextBlock;
   /** Optional bot-kind badge above the name (AUTO / AGENT). Humans null. */
   badge: Rectangle | null;
-  badgeKind: 'auto' | 'agent' | null;
+  badgeKind: 'auto' | 'agent' | 'external' | null;
   rank: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
   targetX: number;
   targetY: number;
@@ -674,21 +674,30 @@ export class MainScene {
 
   // ---------- Remote player management ----------
 
-  /** Build a small AUTO/AGENT badge above an avatar's name plate. */
-  private buildBotBadge(sessionId: string, kind: 'auto' | 'agent', mesh: AbstractMesh): Rectangle {
+  /** Build a small AUTO/AGENT/EXT badge above an avatar's name plate. */
+  private buildBotBadge(sessionId: string, kind: 'auto' | 'agent' | 'external', mesh: AbstractMesh): Rectangle {
     const rect = new Rectangle(`badge_${sessionId}`);
     rect.width = '60px';
     rect.height = '18px';
     rect.cornerRadius = 4;
     rect.thickness = 1;
+    let label: string;
     if (kind === 'auto') {
-      rect.background = 'rgba(63,122,61,0.75)';     // forest green
+      rect.background = 'rgba(63,122,61,0.75)';     // forest green (AUTO)
       rect.color = '#86efac';
+      label = 'AUTO';
+    } else if (kind === 'external') {
+      // Brighter green for EXT to set external agents apart from
+      // server-autopilot ones — matches the Phone Agents tab theme.
+      rect.background = 'rgba(63,122,61,0.95)';
+      rect.color = '#9FD89A';
+      label = 'EXT';
     } else {
-      rect.background = 'rgba(216,148,56,0.75)';    // amber
+      rect.background = 'rgba(216,148,56,0.75)';    // amber (AGENT)
       rect.color = '#fde68a';
+      label = 'AGENT';
     }
-    const text = new TextBlock(`badgeText_${sessionId}`, kind === 'auto' ? 'AUTO' : 'AGENT');
+    const text = new TextBlock(`badgeText_${sessionId}`, label);
     text.color = '#0F0A07';
     text.fontSize = 10;
     text.fontWeight = 'bold';
@@ -700,7 +709,7 @@ export class MainScene {
   }
 
   /** Reconcile an existing avatar's badge with a new bot_kind. */
-  private syncBotBadge(sessionId: string, render: RemotePlayer, kind: 'auto' | 'agent' | undefined): void {
+  private syncBotBadge(sessionId: string, render: RemotePlayer, kind: 'auto' | 'agent' | 'external' | undefined): void {
     if (!kind) {
       if (render.badge) { render.badge.dispose(); render.badge = null; render.badgeKind = null; }
       return;

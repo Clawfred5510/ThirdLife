@@ -104,16 +104,33 @@ function summarizeEvent(e: EventRow): string {
   switch (e.type) {
     case 'trade':       return `traded ${data.quantity} ${data.resource} @ ${data.price ?? '—'} (fee ${data.fee ?? 0})`;
     case 'work':        return `worked: +${data.creditsEarned ?? 0} $AMETA`;
-    case 'buy_land':    return `bought parcel #${data.parcel}`;
+    case 'buy_land': {
+      const via = data.agent_name ? ` (via 🛰️ ${data.agent_name})` : '';
+      return `bought parcel #${data.parcel}${via}`;
+    }
     case 'claim_and_build':
     case 'build':       return `built ${data.building} on parcel #${data.parcel}`;
     case 'transfer':    return `sent ${data.amount} to ${data.to} (fee ${data.fee ?? 0})`;
-    case 'agent_registered': return `registered: ${data.name}`;
+    case 'agent_registered': {
+      const via = data.agent_name ? ` (via 🛰️ ${data.agent_name})` : '';
+      return `registered agent: ${data.name}${via}`;
+    }
     case 'agent_role_changed': return `agent role: ${data.from} → ${data.to}`;
     case 'agent_revived': return `revived agent (paid ${data.food_paid ?? 100} food)`;
     case 'burn_luxury': return `used ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} luxury`;
     case 'rank_up':     return `🎉 RANK UP: ${data.from ?? 'unranked'} → ${data.to}`;
     case 'craft_item':  return `agent crafted ${data.quantity}× ${data.item_kind} at parcel #${data.parcel}`;
+    case 'external_trade': {
+      const name = data.agent_name ?? 'external agent';
+      const side = data.side ?? '?';
+      const qty = data.quantity ?? 0;
+      const filled = Number(data.filled ?? 0);
+      return `🛰️ ${name} ${side} ${qty}× ${data.resource} @ ${data.price}` + (filled > 0 ? ` (filled ${filled})` : '');
+    }
+    case 'external_agent_registered': {
+      const budget = Number(data.budget_ameta ?? 0);
+      return `🛰️ external agent ${data.name} connected (budget ${budget.toLocaleString()} $AMETA)`;
+    }
     case 'building_unpowered': {
       const n = data.unpowered_count ?? 0;
       const short = data.energy_short_by ?? 0;

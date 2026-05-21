@@ -328,6 +328,44 @@ function authMarket(req: Request, res: Response, next: NextFunction): void {
   });
 }
 
+/**
+ * Wallet-or-external auth: accepts either a wallet session token or an
+ * external agent's API key. When an external agent presents the key,
+ * the effective wallet identity is its `owner_wallet` — the action
+ * (buy land, register agent, etc.) attributes to the owner and bills
+ * the owner. In-game agent keys are rejected here. Used for endpoints
+ * the owner explicitly chose to expose to their external AI.
+ */
+function authWalletOrExternal(req: Request, res: Response, next: NextFunction): void {
+  authPlayer(req, res, () => {
+    const r = req as AuthedRequest;
+    if (r.tokenKind === 'wallet') { next(); return; }
+    const agentId = (req as { agentId?: string }).agentId;
+    if (!agentId) {
+      res.status(403).json({ error: 'agent_resolution_failed' });
+      return;
+    }
+    const agent = getAgentById(agentId);
+    if (!agent || agent.is_external !== 1) {
+      res.status(403).json({
+        error: 'external_or_wallet_required',
+        detail: 'This endpoint accepts a wallet session token or an external agent key. In-game agent keys cannot call it.',
+      });
+      return;
+    }
+    if (!agent.owner_wallet) {
+      res.status(403).json({ error: 'agent_has_no_owner_wallet' });
+      return;
+    }
+    // Overwrite the playerId attribution with the owner's wallet so the
+    // downstream handler bills the owner's balance + records ownership
+    // under the wallet, not the agent id.
+    (req as AuthedRequest).walletId = agent.owner_wallet;
+    (req as AuthedRequest).playerId = agent.owner_wallet;
+    next();
+  });
+}
+
 // ── Registration (wallet-gated) ─────────────────────────────────────────
 //
 // Every agent is owned by exactly one wallet. The caller must present a
@@ -336,7 +374,10 @@ function authMarket(req: Request, res: Response, next: NextFunction): void {
 // rank system lands in Phase 4). Cost: IN_GAME_AGENT_COST_AMETA (200K)
 // per spec §9.
 
-router.post('/agents/register', authWallet, async (req: Request, res: Response) => {
+// /agents/register accepts wallet token OR external agent key (the
+// external agent registers an in-game agent on its owner's behalf,
+// billing the owner's wallet).
+router.post('/agents/register', authWalletOrExternal, async (req: Request, res: Response) => {
   const wallet = (req as AuthedRequest).walletId!;
   const body = (req.body ?? {}) as {
     name?: string;
@@ -553,12 +594,22 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
   }
   savePlayerPosition(id, spawnX, 0, spawnZ);
 
+  // Audit field: if an external agent registered this in-game agent
+  // on the owner's behalf, log the relayer so the Notifications feed
+  // shows "🛰️ <external> created new in-game agent <name>".
+  const placingAgentId = (req as { agentId?: string }).agentId;
+  let viaExternal: { id: string; name: string } | null = null;
+  if (placingAgentId) {
+    const a = getAgentById(placingAgentId);
+    if (a?.is_external === 1) viaExternal = { id: placingAgentId, name: a.name };
+  }
   addEvent('agent_registered', id, {
     name: body.name, job, personality, strategy,
     workplace_parcel_id: workplaceParcelId,
     workplace_foreign: workplaceParcelId !== null && !workplaceOwnedByCaller,
     owner_wallet: wallet,
     spawn_x: spawnX, spawn_z: spawnZ,
+    ...(viaExternal ? { via_external_agent: viaExternal.id, agent_name: viaExternal.name } : {}),
   });
 
   // Push the new agent into the GameRoom immediately — refreshAgents
@@ -698,8 +749,32 @@ router.post('/agents/register-external', authWallet, async (req: Request, res: R
     }
   }
 
+  // Spawn the external agent in-world on the owner's first owned parcel
+  // (per spec §4: "Visible in-world. Each connected external agent has
+  // a representation on the player's plot."). Falls back to a small
+  // deterministic offset from spawn if the owner doesn't yet have a
+  // parcel claimed.
+  let spawnX = 0, spawnZ = -80;
+  const ownerParcels = getPlayerParcels(wallet);
+  if (ownerParcels.length > 0) {
+    const p = ownerParcels[0];
+    spawnX = p.grid_x * 48 - 1200 + 22;
+    spawnZ = p.grid_y * 48 - 1200 + 22;
+  } else {
+    // Deterministic offset by agent id so multiple unclaimed externals
+    // don't stack at the same point.
+    let h = 5381;
+    for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+    const angle = (h % 360) * (Math.PI / 180);
+    const radius = 4 + ((h >>> 8) % 12);
+    spawnX = Math.cos(angle) * radius;
+    spawnZ = -80 + Math.sin(angle) * radius;
+  }
+  savePlayerPosition(id, spawnX, 0, spawnZ);
+
   addEvent('external_agent_registered', id, {
     name: body.name, owner_wallet: wallet, budget_ameta: allocated,
+    spawn_x: spawnX, spawn_z: spawnZ,
   });
   notifyAgentChanged(id);
 
@@ -1228,20 +1303,42 @@ router.get('/spec', (_req: Request, res: Response) => {
 // querying /api/v1/world?unclaimed=true. Walking to a parcel happens by
 // claiming it (the autopilot already routes agents to new purchases).
 
-router.post('/actions/buy-land', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
+// /actions/buy-land accepts wallet token OR external agent key. Buy is
+// attributed to the wallet (or the external agent's owner wallet).
+// In-game agents shouldn't be calling this — humans buy land via the
+// Phone/BigMap claim flow, and external AIs use this REST path.
+router.post('/actions/buy-land', authWalletOrExternal, rateLimit, (req: Request, res: Response) => {
+  const buyerId = (req as AuthedRequest).walletId!;
   const { parcel_id, x, y } = req.body ?? {};
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
   if (pid === undefined) return res.status(400).json({ error: 'parcel_id (or x,y) required' });
 
-  const result = buyLand(agentId, pid);
+  const result = buyLand(buyerId, pid);
   if (!result.ok) {
     const status = result.reason === 'parcel_not_found' ? 404
       : result.reason === 'already_claimed' ? 409
       : 400;
     return res.status(status).json({ error: result.reason, cost: LAND_COST });
   }
-  addEvent('buy_land', agentId, { parcel: pid, cost: LAND_COST }, 'normal');
+  // Audit field: if an external agent triggered the buy, the agentId
+  // is still on the request — log it so the Notifications app can show
+  // "🛰️ <agent name> bought parcel #N".
+  const placingAgentId = (req as { agentId?: string }).agentId;
+  let externalAgentName: string | null = null;
+  if (placingAgentId) {
+    const a = getAgentById(placingAgentId);
+    if (a?.is_external === 1) externalAgentName = a.name;
+  }
+  addEvent(
+    'buy_land',
+    buyerId,
+    {
+      parcel: pid,
+      cost: LAND_COST,
+      ...(externalAgentName ? { via_external_agent: placingAgentId, agent_name: externalAgentName } : {}),
+    },
+    'normal',
+  );
   res.json({ ok: true, parcel_id: pid, cost: LAND_COST, balance: result.credits });
 });
 
@@ -1412,6 +1509,24 @@ router.post('/market/order', authMarket, rateLimit, async (req: Request, res: Re
   try {
     const r = await placeOrder(playerId, resource, side, price, quantity);
     if (!r.ok) return res.status(400).json({ error: r.reason });
+
+    // When an external agent places an order, mirror it to the OWNER's
+    // notification feed so the human can audit what their AI is doing.
+    // The Notifications app summarises external_trade as
+    // "🛰️ <agent name> placed <side> <qty>x <resource> @ <price>".
+    const placingAgent = getAgentById(playerId);
+    if (placingAgent?.is_external === 1 && placingAgent.owner_wallet) {
+      const trades = r.result?.trades ?? [];
+      const filledQty = trades.reduce((s, t) => s + (t as { quantity: number }).quantity, 0);
+      addEvent('external_trade', placingAgent.owner_wallet, {
+        agent_id: playerId,
+        agent_name: placingAgent.name,
+        resource, side, price, quantity,
+        filled: filledQty,
+        order_id: r.result?.order?.id ?? null,
+      }, 'normal');
+    }
+
     res.json({ ok: true, order: r.result?.order, trades: r.result?.trades ?? [] });
   } catch (e) {
     console.error('[api] market/order failed:', e);

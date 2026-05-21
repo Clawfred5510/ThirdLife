@@ -60,11 +60,13 @@ export interface PlayerSnapshot {
   color: string;
   appearance?: Appearance;
   /**
-   * Only set for AI agents. `'auto'` = server autopilot is driving the
-   * agent (server-side NPC); `'agent'` = autopilot is off and the agent
-   * is only acting via its external API key. Humans omit this entirely.
+   * Only set for AI agents.
+   *   'auto'     = server autopilot is driving an in-game agent
+   *   'agent'    = in-game agent with autopilot off (acts via API key)
+   *   'external' = wallet-signed external REST agent (is_external=1).
+   *                Renders with a green EXT badge.
    */
-  bot_kind?: 'auto' | 'agent';
+  bot_kind?: 'auto' | 'agent' | 'external';
   /**
    * Phase 4: player's current rank (null if they've never burned luxury).
    * Drives the nameplate color in the 3D world.

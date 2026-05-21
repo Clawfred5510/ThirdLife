@@ -938,8 +938,11 @@ export class GameRoom extends Room<GameState> {
       const existing = this.agentPlayers.get(a.id);
       if (existing) {
         // Owner may have toggled autopilot on/off via the REST endpoint;
-        // propagate that to the broadcast so the AUTO/AGENT badge updates.
-        const wanted: 'auto' | 'agent' = a.autopilot_enabled === 1 ? 'auto' : 'agent';
+        // propagate that to the broadcast so the AUTO/AGENT/EXT badge updates.
+        const wanted: 'auto' | 'agent' | 'external' =
+          a.is_external === 1 ? 'external'
+          : a.autopilot_enabled === 1 ? 'auto'
+          : 'agent';
         if (existing.bot_kind !== wanted) {
           existing.bot_kind = wanted;
           if (!initial) this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(existing));
@@ -960,7 +963,10 @@ export class GameRoom extends Room<GameState> {
         credits: row.credits,
         color: appearance.shirt_color,
         appearance,
-        bot_kind: a.autopilot_enabled === 1 ? 'auto' : 'agent',
+        bot_kind:
+          a.is_external === 1 ? 'external'
+          : a.autopilot_enabled === 1 ? 'auto'
+          : 'agent',
         // Start with no pending target — they stand still until the
         // first autopilot tick assigns a workplace/spawn waypoint.
         targetX: row.x, targetY: row.y, targetZ: row.z,
