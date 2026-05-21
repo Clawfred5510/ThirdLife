@@ -1048,10 +1048,35 @@ export class GameRoom extends Room<GameState> {
 
     if (lower === 'give') {
       const playerId = this.pid(client.sessionId);
+      const firstArg = (rest[0] ?? '').toLowerCase();
+      const isCreditMode =
+        firstArg === 'credit' || firstArg === 'credits' || firstArg === 'ameta' || firstArg === '$ameta';
+
+      if (isCreditMode) {
+        const rawAmount = rest[1];
+        const amount = rawAmount == null ? 10_000_000 : Number.parseInt(rawAmount, 10);
+        if (!Number.isFinite(amount) || amount < 1) {
+          replyTo(`Usage: /give credit [amount]  (default 10000000). Got "${rawAmount}".`);
+          return true;
+        }
+        const cur = getPlayerCreditsFromDb(playerId);
+        updatePlayerCredits(playerId, cur + amount);
+        // notifyWalletChanged would also work, but we have the client
+        // handle right here — send the CREDITS_UPDATE directly so the
+        // Wallet UI updates within the same tick.
+        client.send(MessageType.CREDITS_UPDATE, { credits: cur + amount });
+        // Mirror it into the cached player object so subsequent
+        // server-side reads (e.g. BUILD_STRUCTURE) see the new balance.
+        const cached = this.players.get(client.sessionId);
+        if (cached) cached.credits = cur + amount;
+        replyTo(`Granted ${amount.toLocaleString()} $AMETA.`);
+        return true;
+      }
+
       const raw = rest[0];
       const amount = raw == null ? 100_000 : Number.parseInt(raw, 10);
       if (!Number.isFinite(amount) || amount < 1) {
-        replyTo(`Usage: /give <amount>  (default 100000). Got "${raw}".`);
+        replyTo(`Usage: /give <amount>  (resources)  OR  /give credit [amount]  ($AMETA).`);
         return true;
       }
       const r = getPlayerResources(playerId);
@@ -1096,7 +1121,7 @@ export class GameRoom extends Room<GameState> {
 
     if (lower === 'help') {
       replyTo(
-        'Test commands: /skip [N], /tick, /give [amount], /godmode [on|off], /help',
+        'Test commands: /skip [N], /tick, /give [amount], /give credit [amount], /godmode [on|off], /help',
       );
       return true;
     }
