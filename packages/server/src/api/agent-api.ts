@@ -1281,12 +1281,22 @@ router.post('/actions/burn', authWallet, rateLimit, (req: Request, res: Response
     { item_kind, quantity, rank_points_gained: result.gained, lifetime: result.lifetime },
     (result.gained ?? 0) >= 1000 ? 'major' : 'minor',
   );
+  // UI Overhaul: log the promotion as a top-severity event so the
+  // Notifications app surfaces it on next login. (The live confetti
+  // modal goes through MessageType.RANK_UP on the Colyseus path.)
+  if (result.rankBefore !== result.rankAfter && result.rankAfter) {
+    addEvent('rank_up', wallet, {
+      from: result.rankBefore, to: result.rankAfter, lifetime: result.lifetime,
+    }, 'major');
+  }
   res.json({
     ok: true,
     item_kind,
     burned: quantity,
     rank_points_gained: result.gained,
     lifetime: result.lifetime,
+    rank_before: result.rankBefore,
+    rank_after: result.rankAfter,
   });
 });
 

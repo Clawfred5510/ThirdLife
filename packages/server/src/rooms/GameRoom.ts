@@ -63,6 +63,7 @@ import {
   burnLuxuryItems,
   getLastSettledTick,
   setLastSettledTick,
+  bumpAgentLifetimeStats,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -527,14 +528,10 @@ export class GameRoom extends Room<GameState> {
       });
       client.send(MessageType.ITEM_UPDATE, getPlayerItems(ownerId));
 
-      // Broadcast the visual effect to nearby clients (Phase 3 stub —
-      // client-side particle system reacts to this).
-      this.broadcast(MessageType.BURN_EFFECT, {
-        player_id: ownerId,
-        item_kind: data.item_kind,
-        quantity: data.quantity,
-        x: player.x, z: player.z,
-      });
+      // Burn visual particle removed per owner direction 2026-05-20 —
+      // the BURN_EFFECT broadcast was a stub for a column-of-light
+      // particle that's now skipped (perf). The rank-up confetti is the
+      // replacement spectacle, fired below when promotion happens.
 
       addEvent(
         'burn_luxury', ownerId,
@@ -542,6 +539,23 @@ export class GameRoom extends Room<GameState> {
         // Spec §6: global feed announcement when a single burn ≥ 1000 rank points.
         (r.gained ?? 0) >= 1000 ? 'major' : 'minor',
       );
+
+      // UI Overhaul: rank-up celebration. burnLuxuryItems atomically
+      // computes the new rank inside its transaction, so we can detect
+      // the promotion by comparing rankBefore / rankAfter and emit a
+      // dedicated RANK_UP broadcast for the centered confetti modal.
+      if (r.rankBefore !== r.rankAfter && r.rankAfter) {
+        this.broadcast(MessageType.RANK_UP, {
+          player_id: ownerId,
+          from: r.rankBefore,
+          to: r.rankAfter,
+          lifetime: r.lifetime,
+        });
+        addEvent('rank_up', ownerId, {
+          from: r.rankBefore, to: r.rankAfter, lifetime: r.lifetime,
+        }, 'major');
+      }
+
       console.log(`${player.name} burned ${data.quantity}× ${spec.label} (+${r.gained} rank, lifetime ${r.lifetime})`);
     });
 
@@ -1081,13 +1095,19 @@ export class GameRoom extends Room<GameState> {
 
       const allAgents = getAllAgents();
       const activeAgentsByOwner = new Map<string, typeof allAgents>();
-      const produceAgentsByParcel = new Map<number, number>();
-      const craftAgentsByParcel = new Map<number, number>();
-      // Phase 6: work-role agents at luxury buildings earn WORK_WAGE_AMETA
-      // _PER_TICK into the AGENT's balance (owner reclaims via /allocate).
-      // Indexed by owner wallet here so the per-player settle loop can
-      // pay them all in one pass.
-      const wageAgentsByOwner = new Map<string, string[]>();
+      // UI Overhaul: track agent IDs (not just counts) per parcel so we
+      // can attribute lifetime stats per agent inside the production
+      // + crafting loops.
+      const produceAgentsByParcel = new Map<number, string[]>();
+      const craftAgentsByParcel = new Map<number, string[]>();
+      // UI Overhaul (2026-05-20): work-role agents at luxury buildings
+      // pay WORK_WAGE_AMETA_PER_TICK to the AGENT'S OWNER WALLET directly
+      // (the /allocate fund-and-reclaim dance is retired). For cross-
+      // player Stage-3 hires, the parcel owner pays the agent owner;
+      // self-employment is server-funded (NPC employer abstraction).
+      // Tracked as a list of {agentId, agentOwner, parcelOwner} so the
+      // settlement pass can route per-pair.
+      const wagePairs: Array<{ agentId: string; agentOwner: string; parcelOwner: string }> = [];
 
       for (const a of allAgents) {
         if (a.dormant_at_tick != null) continue;
@@ -1126,22 +1146,25 @@ export class GameRoom extends Room<GameState> {
 
         if (isProduction) {
           if (a.role === 'craft') {
-            craftAgentsByParcel.set(
-              a.workplace_parcel_id,
-              (craftAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
-            );
+            const list = craftAgentsByParcel.get(a.workplace_parcel_id) ?? [];
+            list.push(a.id);
+            craftAgentsByParcel.set(a.workplace_parcel_id, list);
           } else {
             // role='produce' or 'work' both produce the resource at
             // production buildings.
-            produceAgentsByParcel.set(
-              a.workplace_parcel_id,
-              (produceAgentsByParcel.get(a.workplace_parcel_id) ?? 0) + 1,
-            );
+            const list = produceAgentsByParcel.get(a.workplace_parcel_id) ?? [];
+            list.push(a.id);
+            produceAgentsByParcel.set(a.workplace_parcel_id, list);
           }
         } else if (isLuxury && a.role === 'work' && a.owner_wallet) {
-          const list = wageAgentsByOwner.get(a.owner_wallet) ?? [];
-          list.push(a.id);
-          wageAgentsByOwner.set(a.owner_wallet, list);
+          const parcelOwner = parcel.owner_id ?? '';
+          if (parcelOwner) {
+            wagePairs.push({
+              agentId: a.id,
+              agentOwner: a.owner_wallet,
+              parcelOwner,
+            });
+          }
         }
       }
 
@@ -1150,8 +1173,8 @@ export class GameRoom extends Room<GameState> {
         parcelId: number;
         category: BuildingCategory;
         tier: number;
-        produceAgents: number;
-        craftAgents: number;
+        produceAgentIds: string[];
+        craftAgentIds: string[];
         itemKind: LuxuryItemKind | null;
       }
       interface OwnerBucket {
@@ -1184,8 +1207,8 @@ export class GameRoom extends Room<GameState> {
             parcelId: row.id,
             category: spec.category,
             tier: spec.tier,
-            produceAgents: produceAgentsByParcel.get(row.id) ?? 0,
-            craftAgents: craftAgentsByParcel.get(row.id) ?? 0,
+            produceAgentIds: produceAgentsByParcel.get(row.id) ?? [],
+            craftAgentIds: craftAgentsByParcel.get(row.id) ?? [],
             itemKind: ITEM_FOR_BUILDING[bt] ?? null,
           });
         } else if (emitsPassiveLuxury(bt)) {
@@ -1206,6 +1229,16 @@ export class GameRoom extends Room<GameState> {
         const resources = getPlayerResources(ownerId);
 
         const itemDeltas = new Map<LuxuryItemKind, number>();
+        // Per-agent stats accumulated this tick — flushed to DB + sent
+        // as craft events at the end of the player's settlement.
+        interface CraftMint {
+          agentId: string;
+          parcelId: number;
+          itemKind: LuxuryItemKind;
+          quantity: number;
+        }
+        const tickCraftMints: CraftMint[] = [];
+
         if (bucket) {
           // Producing buildings: gated by current energy pool. Sort by
           // parcelId so the priority is deterministic (oldest parcel
@@ -1220,34 +1253,43 @@ export class GameRoom extends Room<GameState> {
           for (let i = 0; i < poweredCount; i++) {
             const p = sorted[i];
             const mult = TIER_MULTIPLIER[p.tier - 1] ?? 0;
+            const produceAgentCount = p.produceAgentIds.length;
             // Production: every produce-agent + the base passive.
-            const produceOut = mult * (1 + p.produceAgents);
-            if (p.category === 'food')           resources.food      += produceOut;
-            else if (p.category === 'materials') resources.materials += produceOut;
-            else if (p.category === 'energy')    resources.energy    += produceOut;
+            const produceOut = mult * (1 + produceAgentCount);
+            const resourceKey: 'food' | 'materials' | 'energy' =
+              p.category === 'food' ? 'food'
+              : p.category === 'materials' ? 'materials'
+              : 'energy';
+            resources[resourceKey] += produceOut;
 
-            // Crafting: each craft-agent consumes CRAFT_RESOURCES_PER_ITEM
-            // × tier_multiplier of the building's input resource per tick
-            // and mints `tier_multiplier` items. Per spec §4: "If a
-            // building lacks its required 1 energy for a tick … no agents
-            // assigned to that building can craft either" — already
-            // guaranteed because we're inside the powered-count block.
-            if (p.craftAgents > 0 && p.itemKind) {
-              for (let c = 0; c < p.craftAgents; c++) {
+            // Lifetime attribution: base output isn't attributed to any
+            // agent; each produce agent gets `mult` per tick.
+            for (const aid of p.produceAgentIds) {
+              bumpAgentLifetimeStats(aid, { resources: { [resourceKey]: mult } });
+            }
+
+            // Crafting: each craft-agent atomically tries to consume
+            // CRAFT_RESOURCES_PER_ITEM × tier_multiplier of the building's
+            // input resource. If it can't afford this tick, it idles and
+            // mints nothing — items only appear after the resource is
+            // successfully debited, per owner clarification 2026-05-20.
+            if (p.craftAgentIds.length > 0 && p.itemKind) {
+              for (const aid of p.craftAgentIds) {
                 const itemsThisAgent = mult;
                 const cost = CRAFT_RESOURCES_PER_ITEM * itemsThisAgent;
-                let available: number;
-                if (p.category === 'food')      available = resources.food;
-                else if (p.category === 'materials') available = resources.materials;
-                else /* energy */               available = resources.energy;
-                if (available < cost) break; // idle this agent; rest can also try
-                if (p.category === 'food')           resources.food      -= cost;
-                else if (p.category === 'materials') resources.materials -= cost;
-                else if (p.category === 'energy')    resources.energy    -= cost;
+                if (resources[resourceKey] < cost) continue; // idle this agent
+                resources[resourceKey] -= cost;
                 itemDeltas.set(
                   p.itemKind,
                   (itemDeltas.get(p.itemKind) ?? 0) + itemsThisAgent,
                 );
+                bumpAgentLifetimeStats(aid, { items: { [p.itemKind]: itemsThisAgent } });
+                tickCraftMints.push({
+                  agentId: aid,
+                  parcelId: p.parcelId,
+                  itemKind: p.itemKind,
+                  quantity: itemsThisAgent,
+                });
               }
             }
           }
@@ -1272,23 +1314,22 @@ export class GameRoom extends Room<GameState> {
           const client = this.clients.find((c) => c.sessionId === sessionId);
           if (client) client.send(MessageType.ITEM_UPDATE, allItems);
         }
-
-        // ── Phase 6 work wages ───────────────────────────────────────
-        // Per spec §4 + §9 (with owner clarification 2026-05-20):
-        // every active in-game agent with role='work' assigned to a
-        // luxury Housing or Civic building earns WORK_WAGE_AMETA_PER_TICK
-        // into the AGENT's balance. The owner reclaims via /allocate
-        // 'reclaim'. Server-funded (no counterparty wallet is debited).
-        const myWageAgentIds = wageAgentsByOwner.get(ownerId) ?? [];
-        if (myWageAgentIds.length > 0) {
-          for (const agentId of myWageAgentIds) {
-            const cur = getPlayerCreditsFromDb(agentId);
-            updatePlayerCredits(agentId, cur + WORK_WAGE_AMETA_PER_TICK);
-          }
-          // GDP attribution: aggregate wage emission this tick for this
-          // wallet so the world stat reflects work-role income.
-          recordGdp(myWageAgentIds.length * WORK_WAGE_AMETA_PER_TICK);
+        // Emit a craft event per mint so the Notifications app can show
+        // "your Lapidarist crafted 1 Cut Gemstone at Mine #42". Severity
+        // 'normal' keeps it visible in the default filter.
+        for (const m of tickCraftMints) {
+          addEvent('craft_item', ownerId, {
+            agent_id: m.agentId,
+            parcel: m.parcelId,
+            item_kind: m.itemKind,
+            quantity: m.quantity,
+          }, 'normal');
         }
+
+        // (Wage settlement moved out of the per-player loop — see the
+        // wage-pass block below the forEach, which processes cross-
+        // player pairs atomically and refreshes connected-player credits
+        // here once the writes are settled.)
 
         // ── Phase 2 starvation state machine ─────────────────────────
         // Each active (non-dormant) agent eats 1 food/tick. If the pool
@@ -1329,6 +1370,50 @@ export class GameRoom extends Room<GameState> {
           client.send(MessageType.RESOURCE_UPDATE, resources);
         }
       });
+
+      // ── UI Overhaul: wage settlement (post per-player loop) ──────
+      // Wages always go to the AGENT'S OWNER WALLET directly (no agent
+      // balance + reclaim dance). For self-employment (parcel owner ==
+      // agent owner), the server funds the wage. For cross-player
+      // hires (Stage 3 spec §3), the PARCEL OWNER pays the AGENT
+      // OWNER — that's the integral "payment received even if an
+      // agent works at another user's properties" rule. If the parcel
+      // owner can't afford the wage, no pay this tick (silent fail).
+      const walletsTouchedByWages = new Set<string>();
+      let totalWageGdp = 0;
+      for (const pair of wagePairs) {
+        if (pair.agentOwner === pair.parcelOwner) {
+          const cur = getPlayerCreditsFromDb(pair.agentOwner);
+          updatePlayerCredits(pair.agentOwner, cur + WORK_WAGE_AMETA_PER_TICK);
+          bumpAgentLifetimeStats(pair.agentId, { wages: WORK_WAGE_AMETA_PER_TICK });
+          walletsTouchedByWages.add(pair.agentOwner);
+          totalWageGdp += WORK_WAGE_AMETA_PER_TICK;
+        } else {
+          const parcelOwnerCredits = getPlayerCreditsFromDb(pair.parcelOwner);
+          if (parcelOwnerCredits < WORK_WAGE_AMETA_PER_TICK) continue;
+          updatePlayerCredits(pair.parcelOwner, parcelOwnerCredits - WORK_WAGE_AMETA_PER_TICK);
+          const agentOwnerCredits = getPlayerCreditsFromDb(pair.agentOwner);
+          updatePlayerCredits(pair.agentOwner, agentOwnerCredits + WORK_WAGE_AMETA_PER_TICK);
+          bumpAgentLifetimeStats(pair.agentId, { wages: WORK_WAGE_AMETA_PER_TICK });
+          walletsTouchedByWages.add(pair.agentOwner);
+          walletsTouchedByWages.add(pair.parcelOwner);
+          // Cross-player wage is a transfer, not new GDP — no recordGdp.
+        }
+      }
+      if (totalWageGdp > 0) recordGdp(totalWageGdp);
+
+      // Push CREDITS_UPDATE to any connected player whose wallet just
+      // moved (paid or received). Also refreshes the cached PlayerData
+      // credits field so subsequent server-side reads are consistent.
+      if (walletsTouchedByWages.size > 0) {
+        this.players.forEach((player, sessionId) => {
+          if (!walletsTouchedByWages.has(player.id)) return;
+          const fresh = getPlayerCreditsFromDb(player.id);
+          player.credits = fresh;
+          const client = this.clients.find((c) => c.sessionId === sessionId);
+          if (client) client.send(MessageType.CREDITS_UPDATE, { credits: fresh });
+        });
+      }
     }
 
     // ---- Job system tick (gated by FEATURE_JOBS) ----

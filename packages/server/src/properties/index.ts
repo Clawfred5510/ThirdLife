@@ -47,9 +47,17 @@ const SPEC_BY_BUILDING: Record<string, UnitSpec | undefined> = {
   office: OFFICE_SPEC,
 };
 
-/** True if this building type generates sub-units. */
-export function buildingHasUnits(buildingType: string): boolean {
-  return Boolean(SPEC_BY_BUILDING[buildingType]);
+/** True if this building type generates sub-units.
+ *
+ *  UI Overhaul (2026-05-20): the Phase C sub-unit system was scrapped
+ *  per owner direction. This function now always returns false so newly
+ *  built apartments / offices don't seed studio/office sub-units. Any
+ *  pre-existing sub-units in the DB continue to function (legacy
+ *  income still ticks via tickPropertyIncome) but no new ones are
+ *  created. The module's read paths stay in place so the Phone can
+ *  hide the Properties tab gracefully — no schema migration needed. */
+export function buildingHasUnits(_buildingType: string): boolean {
+  return false;
 }
 
 /** Penthouse premium: top-floor, last-unit pays 1.5× the floor income. */

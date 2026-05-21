@@ -14,6 +14,14 @@ function propertyFee(gross: number): number {
   return Math.floor((gross * PROPERTY_FEE_BPS) / BPS_DENOMINATOR);
 }
 
+/** Parse a JSON object column safely. Returns {} on null / malformed input. */
+function safeJsonObj(s: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(s);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch { return {}; }
+}
+
 const RESERVED_SET = new Set<number>(RESERVED_PARCEL_IDS);
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -144,6 +152,16 @@ interface DBBackend {
    *  state was settled. 0 = never. */
   getLastSettledTick(playerId: string): number;
   setLastSettledTick(playerId: string, tick: number): void;
+  /** UI Overhaul: per-agent lifetime stats for the 3D click popup. */
+  bumpAgentLifetimeStats(
+    agentId: string,
+    delta: { wages?: number; resources?: Record<string, number>; items?: Record<string, number> },
+  ): void;
+  getAgentLifetimeStats(agentId: string): {
+    wages: number;
+    resources: Record<string, number>;
+    items: Record<string, number>;
+  };
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   /** Reputation tick: every owned shop consumes 1 luxury, owner gains
@@ -254,6 +272,20 @@ class SQLiteDatabase implements DBBackend {
     // at MAX_OFFLINE_TICKS so sleep doesn't reward unbounded.
     try {
       this.db.exec(`ALTER TABLE players ADD COLUMN last_settled_tick INTEGER DEFAULT 0`);
+    } catch (_) { /* exists */ }
+
+    // UI Overhaul (2026-05-20): per-agent lifetime production stats —
+    // surfaced on the 3D agent-click popup so owners can see what each
+    // agent has contributed across its life. JSON blob keeps the schema
+    // future-proof for new metric kinds without a migration.
+    try {
+      this.db.exec(`ALTER TABLE agents ADD COLUMN lifetime_wages_earned INTEGER DEFAULT 0`);
+    } catch (_) { /* exists */ }
+    try {
+      this.db.exec(`ALTER TABLE agents ADD COLUMN lifetime_resources_produced TEXT`);
+    } catch (_) { /* exists */ }
+    try {
+      this.db.exec(`ALTER TABLE agents ADD COLUMN lifetime_items_crafted TEXT`);
     } catch (_) { /* exists */ }
 
     // Building type on parcels (apartment, house, shop, farm, etc.)
@@ -1038,6 +1070,39 @@ class SQLiteDatabase implements DBBackend {
     this.db.prepare(`UPDATE players SET last_settled_tick = ? WHERE id = ?`).run(tick, playerId);
   }
 
+  bumpAgentLifetimeStats(
+    agentId: string,
+    delta: { wages?: number; resources?: Record<string, number>; items?: Record<string, number> },
+  ): void {
+    const row = this.db.prepare(
+      `SELECT lifetime_wages_earned AS w, lifetime_resources_produced AS r, lifetime_items_crafted AS i FROM agents WHERE id = ?`,
+    ).get(agentId) as { w: number | null; r: string | null; i: string | null } | undefined;
+    if (!row) return;
+    const newWages = (row.w ?? 0) + (delta.wages ?? 0);
+    const curRes = row.r ? safeJsonObj(row.r) : {};
+    if (delta.resources) {
+      for (const [k, v] of Object.entries(delta.resources)) curRes[k] = (curRes[k] ?? 0) + v;
+    }
+    const curItems = row.i ? safeJsonObj(row.i) : {};
+    if (delta.items) {
+      for (const [k, v] of Object.entries(delta.items)) curItems[k] = (curItems[k] ?? 0) + v;
+    }
+    this.db.prepare(
+      `UPDATE agents SET lifetime_wages_earned = ?, lifetime_resources_produced = ?, lifetime_items_crafted = ? WHERE id = ?`,
+    ).run(newWages, JSON.stringify(curRes), JSON.stringify(curItems), agentId);
+  }
+
+  getAgentLifetimeStats(agentId: string) {
+    const row = this.db.prepare(
+      `SELECT lifetime_wages_earned AS w, lifetime_resources_produced AS r, lifetime_items_crafted AS i FROM agents WHERE id = ?`,
+    ).get(agentId) as { w: number | null; r: string | null; i: string | null } | undefined;
+    return {
+      wages: row?.w ?? 0,
+      resources: row?.r ? safeJsonObj(row.r) : {},
+      items: row?.i ? safeJsonObj(row.i) : {},
+    };
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
@@ -1545,6 +1610,21 @@ class MemoryDB implements DBBackend {
     this.lastSettledByPlayer.set(playerId, tick);
   }
 
+  private agentStats = new Map<string, { wages: number; resources: Record<string, number>; items: Record<string, number> }>();
+  bumpAgentLifetimeStats(
+    agentId: string,
+    delta: { wages?: number; resources?: Record<string, number>; items?: Record<string, number> },
+  ): void {
+    const cur = this.agentStats.get(agentId) ?? { wages: 0, resources: {}, items: {} };
+    cur.wages += delta.wages ?? 0;
+    if (delta.resources) for (const [k, v] of Object.entries(delta.resources)) cur.resources[k] = (cur.resources[k] ?? 0) + v;
+    if (delta.items)     for (const [k, v] of Object.entries(delta.items))     cur.items[k]     = (cur.items[k]     ?? 0) + v;
+    this.agentStats.set(agentId, cur);
+  }
+  getAgentLifetimeStats(agentId: string) {
+    return this.agentStats.get(agentId) ?? { wages: 0, resources: {}, items: {} };
+  }
+
   setAgentWorkplace(agentId: string, parcelId: number | null): void {
     for (const a of this.agents.values()) {
       if (a.id === agentId) { a.workplace_parcel_id = parcelId; return; }
@@ -1745,6 +1825,13 @@ export function setPlayerRank(playerId: string, rank: string | null) {
 export function getLastSettledTick(playerId: string) { return backend.getLastSettledTick(playerId); }
 export function setLastSettledTick(playerId: string, tick: number) {
   backend.setLastSettledTick(playerId, tick);
+}
+export function bumpAgentLifetimeStats(
+  agentId: string,
+  delta: { wages?: number; resources?: Record<string, number>; items?: Record<string, number> },
+) { backend.bumpAgentLifetimeStats(agentId, delta); }
+export function getAgentLifetimeStats(agentId: string) {
+  return backend.getAgentLifetimeStats(agentId);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function tickReputation() { return backend.tickReputation(); }
