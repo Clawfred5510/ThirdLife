@@ -189,6 +189,15 @@ export class GameRoom extends Room<GameState> {
       const player = this.players.get(client.sessionId);
       const senderName = player?.name ?? 'Unknown';
 
+      // Test-build chat commands. Gated on TEST_BALANCE so prod never
+      // exposes them — TEST_BALANCE is only set on the Railway test
+      // server (per CLAUDE.md), the same flag that grants 10M $AMETA
+      // on every login.
+      if (text.startsWith('/') && process.env.TEST_BALANCE) {
+        const handled = this.handleTestCommand(client, text);
+        if (handled) return;
+      }
+
       this.broadcast(MessageType.CHAT, {
         senderId: this.pid(client.sessionId),
         senderName,
@@ -953,6 +962,65 @@ export class GameRoom extends Room<GameState> {
         if (!initial) this.broadcast(MessageType.PLAYER_LEAVE, { id });
       }
     }
+  }
+
+  /**
+   * Test-build chat command dispatcher.
+   *
+   * Returns true when the message was consumed by a command and
+   * should NOT be re-broadcast as normal chat. Caller already
+   * gated on TEST_BALANCE so this method assumes test mode.
+   *
+   * Supported commands:
+   *   /skip [N]       — fast-forward N income ticks (default 1, max 1000).
+   *                     Each iteration calls update(INCOME_TICK_MS) which
+   *                     re-runs the full tick body (production, wages,
+   *                     consumption, crafting, autopilot, etc).
+   *   /tick           — alias for /skip 1.
+   *   /help           — list available test commands.
+   */
+  private handleTestCommand(client: Client, text: string): boolean {
+    const [cmd, ...rest] = text.slice(1).split(/\s+/);
+    const lower = cmd.toLowerCase();
+    const replyTo = (msg: string) => {
+      client.send(MessageType.CHAT, {
+        senderId: 'system',
+        senderName: 'TEST',
+        text: msg,
+      });
+    };
+
+    if (lower === 'skip' || lower === 'tick') {
+      const raw = rest[0];
+      const parsed = raw == null ? 1 : Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        replyTo(`Usage: /skip <N>  (1..1000). Got "${raw}".`);
+        return true;
+      }
+      const n = Math.min(1000, Math.floor(parsed));
+      const start = Date.now();
+      const startTick = getWorldTick();
+      for (let i = 0; i < n; i++) {
+        try {
+          this.update(INCOME_TICK_MS);
+        } catch (err) {
+          console.error(`[/skip] tick ${i + 1}/${n} threw:`, err);
+          replyTo(`Aborted at tick ${i + 1}/${n}: ${(err as Error).message}`);
+          return true;
+        }
+      }
+      const elapsed = Date.now() - start;
+      const endTick = getWorldTick();
+      replyTo(`Skipped ${n} tick${n === 1 ? '' : 's'} (world ${startTick} → ${endTick}) in ${elapsed}ms.`);
+      return true;
+    }
+
+    if (lower === 'help') {
+      replyTo('Test commands: /skip [N], /tick, /help');
+      return true;
+    }
+
+    return false;
   }
 
   update(deltaTime: number) {
