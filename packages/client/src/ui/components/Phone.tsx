@@ -1869,10 +1869,9 @@ const RankBody: React.FC = () => {
       </div>
 
       <div style={S.rankHint}>
-        Every luxury you earn — whether produced passively by your Housing/Civic
-        buildings or gained by using a luxury item — adds to your lifetime total.
+        Rank progress comes from two sources: passive luxury produced by your
+        Housing and Civic buildings, and the luxury value of items you use.
         Higher ranks unlock more agents, more land, and lower marketplace fees.
-        (Luxury bought on the market does not count.)
       </div>
     </div>
   );

@@ -1480,13 +1480,13 @@ export class GameRoom extends Room<GameState> {
 
           // UI Overhaul (rank model change 2026-05-20):
           // Rank progress now tracks lifetime luxury *earned*, not only
-          // luxury *spent via items*. Fold this tick's production luxury
-          // (passive housing/civic + legacy luxury rate) into the same
-          // counter that powers the Rank app + bottom progress bar.
-          // Market buys are intentionally NOT counted — only luxury you
-          // produced from your own holdings advances rank, so the loop
-          // can't be cheesed by purchasing and reselling luxury.
-          const producedLuxury = bucket.passiveLuxury + bucket.legacyAdd.luxury;
+          // luxury *spent via items*. Only the canonical luxury chain
+          // counts: passive emission from Housing/Civic buildings + the
+          // luxury value of items used (via burnLuxuryItems). Legacy
+          // building luxury credits resources.luxury but does NOT count
+          // toward rank — those buildings will be removed once their
+          // owners demolish/rebuild. Market buys also don't count.
+          const producedLuxury = bucket.passiveLuxury;
           if (producedLuxury > 0) {
             const r2 = bumpLifetimeLuxury(ownerId, producedLuxury);
             if (r2.rankBefore !== r2.rankAfter && r2.rankAfter) {
