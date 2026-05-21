@@ -881,8 +881,12 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
               needed. The endpoints stay on the server for back-compat
               but are hidden from the UI. */}
           {!agent.is_external && (
-            <button onClick={() => setMode('reassign')} style={S.reclaimBtn}>
-              Reassign
+            <button
+              onClick={() => setMode('reassign')}
+              style={S.relocateBtn}
+              aria-label={`Relocate ${agent.name} to a different building`}
+            >
+              📍 Relocate
             </button>
           )}
           <button onClick={() => setMode('confirm_delete')} style={S.dangerBtn} aria-label={`Remove ${agent.name}`}>
@@ -1087,7 +1091,7 @@ const ReassignModal: React.FC<{
     <div style={S.modalScrim} onClick={onClose}>
       <div style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalTitle}>
-          Reassign {agent.name} — step {stepNumber} of 3
+          📍 Relocate {agent.name} — step {stepNumber} of 3
         </div>
 
         {step === 'category' && (
@@ -1178,7 +1182,7 @@ const ReassignModal: React.FC<{
             <div style={S.modalActions}>
               <button onClick={() => setStep('detail')} style={S.cancelTextBtn}>back</button>
               <button onClick={submit} disabled={busy} style={S.submit}>
-                {busy ? '…' : 'Reassign'}
+                {busy ? '…' : 'Relocate'}
               </button>
             </div>
           </>
@@ -2605,6 +2609,16 @@ const S: Record<string, React.CSSProperties> = {
     background: 'rgba(216,148,56,0.18)', color: '#D89438',
     borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.30)',
     borderRadius: 4, cursor: 'pointer',
+  },
+  // Relocate is the primary action on each in-game agent card —
+  // brighter than the old reclaim styling so it's spottable next to
+  // the destructive Remove button.
+  relocateBtn: {
+    flex: 1, padding: '6px 10px', fontSize: 12, fontWeight: 700,
+    letterSpacing: 0.3,
+    background: 'rgba(63,122,61,0.22)', color: '#9FD89A',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(159,216,154,0.5)',
+    borderRadius: 5, cursor: 'pointer',
   },
   dangerBtn: {
     flex: 1, padding: '5px 8px', fontSize: 11, fontWeight: 600,
