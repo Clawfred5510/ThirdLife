@@ -990,34 +990,30 @@ export class MainScene {
     }
     remote.root.rotation.y = yaw;
 
-    // Server reconciliation: hard-snap ONLY on catastrophic desync.
+    // Server reconciliation: local player is authoritative for X/Z.
     //
-    // Threshold is intentionally generous (60 units ≈ 3s of sprint) because
-    // legitimate prediction drift can briefly cross 25 units when:
-    //   - the browser frame stalls (GC pause, tab refocus)
-    //   - the user rotates the camera fast while moving (server's `forward`
-    //     direction lags one input-tick behind client's)
-    //   - the network briefly buffers inputs
-    // A small drift left uncorrected is invisible; a snap-back to a stale
-    // server position is very visible. Bias toward never snapping.
-    //
-    // Soft per-frame lerping was tried and caused visible sway at start/
-    // stop of movement (server is ~1 tick behind during accel, ~1 tick
-    // ahead after a stop). Hard snap on catastrophic-only is the right
-    // tradeoff.
-    //
-    // Telemetry: log snaps to console so we can observe frequency in prod.
-    // Each entry: delta magnitude + which axis dominates.
+    // The 60-unit hard-snap was causing visible teleport-back-by-a-parcel
+    // any time the server's tick body stalled (income tick, /skip burst)
+    // or the client's main thread briefly froze (GLB load, GC pause).
+    // The server has no collision detection or anti-cheat for movement
+    // anyway — local prediction is effectively authoritative, and the
+    // server's PLAYER_STATE broadcast lags by ~100ms + RTT, so a
+    // strict catch-up snap can only ever pull the player to a stale
+    // position. Instead, just log catastrophic desyncs for telemetry
+    // and let local prediction stand. Future authoritative corrections
+    // (admin teleport, fast-travel, etc.) go through dedicated messages
+    // (FAST_TRAVEL, CREDITS_UPDATE-style) — not through this passive
+    // reconciliation.
     if (getSessionId()) {
       const tx = remote.targetX, tz = remote.targetZ;
       const dxRec = tx - remote.root.position.x;
       const dzRec = tz - remote.root.position.z;
       const distSq = dxRec * dxRec + dzRec * dzRec;
-      if (distSq > 60 * 60) {
+      if (distSq > 200 * 200) {
+        // Catastrophic — log only; no snap. Useful for spotting
+        // pathological server stalls in prod telemetry.
         const dist = Math.sqrt(distSq);
-        console.warn(`[reconcile] snap ${dist.toFixed(1)}u back to server (dx=${dxRec.toFixed(1)}, dz=${dzRec.toFixed(1)})`);
-        remote.root.position.x = tx;
-        remote.root.position.z = tz;
+        console.warn(`[reconcile] desync ${dist.toFixed(1)}u (dx=${dxRec.toFixed(1)}, dz=${dzRec.toFixed(1)}) — NOT snapping; trusting local prediction`);
       }
     }
   }
