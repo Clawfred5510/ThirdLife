@@ -7,15 +7,24 @@ import {
   BUILDING_LIST,
   BuildingType,
   RESERVED_PARCEL_IDS,
+  TIER_INDEX,
+  TIER_NAMES,
+  Tier,
 } from '@gamestu/shared';
 import {
   sendClaimParcel,
   sendUpdateBusiness,
   sendDemolish,
   onCreditsUpdate,
+  onRankUp,
   getSessionId,
 } from '../../network/Client';
+import { apiGet, hasAuthToken } from '../../network/api';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+
+const TIER_LABEL: Record<Tier, string> = {
+  bronze: 'Bronze', silver: 'Silver', gold: 'Gold', platinum: 'Platinum', diamond: 'Diamond',
+};
 
 // ── Module-level selection state ────────────────────────────────────────────
 // MainScene calls these functions when a parcel is clicked.
@@ -43,6 +52,10 @@ export const ParcelPanel: React.FC = () => {
   const [editType, setEditType] = useState('');
   const [message, setMessage] = useState('');
   const [pickedBuilding, setPickedBuilding] = useState<BuildingType>('apartment');
+  const [resources, setResources] = useState<{ food: number; materials: number; energy: number; luxury: number }>(
+    { food: 0, materials: 0, energy: 0, luxury: 0 },
+  );
+  const [rank, setRank] = useState<Tier>('bronze');
 
   const sessionId = getSessionId();
 
@@ -60,6 +73,35 @@ export const ParcelPanel: React.FC = () => {
   useEffect(() => {
     const unsub = onCreditsUpdate((c: number) => setCredits(c));
     return unsub;
+  }, []);
+
+  // Mirror the resource bar's data + the player's rank so the build
+  // picker can grey buttons that don't pass the materials / rank check
+  // and explain why on the status line below the grid.
+  useEffect(() => {
+    const onResources = (e: Event) => {
+      const detail = (e as CustomEvent<typeof resources>).detail;
+      if (detail) setResources(detail);
+    };
+    window.addEventListener('resource-update', onResources);
+    return () => window.removeEventListener('resource-update', onResources);
+  }, []);
+
+  useEffect(() => {
+    if (!hasAuthToken()) return;
+    let cancelled = false;
+    const refreshRank = () => {
+      apiGet<{ rank: Tier | null }>('/wallet/rank', { authed: true })
+        .then((r) => { if (!cancelled && r.rank) setRank(r.rank); })
+        .catch(() => {});
+    };
+    refreshRank();
+    const off = onRankUp((e) => {
+      // Server-pushed rank promotion — flip the local state immediately
+      // so a newly-eligible building unlocks the moment confetti fires.
+      if (e.to) setRank(e.to as Tier);
+    });
+    return () => { cancelled = true; off(); };
   }, []);
 
   const parcel = selectedParcelData;
@@ -203,27 +245,44 @@ export const ParcelPanel: React.FC = () => {
           >
             {BUILDING_LIST.filter((b) => b.category !== 'legacy').map((b) => {
               const total = b.cost + CLAIM_COST;
-              const affordable = credits >= total;
+              const enoughCredits = credits >= total;
+              const enoughMaterials = b.materialCost === 0 || resources.materials >= b.materialCost;
+              const rankOk = TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
+              const canBuild = enoughCredits && enoughMaterials && rankOk;
               const selected = pickedBuilding === b.type;
+              // Tooltip lists every blocker so the player knows what to fix.
+              const blockers: string[] = [];
+              if (!rankOk) blockers.push(`Requires ${TIER_LABEL[b.minRank]} rank`);
+              if (!enoughCredits) blockers.push(`Need ${(total - credits).toLocaleString()} more $${CURRENCY_NAME}`);
+              if (!enoughMaterials) blockers.push(`Need ${(b.materialCost - resources.materials).toLocaleString()} more materials`);
+              const title = canBuild
+                ? `${b.label} · Tier ${b.tier} · ${total.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`
+                : `${b.label} — ${blockers.join(' · ')}`;
               return (
                 <button
                   key={b.type}
                   role="radio"
                   aria-checked={selected}
-                  aria-label={`${b.label}, Tier ${b.tier}, total ${total.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`}
-                  disabled={!affordable}
+                  aria-label={title}
+                  title={title}
+                  disabled={!canBuild}
                   onClick={() => setPickedBuilding(b.type)}
                   style={{
-                    background: selected ? '#facc15' : (affordable ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'),
-                    color: selected ? '#1a1409' : (affordable ? '#e0e0e0' : 'rgba(224,224,224,0.4)'),
-                    border: selected ? '1px solid #facc15' : '1px solid rgba(255,255,255,0.15)',
+                    background: selected
+                      ? '#facc15'
+                      : (canBuild ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'),
+                    color: selected ? '#1a1409' : (canBuild ? '#e0e0e0' : 'rgba(224,224,224,0.35)'),
+                    border: selected
+                      ? '1px solid #facc15'
+                      : (!rankOk ? '1px solid rgba(181,86,58,0.45)' : '1px solid rgba(255,255,255,0.15)'),
                     borderRadius: 4,
                     padding: '6px 4px',
                     fontSize: 10,
                     fontFamily: 'monospace',
-                    cursor: affordable ? 'pointer' : 'not-allowed',
+                    cursor: canBuild ? 'pointer' : 'not-allowed',
                     textAlign: 'center',
                     lineHeight: 1.3,
+                    position: 'relative',
                   }}
                 >
                   <div style={{ fontWeight: 'bold' }}>{b.label}</div>
@@ -232,12 +291,60 @@ export const ParcelPanel: React.FC = () => {
                   </div>
                   <div style={{ opacity: 0.75, fontSize: 9 }}>{b.cost.toLocaleString()}</div>
                   {b.materialCost > 0 && (
-                    <div style={{ opacity: 0.6, fontSize: 8 }}>+{b.materialCost.toLocaleString()} mat</div>
+                    <div style={{
+                      opacity: enoughMaterials ? 0.6 : 0.9,
+                      fontSize: 8,
+                      color: enoughMaterials ? '#e0e0e0' : '#fca5a5',
+                    }}>
+                      +{b.materialCost.toLocaleString()} mat
+                    </div>
+                  )}
+                  {!rankOk && (
+                    <div style={{
+                      position: 'absolute', top: 2, right: 3,
+                      fontSize: 7, fontWeight: 700,
+                      color: '#fca5a5', letterSpacing: 0.4,
+                    }}>
+                      🔒 {TIER_LABEL[b.minRank].slice(0, 3).toUpperCase()}
+                    </div>
                   )}
                 </button>
               );
             })}
           </div>
+          {/* Selected-building status line — explains every blocker so
+              the player isn't left guessing why the Claim & Build button
+              is disabled. */}
+          {(() => {
+            const b = BUILDINGS[pickedBuilding];
+            if (!b) return null;
+            const total = b.cost + CLAIM_COST;
+            const blockers: string[] = [];
+            if (TIER_INDEX[rank] < TIER_INDEX[b.minRank]) {
+              blockers.push(`Requires ${TIER_LABEL[b.minRank]} rank (you are ${TIER_LABEL[rank]})`);
+            }
+            if (credits < total) {
+              blockers.push(`Need ${(total - credits).toLocaleString()} more $${CURRENCY_NAME}`);
+            }
+            if (b.materialCost > 0 && resources.materials < b.materialCost) {
+              blockers.push(`Need ${(b.materialCost - resources.materials).toLocaleString()} more materials (you have ${Math.floor(resources.materials).toLocaleString()})`);
+            }
+            if (blockers.length === 0) return null;
+            return (
+              <div style={{
+                fontSize: 11,
+                color: '#fca5a5',
+                background: 'rgba(181,86,58,0.10)',
+                borderLeft: '2px solid #B5563A',
+                padding: '4px 6px',
+                marginBottom: 6,
+                borderRadius: 2,
+                lineHeight: 1.35,
+              }}>
+                {blockers.map((b, i) => <div key={i}>• {b}</div>)}
+              </div>
+            );
+          })()}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 12 }}>
               Total: <strong style={{ color: '#facc15' }}>
@@ -247,17 +354,27 @@ export const ParcelPanel: React.FC = () => {
                 (land {CLAIM_COST.toLocaleString()} + {BUILDINGS[pickedBuilding].label.toLowerCase()} {BUILDINGS[pickedBuilding].cost.toLocaleString()})
               </span>
             </span>
-            <button
-              style={{
-                ...buttonStyle,
-                opacity: credits >= (BUILDINGS[pickedBuilding].cost + CLAIM_COST) ? 1 : 0.45,
-                cursor: credits >= (BUILDINGS[pickedBuilding].cost + CLAIM_COST) ? 'pointer' : 'not-allowed',
-              }}
-              onClick={handleClaim}
-              disabled={credits < (BUILDINGS[pickedBuilding].cost + CLAIM_COST)}
-            >
-              Claim &amp; Build
-            </button>
+            {(() => {
+              const b = BUILDINGS[pickedBuilding];
+              const total = b.cost + CLAIM_COST;
+              const canBuild =
+                credits >= total &&
+                (b.materialCost === 0 || resources.materials >= b.materialCost) &&
+                TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
+              return (
+                <button
+                  style={{
+                    ...buttonStyle,
+                    opacity: canBuild ? 1 : 0.45,
+                    cursor: canBuild ? 'pointer' : 'not-allowed',
+                  }}
+                  onClick={handleClaim}
+                  disabled={!canBuild}
+                >
+                  Claim &amp; Build
+                </button>
+              );
+            })()}
           </div>
           <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>
             Your balance: {credits.toLocaleString()} ${CURRENCY_NAME}
