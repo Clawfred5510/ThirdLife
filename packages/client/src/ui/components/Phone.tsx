@@ -36,10 +36,13 @@ const APPS: AppDef[] = [
   { id: 'closet',      label: 'Closet',      icon: '👕', color: '#A8556B' }, // dusty rose
   { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
   { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', color: '#D89438' }, // ochre
-  { id: 'properties',  label: 'Properties',  icon: '🏢', color: '#B5563A' }, // brick
+  // 'properties' (Phase C sub-units) hidden in UI Overhaul 2026-05-20.
+  // The legacy module still exists server-side; nothing new is created.
   { id: 'world2d',     label: 'Map',         icon: '🗺️', color: '#2A5560' }, // teal
   { id: 'governance',  label: 'Decrees',     icon: '🗳️', color: '#7A4F2E' }, // wood
-  { id: 'events',      label: 'Events',      icon: '📜', color: '#D8C4A0' }, // sandstone
+  // UI Overhaul: rename Events → Notifications. The events feed now
+  // also surfaces offline-accrual recap entries and craft notifications.
+  { id: 'events',      label: 'Notifications', icon: '🔔', color: '#D8C4A0' }, // sandstone
 ];
 
 // ── Shared types ──────────────────────────────────────────────────────
@@ -103,8 +106,17 @@ function summarizeEvent(e: EventRow): string {
     case 'build':       return `built ${data.building} on parcel #${data.parcel}`;
     case 'transfer':    return `sent ${data.amount} to ${data.to} (fee ${data.fee ?? 0})`;
     case 'agent_registered': return `registered: ${data.name}`;
-    case 'chat':        return `→ ${data.to}: ${String(data.message ?? '').slice(0, 40)}`;
-    case 'explore':     return `explored parcel #${data.parcel}`;
+    case 'agent_role_changed': return `agent role: ${data.from} → ${data.to}`;
+    case 'agent_revived': return `revived agent (paid ${data.food_paid ?? 100} food)`;
+    case 'burn_luxury': return `burned ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} rank`;
+    case 'rank_up':     return `🎉 RANK UP: ${data.from ?? 'unranked'} → ${data.to}`;
+    case 'craft_item':  return `agent crafted ${data.quantity}× ${data.item_kind} at parcel #${data.parcel}`;
+    case 'offline_accrual': {
+      const t = data.missed_ticks ?? 0;
+      const lux = data.luxury ?? 0;
+      const wages = data.wages ?? 0;
+      return `welcome back — ${t} ticks while away: +${lux} luxury, +${wages} $AMETA wages`;
+    }
     default:            return e.type;
   }
 }
@@ -627,8 +639,7 @@ const AgentsBody: React.FC = () => {
 };
 
 const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent, onChange }) => {
-  const [mode, setMode] = useState<'idle' | 'fund' | 'reclaim' | 'reassign' | 'confirm_delete'>('idle');
-  const [amt, setAmt] = useState<string>('');
+  const [mode, setMode] = useState<'idle' | 'reassign' | 'confirm_delete'>('idle');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -660,22 +671,6 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
         { authed: true },
       );
       onChange();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submit = async () => {
-    setErr(null);
-    const n = parseInt(amt, 10);
-    if (!Number.isFinite(n) || n <= 0) { setErr('Enter a positive integer.'); return; }
-    setBusy(true);
-    try {
-      const endpoint = mode === 'fund' ? 'allocate' : 'reclaim';
-      await apiPost(`/agents/${agent.id}/${endpoint}`, { amount: n }, { authed: true });
-      setAmt(''); setMode('idle'); onChange();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -725,20 +720,23 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           <span style={{ color: '#B5563A' }}>dormant ({agent.starvation_ticks}t)</span>
         </>)}
       </div>
-      {/* Role picker. External agents are market-only and have no role. */}
+      {/* Dormant agents: role picker greyed, big red Revive CTA. */}
+      {agent.dormant && !agent.is_external && (
+        <ReviveButton agent={agent} onRevived={onChange} />
+      )}
+      {/* Role picker. External agents are market-only and have no role.
+       *  Dormant agents see a greyed-out preview only. */}
       {!agent.is_external && (
-        <RoleSwitcher agent={agent} onChange={onChange} setBusy={setBusy} busy={busy} />
+        <div style={{ opacity: agent.dormant ? 0.4 : 1, pointerEvents: agent.dormant ? 'none' : 'auto' }}>
+          <RoleSwitcher agent={agent} onChange={onChange} setBusy={setBusy} busy={busy} />
+        </div>
       )}
       {mode === 'idle' && (
         <div style={S.agentActions}>
-          <button onClick={() => setMode('fund')} style={S.fundBtn}>Fund</button>
-          <button
-            onClick={() => setMode('reclaim')}
-            disabled={agent.balance <= 0}
-            style={S.reclaimBtn}
-          >
-            Reclaim
-          </button>
+          {/* Fund + Reclaim removed in UI Overhaul (2026-05-20). Wages
+              now flow straight to the wallet — no per-agent funding
+              needed. The endpoints stay on the server for back-compat
+              but are hidden from the UI. */}
           {reqBuilding && (
             <button onClick={() => setMode('reassign')} style={S.reclaimBtn}>
               Reassign
@@ -769,27 +767,7 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           {err && <div style={S.formMsg}>{err}</div>}
         </div>
       )}
-      {(mode === 'fund' || mode === 'reclaim') && (
-        <div style={S.allocateRow}>
-          <input
-            type="number" min={1} step={1} value={amt}
-            onChange={(e) => setAmt(e.target.value)}
-            placeholder={mode === 'fund' ? 'Amount to send' : 'Amount to pull back'}
-            style={S.input}
-            autoFocus
-          />
-          <button onClick={submit} disabled={busy} style={S.submit}>
-            {busy ? '...' : mode === 'fund' ? 'Send' : 'Pull'}
-          </button>
-          <button
-            onClick={() => { setMode('idle'); setAmt(''); setErr(null); }}
-            style={S.cancelTextBtn}
-          >
-            cancel
-          </button>
-          {err && <div style={S.formMsg}>{err}</div>}
-        </div>
-      )}
+      {/* Fund/Reclaim mode removed in UI Overhaul (2026-05-20). */}
       {mode === 'reassign' && reqBuilding && (
         <ReassignPicker
           agent={agent}
@@ -838,6 +816,31 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
           )}
         </div>
       )}
+    </div>
+  );
+};
+
+const ReviveButton: React.FC<{ agent: AgentRow; onRevived: () => void }> = ({ agent, onRevived }) => {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const revive = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost(`/agents/${agent.id}/revive`, {}, { authed: true });
+      onRevived();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={S.reviveWrap}>
+      <button onClick={revive} disabled={busy} style={S.reviveBtn} aria-label={`Revive ${agent.name} for 100 food`}>
+        {busy ? '…' : 'Revive for 100 🌾'}
+      </button>
+      {err && <div style={S.formMsg}>{err}</div>}
     </div>
   );
 };
@@ -969,7 +972,6 @@ const CreateAgentModal: React.FC<{
   const [workplaceId, setWorkplaceId] = useState<number | null>(null);
   const [workplaceLabel, setWorkplaceLabel] = useState<string>('');
   const [name, setName] = useState('');
-  const [initialFund, setInitialFund] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -987,17 +989,12 @@ const CreateAgentModal: React.FC<{
     if (!name.trim()) { setErr('Name required.'); return; }
     setBusy(true);
     try {
-      const fund = parseInt(initialFund, 10);
       const body: Record<string, unknown> = { name: name.trim(), job };
       if (workplaceId !== null) body.workplace_parcel_id = workplaceId;
-      if (Number.isFinite(fund) && fund > 0) body.initial_fund = fund;
 
-      const created = await apiPost<{ ok: boolean; agent: { id: string }; initial_fund_error?: string }>(
+      const created = await apiPost<{ ok: boolean; agent: { id: string } }>(
         '/agents/register', body, { authed: true },
       );
-      if (created.initial_fund_error) {
-        setErr(`Agent created, but initial fund failed: ${created.initial_fund_error}`);
-      }
       void created.agent.id;
       onCreated();
     } catch (e) {
@@ -1018,17 +1015,23 @@ const CreateAgentModal: React.FC<{
           <>
             <div style={S.modalNote}>Pick a role. Each job determines what your agent does and where it stands.</div>
             <div style={S.jobGrid}>
-              {JOB_IDS.map((id) => (
-                <button
-                  key={id}
-                  onClick={() => setJob(id)}
-                  style={{ ...S.jobCard, ...(job === id ? S.jobCardActive : {}) }}
-                >
-                  <div style={S.jobIcon}>{JOBS[id].icon}</div>
-                  <div style={S.jobLabel}>{JOBS[id].label}</div>
-                  <div style={S.jobSummary}>{JOBS[id].summary}</div>
-                </button>
-              ))}
+              {/* UI Overhaul (2026-05-20): the 'trader' + 'greeter' job
+                  presets are scrapped — trader behaviour is now exclusive
+                  to external agents, greeter mapped to the retired
+                  'social' personality. Show only the active jobs. */}
+              {JOB_IDS
+                .filter((id) => id !== 'trader' && id !== 'greeter')
+                .map((id) => (
+                  <button
+                    key={id}
+                    onClick={() => setJob(id)}
+                    style={{ ...S.jobCard, ...(job === id ? S.jobCardActive : {}) }}
+                  >
+                    <div style={S.jobIcon}>{JOBS[id].icon}</div>
+                    <div style={S.jobLabel}>{JOBS[id].label}</div>
+                    <div style={S.jobSummary}>{JOBS[id].summary}</div>
+                  </button>
+                ))}
             </div>
             <div style={S.modalActions}>
               <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
@@ -1051,18 +1054,17 @@ const CreateAgentModal: React.FC<{
 
         {step === 'name' && (
           <>
-            <div style={S.modalNote}>Name your agent and optionally fund it now.</div>
+            <div style={S.modalNote}>
+              Name your agent. Spawning costs <strong>200,000 $AMETA</strong> from your wallet.
+            </div>
             <input
               type="text" value={name} onChange={(e) => setName(e.target.value)}
               placeholder="Name (unique)" maxLength={32}
               style={S.input} autoFocus
             />
-            <input
-              type="number" min={0} step={1} value={initialFund}
-              onChange={(e) => setInitialFund(e.target.value)}
-              placeholder="Initial $AMETA (optional)"
-              style={S.input}
-            />
+            {/* Initial-fund input removed (UI Overhaul 2026-05-20):
+                in-game agents earn wages straight to the wallet, so the
+                "fund the agent" flow is no longer needed. */}
             <div style={S.modalActions}>
               <button
                 onClick={() => setStep(needsWorkplace ? 'workplace' : 'job')}
@@ -1092,7 +1094,7 @@ const CreateAgentModal: React.FC<{
             </div>
             <div style={S.confirmDetails}>
               <div>Workplace: {workplaceId !== null ? workplaceLabel : (needsWorkplace ? 'auto-assigned (any open)' : 'roams')}</div>
-              <div>Initial funding: {initialFund && parseInt(initialFund, 10) > 0 ? `${parseInt(initialFund, 10).toLocaleString()} $AMETA` : 'none — fund later'}</div>
+              <div>Purchase cost: 200,000 $AMETA (from wallet)</div>
             </div>
             {err && <div style={S.errMsg}>{err}</div>}
             <div style={S.modalActions}>
@@ -1949,6 +1951,17 @@ const S: Record<string, React.CSSProperties> = {
   roleBtnActive: {
     background: 'rgba(63,122,61,0.22)', color: '#F5E6D0',
     borderColor: '#3F7A3D', cursor: 'default',
+  },
+
+  // ── Revive button (shown when agent is dormant) ─────────────────
+  reviveWrap: { marginTop: 6 },
+  reviveBtn: {
+    width: '100%', padding: '8px 12px',
+    fontSize: 13, fontWeight: 700, letterSpacing: 0.3,
+    background: '#B5563A', color: '#F5E6D0',
+    borderWidth: 1, borderStyle: 'solid', borderColor: '#D89438',
+    borderRadius: 6, cursor: 'pointer',
+    boxShadow: '0 0 12px rgba(181,86,58,0.35)',
   },
 
   // ── Inventory app ─────────────────────────────────────────────────
