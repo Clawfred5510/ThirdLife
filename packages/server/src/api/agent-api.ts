@@ -913,8 +913,20 @@ router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) =>
   if (body.role !== undefined && body.role !== agent.role) {
     setAgentRole(agentId, body.role);
   }
+  // Resolve workplace name for the notification row.
+  let reassignWorkplaceName: string | null = null;
+  if (resolvedParcelId != null) {
+    const p = getAllParcels().find((x) => x.id === resolvedParcelId);
+    if (p) {
+      const bt = (p as { building_type?: string }).building_type as BuildingType | undefined;
+      const buildingLabel = (bt && BUILDINGS[bt]?.label) ?? bt ?? null;
+      reassignWorkplaceName = (p as { business_name?: string }).business_name?.trim() || buildingLabel;
+    }
+  }
   addEvent('agent_reassigned', agentId, {
+    name: agent.name,
     workplace_parcel_id: resolvedParcelId,
+    workplace_name: reassignWorkplaceName,
     role: body.role ?? agent.role,
   });
   notifyAgentChanged(agentId);
@@ -1120,10 +1132,25 @@ router.get('/agents/me/events', authAgent, (req: Request, res: Response) => {
 router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
   const wallet = (req as AuthedRequest).walletId!;
   const agents = getAgentsByWallet(wallet);
+  // Snapshot all parcels once so each agent's workplace lookup is O(1).
+  const parcelById = new Map<number, { business_name?: string; building_type?: string }>();
+  for (const p of getAllParcels()) parcelById.set(p.id, p as { business_name?: string; building_type?: string });
   const out = agents.map((a) => {
     const parcels = getPlayerParcels(a.id);
     const jobId = (a.job ?? null) as JobId | null;
     const jobLabel = jobId && JOBS[jobId] ? JOBS[jobId].label : null;
+    // Resolve the workplace's business name + building label so the
+    // Phone Agents tab can render "Aunt's Farm" instead of "parcel #42".
+    let workplaceName: string | null = null;
+    let workplaceBuilding: string | null = null;
+    if (a.workplace_parcel_id != null) {
+      const wp = parcelById.get(a.workplace_parcel_id);
+      if (wp) {
+        const bt = wp.building_type as BuildingType | undefined;
+        workplaceBuilding = (bt && BUILDINGS[bt]?.label) ?? bt ?? null;
+        workplaceName = wp.business_name?.trim() || workplaceBuilding;
+      }
+    }
     return {
       id: a.id,
       name: a.name,
@@ -1131,6 +1158,8 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
       job_label: jobLabel,
       job_icon: jobId && JOBS[jobId] ? JOBS[jobId].icon : null,
       workplace_parcel_id: a.workplace_parcel_id,
+      workplace_name: workplaceName,
+      workplace_building: workplaceBuilding,
       personality: a.personality,
       strategy: a.strategy,
       // Phase 2/3 role enum: 'work' | 'produce' | 'craft'.
@@ -1260,6 +1289,18 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
   // can render task / earnings / lifetime summary in one shot.
   const agent = getAgentById(id);
   const lifetime = agent ? getAgentLifetimeStats(id) : { wages: 0, resources: {}, items: {} };
+  // Resolve agent workplace business name so the 3D click popup can
+  // render "PRODUCE at Aunt's Farm" instead of "PRODUCE at parcel #42".
+  let workplaceName: string | null = null;
+  let workplaceBuilding: string | null = null;
+  if (agent?.workplace_parcel_id != null) {
+    const wp = getAllParcels().find((p) => p.id === agent.workplace_parcel_id);
+    if (wp) {
+      const bt = (wp as { building_type?: string }).building_type as BuildingType | undefined;
+      workplaceBuilding = (bt && BUILDINGS[bt]?.label) ?? bt ?? null;
+      workplaceName = (wp as { business_name?: string }).business_name?.trim() || workplaceBuilding;
+    }
+  }
   res.json({
     id,
     name: nw?.name ?? id,
@@ -1283,6 +1324,8 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
       role: agent.role,
       is_external: agent.is_external === 1,
       workplace_parcel_id: agent.workplace_parcel_id,
+      workplace_name: workplaceName,
+      workplace_building: workplaceBuilding,
       owner_wallet: agent.owner_wallet,
       dormant: agent.dormant_at_tick != null,
       starvation_ticks: agent.starvation_ticks ?? 0,

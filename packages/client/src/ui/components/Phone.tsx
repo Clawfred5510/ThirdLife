@@ -117,9 +117,20 @@ function summarizeEvent(e: EventRow): string {
     }
     case 'agent_role_changed': return `agent role: ${data.from} → ${data.to}`;
     case 'agent_revived': return `revived agent (paid ${data.food_paid ?? 100} food)`;
+    case 'agent_reassigned': {
+      const who = data.name ? `${data.name}` : 'agent';
+      const where = data.workplace_name ?? (data.workplace_parcel_id != null ? `parcel #${data.workplace_parcel_id}` : 'unassigned');
+      const role = data.role ? ` as ${data.role}` : '';
+      return `reassigned ${who} to ${where}${role}`;
+    }
+    case 'agent_deleted': return `removed agent ${data.name ?? data.agent}`;
+    case 'demolish': return `demolished ${data.building} on parcel #${data.parcel} (+${data.refund_ameta ?? 0} $AMETA, +${data.refund_materials ?? 0} materials)`;
     case 'burn_luxury': return `used ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} luxury`;
     case 'rank_up':     return `🎉 RANK UP: ${data.from ?? 'unranked'} → ${data.to}`;
-    case 'craft_item':  return `agent crafted ${data.quantity}× ${data.item_kind} at parcel #${data.parcel}`;
+    case 'craft_item': {
+      const where = data.parcel_name ?? (data.parcel != null ? `parcel #${data.parcel}` : 'workshop');
+      return `agent crafted ${data.quantity}× ${data.item_kind} at ${where}`;
+    }
     case 'external_trade': {
       const name = data.agent_name ?? 'external agent';
       const side = data.side ?? '?';
@@ -547,6 +558,10 @@ interface AgentRow {
   job_label: string | null;
   job_icon: string | null;
   workplace_parcel_id: number | null;
+  /** Business name (player-typed) or building-type fallback. Null if no workplace. */
+  workplace_name: string | null;
+  /** Static building label (e.g. "Farm", "Mine"). Null if no workplace. */
+  workplace_building: string | null;
   personality: string;
   strategy: string;
   // Phase 2/3 role enum.
@@ -838,10 +853,8 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
         <span>·</span>
         <span>
           {agent.workplace_parcel_id
-            ? `parcel #${agent.workplace_parcel_id}`
-            : reqBuilding
-              ? 'no workplace'
-              : 'roams'}
+            ? (agent.workplace_name ?? agent.workplace_building ?? `parcel #${agent.workplace_parcel_id}`)
+            : 'no workplace'}
         </span>
         <span>·</span>
         <span>{agent.autopilot_enabled ? 'autopilot on' : 'autopilot off'}</span>

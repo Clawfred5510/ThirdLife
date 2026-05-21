@@ -1550,9 +1550,17 @@ export class GameRoom extends Room<GameState> {
         // "your Lapidarist crafted 1 Cut Gemstone at Mine #42". Severity
         // 'normal' keeps it visible in the default filter.
         for (const m of tickCraftMints) {
+          // Surface the workplace by business name (or building label
+          // fallback) so the Notifications row reads "crafted 1 Cut
+          // Gemstone at Aunt's Mine" rather than "at parcel #42".
+          const wp = parcelById.get(m.parcelId);
+          const btMint = (wp as { building_type?: string } | undefined)?.building_type;
+          const buildingLabel = btMint ? (BUILDINGS[btMint as BuildingType]?.label ?? btMint) : null;
+          const businessName = (wp as { business_name?: string } | undefined)?.business_name?.trim();
           addEvent('craft_item', ownerId, {
             agent_id: m.agentId,
             parcel: m.parcelId,
+            parcel_name: businessName || buildingLabel || `parcel #${m.parcelId}`,
             item_kind: m.itemKind,
             quantity: m.quantity,
           }, 'normal');

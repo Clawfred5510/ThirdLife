@@ -23,6 +23,8 @@ interface StatsCard {
     role: string;
     is_external: boolean;
     workplace_parcel_id: number | null;
+    workplace_name: string | null;
+    workplace_building: string | null;
     owner_wallet: string | null;
     dormant: boolean;
     starvation_ticks: number;
@@ -114,7 +116,10 @@ export const AgentInfoPanel: React.FC = () => {
   else if (a.is_external) taskLine = 'External marketplace agent';
   else if (a.dormant) taskLine = `Dormant — ${a.starvation_ticks} ticks starved`;
   else if (a.workplace_parcel_id == null) taskLine = 'Idle — no workplace assigned';
-  else taskLine = `${a.role.toUpperCase()} at parcel #${a.workplace_parcel_id}`;
+  else {
+    const where = a.workplace_name ?? a.workplace_building ?? `parcel #${a.workplace_parcel_id}`;
+    taskLine = `${a.role.toUpperCase()} at ${where}`;
+  }
 
   return (
     <div style={S.backdrop} onClick={close} role="dialog" aria-label={`Agent ${target.name}`}>
