@@ -109,7 +109,7 @@ function summarizeEvent(e: EventRow): string {
     case 'agent_registered': return `registered: ${data.name}`;
     case 'agent_role_changed': return `agent role: ${data.from} → ${data.to}`;
     case 'agent_revived': return `revived agent (paid ${data.food_paid ?? 100} food)`;
-    case 'burn_luxury': return `burned ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} rank`;
+    case 'burn_luxury': return `used ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} luxury`;
     case 'rank_up':     return `🎉 RANK UP: ${data.from ?? 'unranked'} → ${data.to}`;
     case 'craft_item':  return `agent crafted ${data.quantity}× ${data.item_kind} at parcel #${data.parcel}`;
     case 'building_unpowered': {
@@ -1273,7 +1273,7 @@ const WalletBody: React.FC = () => {
   );
 };
 
-// ── Inventory app — luxury items grid + burn-on-click ──────────────────
+// ── Inventory app — luxury items grid + use-on-click ───────────────────
 //
 // Each player has a 15-slot inventory (one slot per named luxury item
 // from the spec §4 catalog). Clicking a slot opens the burn dialog;
@@ -1361,7 +1361,7 @@ const InventoryBody: React.FC = () => {
   return (
     <>
       <div style={S.invHeader}>
-        <span style={S.invHeaderLabel}>Lifetime burn</span>
+        <span style={S.invHeaderLabel}>Lifetime luxury used</span>
         <span style={S.invHeaderValue}>{lifetime.toLocaleString()}</span>
       </div>
       {err && <div style={S.errMsg}>{err}</div>}
@@ -1379,7 +1379,7 @@ const InventoryBody: React.FC = () => {
                 ...(owned ? S.invSlotOwned : {}),
                 borderColor: TIER_COLOR[item.tier],
               }}
-              title={`${item.label} · Tier ${item.tier} · burns for ${item.burnValue}`}
+              title={`${item.label} · Tier ${item.tier} · yields ${item.burnValue} luxury when used`}
               aria-label={`${item.label}, ${qty} owned`}
             >
               <span style={S.invIcon}>{item.icon}</span>
@@ -1432,18 +1432,18 @@ const BurnDialog: React.FC<{
   };
 
   return (
-    <div style={S.burnBackdrop} onClick={onClose} role="dialog" aria-label="Burn luxury">
+    <div style={S.burnBackdrop} onClick={onClose} role="dialog" aria-label="Use luxury item">
       <div style={S.burnPanel} onClick={(e) => e.stopPropagation()}>
         <div style={S.burnHead}>
           <span style={S.burnIcon}>{item.icon}</span>
           <span style={S.burnTitle}>{item.label}</span>
         </div>
         <div style={S.burnMeta}>
-          Tier {item.tier} · burns for <strong>{item.burnValue}</strong> rank points each
+          Tier {item.tier} · yields <strong>{item.burnValue}</strong> luxury each
         </div>
         <div style={S.burnMeta}>You own: <strong>{owned}</strong></div>
         <div style={S.burnRow}>
-          <label style={S.burnLabel}>Burn</label>
+          <label style={S.burnLabel}>Use</label>
           <input
             type="number" min={1} max={owned} step={1} value={qty}
             onChange={(e) => setQty(e.target.value)}
@@ -1454,14 +1454,14 @@ const BurnDialog: React.FC<{
         </div>
         {validN && (
           <div style={S.burnGained}>
-            +{gained.toLocaleString()} rank points
+            +{gained.toLocaleString()} luxury
           </div>
         )}
         {err && <div style={S.formMsg}>{err}</div>}
         <div style={S.burnActions}>
           <button onClick={onClose} disabled={busy} style={S.cancelTextBtn}>cancel</button>
           <button onClick={submit} disabled={busy || !validN} style={S.dangerBtn}>
-            {busy ? '…' : 'Burn'}
+            {busy ? '…' : 'Use'}
           </button>
         </div>
       </div>
@@ -1819,7 +1819,7 @@ const RankBody: React.FC = () => {
             {current ? RANK_TIER_LABEL[current] : 'Unranked'}
           </div>
           <div style={S.rankLifetime}>
-            Lifetime luxury burned:{' '}
+            Lifetime luxury used:{' '}
             <strong style={{ color: '#F5E6D0' }}>{snap.lifetime.toLocaleString()}</strong>
           </div>
         </div>
@@ -1869,8 +1869,9 @@ const RankBody: React.FC = () => {
       </div>
 
       <div style={S.rankHint}>
-        Burn luxury items in your Inventory to climb the ranks. Higher ranks unlock
-        more agents, more land, and lower marketplace fees.
+        Use luxury items in your Inventory to climb the ranks. Each item adds its
+        luxury value to your lifetime total. Higher ranks unlock more agents, more
+        land, and lower marketplace fees.
       </div>
     </div>
   );

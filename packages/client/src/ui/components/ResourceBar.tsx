@@ -86,14 +86,14 @@ export const ResourceBar: React.FC = () => {
       {showProgress && nextTier && (
         <div
           style={S.progressBar}
-          title={`${currentLabel} → ${TIER_LABEL[nextTier]} (${(rank!.lifetime).toLocaleString()} / ${(rank!.next_threshold ?? 0).toLocaleString()} luxury burned)`}
+          title={`${currentLabel} → ${TIER_LABEL[nextTier]} (${(rank!.lifetime).toLocaleString()} / ${(rank!.next_threshold ?? 0).toLocaleString()} luxury used)`}
         >
           <div style={S.progressMeta}>
             <span style={{ color: rank?.rank ? TIER_COLOR[rank.rank] : '#A89378' }}>
               {currentLabel}
             </span>
             <span style={S.progressNums}>
-              {rank!.lifetime.toLocaleString()} / {rank!.next_threshold!.toLocaleString()} 💎🔥
+              {rank!.lifetime.toLocaleString()} / {rank!.next_threshold!.toLocaleString()} 💎
             </span>
             <span style={{ color: TIER_COLOR[nextTier] }}>{TIER_LABEL[nextTier]}</span>
           </div>

@@ -73,7 +73,7 @@ export const RankUpModal: React.FC = () => {
       <ConfettiBurst />
       <div style={S.card} onClick={(e) => e.stopPropagation()}>
         <div style={S.heading}>RANK UP</div>
-        <div style={S.subheading}>Lifetime burn: {event.lifetime.toLocaleString()}</div>
+        <div style={S.subheading}>Lifetime luxury used: {event.lifetime.toLocaleString()}</div>
         <div style={S.crestRow}>
           <Crest tier={fromTier} muted />
           <div style={S.arrow}>→</div>
