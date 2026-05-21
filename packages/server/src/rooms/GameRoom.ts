@@ -1435,6 +1435,21 @@ export class GameRoom extends Room<GameState> {
         }
       }
 
+      // Pre-compute wages-by-owner so the per-player tick-income event
+      // (emitted below) can include the wage amount this wallet will
+      // earn from work-role agents at luxury buildings. We assume the
+      // wage settlement loop pays out — for same-owner pairs it always
+      // does; for cross-player pairs the parcel owner might not be able
+      // to afford it (silent fail), but that's a tiny minority case and
+      // we don't pre-validate here to avoid double-walking the data.
+      const expectedWagesByOwner = new Map<string, number>();
+      for (const pair of wagePairs) {
+        expectedWagesByOwner.set(
+          pair.agentOwner,
+          (expectedWagesByOwner.get(pair.agentOwner) ?? 0) + WORK_WAGE_AMETA_PER_TICK,
+        );
+      }
+
       // Step C: settle each connected player.
       this.players.forEach((player, sessionId) => {
         const ownerId = player.id;
@@ -1451,6 +1466,16 @@ export class GameRoom extends Room<GameState> {
           if (resources.energy < FLOOR) resources.energy = FLOOR;
           if (resources.luxury < FLOOR) resources.luxury = FLOOR;
         }
+
+        // Snapshot resources BEFORE any production / consumption /
+        // crafting so the tick-income notification can show the net
+        // delta for each resource at the end of the settlement.
+        const beforeResources = {
+          food: resources.food,
+          materials: resources.materials,
+          energy: resources.energy,
+          luxury: resources.luxury,
+        };
 
         const itemDeltas = new Map<LuxuryItemKind, number>();
         // Per-agent stats accumulated this tick — flushed to DB + sent
@@ -1685,6 +1710,35 @@ export class GameRoom extends Room<GameState> {
         const client = this.clients.find((c) => c.sessionId === sessionId);
         if (client) {
           client.send(MessageType.RESOURCE_UPDATE, resources);
+        }
+
+        // Per-tick income notification — owner direction 2026-05-21:
+        // emit one event per tick per player summarising the net change
+        // across all four resources, the wage $AMETA earned, and the
+        // luxury items minted. Severity 'minor' so /skip 100 doesn't
+        // flood the default Notifications filter; the dedicated filter
+        // can surface them when the player wants to audit a tick.
+        const deltaFood = resources.food - beforeResources.food;
+        const deltaMaterials = resources.materials - beforeResources.materials;
+        const deltaEnergy = resources.energy - beforeResources.energy;
+        const deltaLuxury = resources.luxury - beforeResources.luxury;
+        const expectedWages = expectedWagesByOwner.get(ownerId) ?? 0;
+        const itemsObj: Record<string, number> = {};
+        for (const [kind, qty] of itemDeltas) itemsObj[kind] = qty;
+        const hasAnyIncome =
+          deltaFood !== 0 || deltaMaterials !== 0 ||
+          deltaEnergy !== 0 || deltaLuxury !== 0 ||
+          expectedWages > 0 || itemDeltas.size > 0;
+        if (hasAnyIncome) {
+          addEvent('tick_income', ownerId, {
+            tick: getWorldTick(),
+            food: deltaFood,
+            materials: deltaMaterials,
+            energy: deltaEnergy,
+            luxury: deltaLuxury,
+            wages: expectedWages,
+            items: itemsObj,
+          }, 'minor');
         }
       });
 

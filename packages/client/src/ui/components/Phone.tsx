@@ -149,6 +149,30 @@ function summarizeEvent(e: EventRow): string {
       const where = sample.length ? ` (e.g. #${sample.join(', #')})` : '';
       return `⚡ ${n} building${n === 1 ? '' : 's'} idle — short ${short} energy${where}`;
     }
+    case 'tick_income': {
+      // Per-tick income digest. Build a tight one-liner showing each
+      // resource delta (signed, with icon), wages, and crafted items.
+      const parts: string[] = [];
+      const food = Number(data.food ?? 0);
+      const materials = Number(data.materials ?? 0);
+      const energy = Number(data.energy ?? 0);
+      const luxury = Number(data.luxury ?? 0);
+      const wages = Number(data.wages ?? 0);
+      const fmt = (n: number) => (n > 0 ? `+${n.toFixed(1)}` : n.toFixed(1));
+      if (food !== 0)      parts.push(`🌾${fmt(food)}`);
+      if (materials !== 0) parts.push(`⛏️${fmt(materials)}`);
+      if (energy !== 0)    parts.push(`⚡${fmt(energy)}`);
+      if (luxury !== 0)    parts.push(`💎${fmt(luxury)}`);
+      if (wages > 0)       parts.push(`💰+${wages.toLocaleString()} $AMETA`);
+      const items = (data.items ?? {}) as Record<string, number>;
+      const itemEntries = Object.entries(items);
+      if (itemEntries.length > 0) {
+        const summary = itemEntries.map(([k, q]) => `${q}× ${k}`).join(', ');
+        parts.push(`🔨 ${summary}`);
+      }
+      const tickNum = data.tick != null ? ` (T${data.tick})` : '';
+      return `tick income${tickNum}: ${parts.join(' · ')}`;
+    }
     case 'offline_accrual': {
       const t = data.missed_ticks ?? 0;
       const lux = data.luxury ?? 0;
