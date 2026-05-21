@@ -12,13 +12,13 @@ import {
   GRID_COLS, GRID_ROWS, LANDMARKS,
   AGENT_PERSONALITIES, AGENT_STRATEGIES,
   AgentPersonality, AgentStrategy,
-  JOBS, JOB_IDS, JobId,
+  JOBS, JobId,
   LUXURY_ITEMS, LuxuryItemKind,
   BUILDINGS, BuildingType, BuildingCategory,
 } from '@gamestu/shared';
 
 type AppId =
-  | 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance'
+  | 'leaderboard' | 'market' | 'events' | 'world2d' | 'governance'
   | 'agents' | 'closet' | 'wallet' | 'inventory' | 'rank';
 type ActiveApp = AppId | null;
 
@@ -273,7 +273,6 @@ const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack })
       <div style={S.appBody}>
         {app.id === 'leaderboard' && <LeaderboardBody />}
         {app.id === 'market' && <MarketBody />}
-        {app.id === 'properties' && <PropertiesBody />}
         {app.id === 'world2d' && <World2DBody />}
         {app.id === 'governance' && <GovernanceBody />}
         {app.id === 'events' && <EventBody />}
@@ -1785,61 +1784,9 @@ const EventBody: React.FC = () => {
   );
 };
 
-const UNIT_ICON: Record<PropertyRow['unit_type'], string> = {
-  studio: '🏠', office: '🏢', penthouse: '👑',
-};
-
-const PropertiesBody: React.FC = () => {
-  const [filter, setFilter] = useState<PropertyFilter>('for_sale');
-  const [props, setProps] = useState<PropertyRow[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      const url = filter === 'for_sale' ? '/properties?for_sale=true' : '/properties';
-      apiGet<{ properties: PropertyRow[] }>(url)
-        .then((r) => { if (!cancelled) setProps(r.properties); })
-        .catch(() => {});
-    };
-    load();
-    const i = setInterval(load, 6000);
-    return () => { cancelled = true; clearInterval(i); };
-  }, [filter]);
-
-  return (
-    <>
-      <div style={S.tabRow}>
-        <button onClick={() => setFilter('for_sale')} style={{ ...S.tab, ...(filter === 'for_sale' ? S.tabActive : {}) }}>
-          For sale
-        </button>
-        <button onClick={() => setFilter('all')} style={{ ...S.tab, ...(filter === 'all' ? S.tabActive : {}) }}>
-          Recent
-        </button>
-      </div>
-      <div style={S.list}>
-        {props.length === 0 ? (
-          <div style={S.empty}>{filter === 'for_sale' ? 'No units listed' : 'No units yet'}</div>
-        ) : (
-          props.slice(0, 60).map((p) => (
-            <div key={p.id} style={S.row}>
-              <span style={S.unitIcon}>{UNIT_ICON[p.unit_type]}</span>
-              <span style={S.unitMeta}>
-                {p.unit_type} · F{p.floor}#{p.unit_index} · parcel {p.parcel_id}
-              </span>
-              <span style={S.unitInc}>+{p.income_per_tick}/t</span>
-              {p.list_price !== null && (
-                <span style={S.unitPrice}>{formatAmeta(p.list_price)}</span>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-      <div style={S.foot}>
-        Buy / list / unlist via <code>POST /api/v1/actions/buy-property</code> (etc).
-      </div>
-    </>
-  );
-};
+// PropertiesBody removed 2026-05-20 with the sub-unit retirement.
+// The 'properties' AppId is still in the union for AppDef typing but
+// has no entry in APPS and no dispatcher case below.
 
 const LANDMARK_GLYPH: Record<string, string> = {
   town_hall: '★', plaza: '◆', monument: '♦', gate: '⌂', park: '✿', harbor: '⚓',

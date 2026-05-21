@@ -36,16 +36,8 @@ import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
 import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
 import { getAllAgents, getRawDb as _rawDb } from '../db';
 import { computeLevel, computeJob } from '../agents-meta';
-import {
-  generateUnitsForParcel,
-  getPropertiesForParcel,
-  getPropertiesForOwner,
-  getAllForSale,
-  listProperty,
-  unlistProperty,
-  buyProperty,
-  buildingHasUnits,
-} from '../properties';
+// Sub-unit properties module retired 2026-05-20. The file still exists
+// in src/properties so historic data resolves, but no API path mounts it.
 import {
   proposeDecree,
   castVote,
@@ -1049,45 +1041,10 @@ router.get('/jobs', (_req: Request, res: Response) => {
   });
 });
 
-router.post('/agents/:id/allocate', authWallet, rateLimit, async (req: Request, res: Response) => {
-  const wallet = (req as AuthedRequest).walletId!;
-  const agentId = String(req.params.id);
-  const { amount } = req.body ?? {};
-  if (!Number.isInteger(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'amount must be a positive integer' });
-  }
-  try {
-    const r = await economy().allocate(wallet, agentId, amount, 'fund');
-    if (!r.ok) {
-      const status = r.reason === 'agent_not_found' ? 404 : r.reason === 'not_owner' ? 403 : 400;
-      return res.status(status).json({ error: r.reason });
-    }
-    res.json({ ok: true, agent_balance: getPlayerCredits(agentId), wallet_balance: getPlayerCredits(wallet) });
-  } catch (e) {
-    console.error('[api] allocate failed:', e);
-    res.status(500).json({ error: 'internal_error' });
-  }
-});
-
-router.post('/agents/:id/reclaim', authWallet, rateLimit, async (req: Request, res: Response) => {
-  const wallet = (req as AuthedRequest).walletId!;
-  const agentId = String(req.params.id);
-  const { amount } = req.body ?? {};
-  if (!Number.isInteger(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'amount must be a positive integer' });
-  }
-  try {
-    const r = await economy().allocate(wallet, agentId, amount, 'reclaim');
-    if (!r.ok) {
-      const status = r.reason === 'agent_not_found' ? 404 : r.reason === 'not_owner' ? 403 : 400;
-      return res.status(status).json({ error: r.reason });
-    }
-    res.json({ ok: true, agent_balance: getPlayerCredits(agentId), wallet_balance: getPlayerCredits(wallet) });
-  } catch (e) {
-    console.error('[api] reclaim failed:', e);
-    res.status(500).json({ error: 'internal_error' });
-  }
-});
+// /agents/:id/allocate and /reclaim removed 2026-05-20 — wages flow
+// straight to the owner wallet now, so per-agent funding is dead. Old
+// clients calling these will get a 404; they should switch to letting
+// the agent earn from the wallet directly.
 
 // Delete an agent. Owner-only. Everything the agent owns (parcels,
 // properties, balance, resources, reputation) is transferred back to
@@ -1331,12 +1288,9 @@ router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, r
   if (propFee > 0) economy().credit(WORLD_TREASURY_ID, propFee, 'property_fee').catch(() => {});
   setBuildingType(pid, building_type);
   updateBusiness(pid, agentId, { type: building_type, name: spec.label });
-  // Phase C: apartments/offices generate sub-units on build.
-  const unitsCreated = buildingHasUnits(building_type)
-    ? generateUnitsForParcel(pid, building_type, agentId)
-    : 0;
-  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost, units_created: unitsCreated }, 'major');
-  res.json({ ok: true, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost, units_created: unitsCreated });
+  // Sub-unit generation removed 2026-05-20 with Phase C retirement.
+  addEvent('build', agentId, { parcel: pid, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost }, 'major');
+  res.json({ ok: true, building: building_type, cost: spec.cost, property_fee: propFee, material_cost: spec.materialCost });
 });
 
 router.post('/actions/work', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
@@ -1513,52 +1467,10 @@ router.get('/agents/me/net-worth', authAgent, (req: Request, res: Response) => {
   res.json(nw);
 });
 
-// ──────────────────────────────────────────────────────────────────────
-// Properties (sub-units inside multi-floor buildings) — Phase C
-// ──────────────────────────────────────────────────────────────────────
-
-router.get('/properties', (req: Request, res: Response) => {
-  const parcelIdStr = req.query.parcel_id;
-  const forSale = req.query.for_sale === 'true';
-  const ownerId = typeof req.query.owner_id === 'string' ? req.query.owner_id : null;
-
-  if (typeof parcelIdStr === 'string') {
-    const pid = parseInt(parcelIdStr, 10);
-    if (!Number.isFinite(pid)) return res.status(400).json({ error: 'invalid parcel_id' });
-    return res.json({ properties: getPropertiesForParcel(pid, forSale) });
-  }
-  if (ownerId) return res.json({ properties: getPropertiesForOwner(ownerId) });
-  return res.json({ properties: getAllForSale() });
-});
-
-router.post('/actions/list-property', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const { property_id, price } = req.body ?? {};
-  const r = listProperty(agentId, Number(property_id), Math.floor(Number(price)));
-  if (!r.ok) return res.status(400).json({ error: r.reason });
-  res.json({ ok: true });
-});
-
-router.post('/actions/unlist-property', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const { property_id } = req.body ?? {};
-  const r = unlistProperty(agentId, Number(property_id));
-  if (!r.ok) return res.status(400).json({ error: r.reason });
-  res.json({ ok: true });
-});
-
-router.post('/actions/buy-property', authInGameAgentLegacy, rateLimit, async (req: Request, res: Response) => {
-  const agentId = (req as any).agentId;
-  const { property_id } = req.body ?? {};
-  try {
-    const r = await buyProperty(agentId, Number(property_id));
-    if (!r.ok) return res.status(400).json({ error: r.reason });
-    res.json({ ok: true, paid: r.price });
-  } catch (e) {
-    console.error('[api] buy-property failed:', e);
-    res.status(500).json({ error: 'internal_error' });
-  }
-});
+// Sub-unit Properties endpoints (Phase C: /properties + /actions/{list,unlist,buy}-property)
+// removed 2026-05-20 — sub-units were scrapped from the UI in the
+// overhaul. The DB tables remain so historic listings still resolve,
+// but no new sub-units are minted and the read/write paths are gone.
 
 // ──────────────────────────────────────────────────────────────────────
 // Governance / Decrees — Phase E.3

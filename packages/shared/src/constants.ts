@@ -226,10 +226,27 @@ export function isTieredBuilding(type: BuildingType): boolean {
   return BUILDINGS[type].category !== 'legacy';
 }
 
-/** True if this building consumes 1 energy/tick to produce its resource. */
+/** True if this building consumes 1 energy/tick to produce its resource.
+ *
+ *  Energy buildings (category='energy') are SELF-POWERED per owner
+ *  direction 2026-05-20 — they're in the producers loop (they still
+ *  benefit from agents + tier multipliers + crafting) but they bypass
+ *  the energy stockpile gate. The tick code reads this flag to decide
+ *  which producers to gate. See requiresExternalPower below for the
+ *  gate-check variant.
+ */
 export function consumesEnergy(type: BuildingType): boolean {
   const c = BUILDINGS[type].category;
   return c === 'food' || c === 'materials' || c === 'energy';
+}
+
+/** Subset of consumesEnergy that excludes self-powered energy buildings.
+ *  Used by the tick body when computing how many producers compete for
+ *  the player's energy stockpile. Energy buildings still produce, but
+ *  they don't draw from the pool. */
+export function requiresExternalPower(type: BuildingType): boolean {
+  const c = BUILDINGS[type].category;
+  return c === 'food' || c === 'materials';
 }
 
 /** True if this building emits passive luxury per tick (Housing or Civic). */

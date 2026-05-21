@@ -71,7 +71,7 @@ import { runAutopilotPass } from '../autopilot';
 import { rankFor } from '../ranks';
 import { economy, WORLD_TREASURY_ID } from '../economy';
 import { onAgentChanged } from '../events/agentEvents';
-import { generateUnitsForParcel, buildingHasUnits, tickPropertyIncome, backfillSubUnits } from '../properties';
+// Sub-unit properties module retired 2026-05-20. Imports removed.
 import { resolveDecreesTick } from '../governance';
 import { getWorldTick } from '../world';
 import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, checkTimeExpired, getRemainingTime, getJobBoard, getActiveJobPlayerIds } from '../systems/jobs';
@@ -162,12 +162,7 @@ export class GameRoom extends Room<GameState> {
       this.refreshAgents(false);
     });
 
-    // ---- Phase C: backfill sub-units for any pre-existing apartments
-    // and offices that were built before the multi-floor system landed.
-    const back = backfillSubUnits();
-    if (back.created > 0) {
-      console.log(`[GameRoom] backfilled ${back.created} sub-units across ${back.processed} multi-floor parcels`);
-    }
+    // Sub-unit backfill removed 2026-05-20 with Phase C retirement.
 
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
       const player = this.players.get(client.sessionId);
@@ -314,13 +309,10 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.building_type,
       });
-      const unitsCreated = buildingHasUnits(data.building_type)
-        ? generateUnitsForParcel(data.parcelId, data.building_type, ownerId)
-        : 0;
+      // Sub-unit generation removed 2026-05-20 with Phase C retirement.
       addEvent('claim_and_build', ownerId, {
         parcel: data.parcelId, building: data.building_type,
         cost_ameta: spec.cost + LAND_COST, cost_materials: spec.materialCost,
-        units_created: unitsCreated,
       }, 'major');
       console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + LAND_COST} $AMETA, -${spec.materialCost} materials)`);
     });
@@ -469,9 +461,7 @@ export class GameRoom extends Room<GameState> {
       if (propFee > 0) economy().credit(WORLD_TREASURY_ID, propFee, 'property_fee').catch(() => {});
       setBuildingType(data.parcelId, data.buildingType);
       updateBusinessInDb(data.parcelId, ownerId, { type: data.buildingType, name: spec.label });
-      const unitsCreated = buildingHasUnits(data.buildingType)
-        ? generateUnitsForParcel(data.parcelId, data.buildingType, ownerId)
-        : 0;
+      // Sub-unit generation removed 2026-05-20 with Phase C retirement.
 
       client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
       this.broadcast(MessageType.PARCEL_UPDATE, {
@@ -480,7 +470,7 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.buildingType,
       });
-      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost, units_created: unitsCreated }, 'major');
+      addEvent('build', ownerId, { parcel: data.parcelId, building: data.buildingType, cost: spec.cost }, 'major');
       console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
     });
 
@@ -1198,9 +1188,7 @@ export class GameRoom extends Room<GameState> {
       // freshly-bought luxury counts.
       tickReputation();
 
-      // Phase C.4: per-unit passive income to sub-unit owners. GDP
-      // accumulator already records the total inside tickPropertyIncome.
-      tickPropertyIncome();
+      // Phase C sub-unit income removed 2026-05-20 with the module retirement.
 
       // Phase E.3: resolve any decree whose voting window has elapsed.
       // Best-effort — never throws into the tick.
@@ -1393,26 +1381,66 @@ export class GameRoom extends Room<GameState> {
         const tickCraftMints: CraftMint[] = [];
 
         if (bucket) {
-          // Producing buildings: gated by current energy pool. Sort by
-          // parcelId so the priority is deterministic (oldest parcel
-          // gets powered first if there's a shortage).
-          const sorted = [...bucket.producers].sort((a, b2) => a.parcelId - b2.parcelId);
+          // Owner direction 2026-05-20: energy buildings are self-powered.
+          // Split producers into two cohorts:
+          //   selfPowered → energy category, always runs, output is added
+          //                 to the stockpile BEFORE grid-powered producers
+          //                 draw from it. This breaks the bootstrap deadlock.
+          //   gridPowered → food/materials, gated by current energy pool.
+          const allSorted = [...bucket.producers].sort((a, b2) => a.parcelId - b2.parcelId);
+          const selfPowered = allSorted.filter((p) => p.category === 'energy');
+          const gridPowered = allSorted.filter((p) => p.category !== 'energy');
+
+          // Run self-powered (energy) producers first so their output
+          // can power food/materials in the same tick.
+          for (const p of selfPowered) {
+            const mult = TIER_MULTIPLIER[p.tier - 1] ?? 0;
+            const produceAgentCount = p.produceAgentIds.length;
+            const produceOut = mult * (1 + produceAgentCount);
+            resources.energy += produceOut;
+            for (const aid of p.produceAgentIds) {
+              bumpAgentLifetimeStats(aid, { resources: { energy: mult } });
+            }
+            // Energy buildings still support crafting (e.g. batteries
+            // crafted at a Coal Plant). Same atomic mint logic as below.
+            if (p.craftAgentIds.length > 0 && p.itemKind) {
+              for (const aid of p.craftAgentIds) {
+                const itemsThisAgent = mult;
+                const cost = CRAFT_RESOURCES_PER_ITEM * itemsThisAgent;
+                if (resources.energy < cost) continue;
+                resources.energy -= cost;
+                itemDeltas.set(
+                  p.itemKind,
+                  (itemDeltas.get(p.itemKind) ?? 0) + itemsThisAgent,
+                );
+                bumpAgentLifetimeStats(aid, { items: { [p.itemKind]: itemsThisAgent } });
+                tickCraftMints.push({
+                  agentId: aid,
+                  parcelId: p.parcelId,
+                  itemKind: p.itemKind,
+                  quantity: itemsThisAgent,
+                });
+              }
+            }
+          }
+
+          // Grid-powered producers: gated by current (post-energy-output) pool.
           const poweredCount = Math.min(
-            sorted.length,
+            gridPowered.length,
             Math.floor(resources.energy / ENERGY_PER_PRODUCING_BUILDING_PER_TICK),
           );
           resources.energy -= poweredCount * ENERGY_PER_PRODUCING_BUILDING_PER_TICK;
 
-          // Notify the player when buildings sit idle for lack of energy.
-          // Throttled to one event per wallet per 6 ticks (~1 in-game
-          // hour) so /skip 100 doesn't spam 100 entries into Notifications.
-          const unpoweredCount = sorted.length - poweredCount;
+          // Notify the player when grid-powered buildings sit idle for
+          // lack of energy. Throttled to one event per wallet per 6 ticks
+          // so /skip 100 doesn't spam 100 entries into Notifications.
+          const unpoweredCount = gridPowered.length - poweredCount;
           if (unpoweredCount > 0) {
             const nowTick = getWorldTick();
             const last = this.lastUnpoweredEventTick.get(ownerId) ?? -999;
             if (nowTick - last >= 6) {
               this.lastUnpoweredEventTick.set(ownerId, nowTick);
-              const sample = sorted.slice(poweredCount, poweredCount + 3).map((p) => p.parcelId);
+              const sample = gridPowered.slice(poweredCount, poweredCount + 3).map((p) => p.parcelId);
               addEvent('building_unpowered', ownerId, {
                 unpowered_count: unpoweredCount,
                 powered_count: poweredCount,
@@ -1425,7 +1453,7 @@ export class GameRoom extends Room<GameState> {
           }
 
           for (let i = 0; i < poweredCount; i++) {
-            const p = sorted[i];
+            const p = gridPowered[i];
             const mult = TIER_MULTIPLIER[p.tier - 1] ?? 0;
             const produceAgentCount = p.produceAgentIds.length;
             // Production: every produce-agent + the base passive.
