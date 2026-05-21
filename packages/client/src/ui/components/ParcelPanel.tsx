@@ -21,6 +21,7 @@ import {
 } from '../../network/Client';
 import { apiGet, hasAuthToken } from '../../network/api';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useViewport } from '../hooks/useViewport';
 
 const TIER_LABEL: Record<Tier, string> = {
   bronze: 'Bronze', silver: 'Silver', gold: 'Gold', platinum: 'Platinum', diamond: 'Diamond',
@@ -56,6 +57,7 @@ export const ParcelPanel: React.FC = () => {
     { food: 0, materials: 0, energy: 0, luxury: 0 },
   );
   const [rank, setRank] = useState<Tier>('bronze');
+  const vp = useViewport();
 
   const sessionId = getSessionId();
 
@@ -142,23 +144,41 @@ export const ParcelPanel: React.FC = () => {
   const isOwnedByMe = parcel.owner_id !== '' && parcel.owner_id === sessionId;
   const isOwnedByOther = parcel.owner_id !== '' && parcel.owner_id !== sessionId;
 
-  const panelStyle: React.CSSProperties = {
-    position: 'absolute',
-    bottom: 20,
-    left: '50%',
-    transform: 'translateX(-50%)',
-    background: 'rgba(0, 0, 0, 0.82)',
-    color: '#e0e0e0',
-    padding: '14px 20px',
-    borderRadius: 8,
-    fontFamily: 'monospace',
-    fontSize: 13,
-    minWidth: 320,
-    maxWidth: 400,
-    zIndex: 100,
-    border: '1px solid rgba(255,255,255,0.12)',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-  };
+  const panelStyle: React.CSSProperties = vp.isMobile
+    ? {
+        position: 'absolute',
+        bottom: 8,
+        left: 8,
+        right: 8,
+        maxHeight: '70vh',
+        overflowY: 'auto',
+        background: 'rgba(0, 0, 0, 0.88)',
+        color: '#e0e0e0',
+        padding: '12px 14px',
+        borderRadius: 10,
+        fontFamily: 'monospace',
+        fontSize: 12,
+        zIndex: 100,
+        border: '1px solid rgba(255,255,255,0.12)',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+      }
+    : {
+        position: 'absolute',
+        bottom: 20,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: 'rgba(0, 0, 0, 0.82)',
+        color: '#e0e0e0',
+        padding: '14px 20px',
+        borderRadius: 8,
+        fontFamily: 'monospace',
+        fontSize: 13,
+        minWidth: 320,
+        maxWidth: 400,
+        zIndex: 100,
+        border: '1px solid rgba(255,255,255,0.12)',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+      };
 
   const labelStyle: React.CSSProperties = {
     fontSize: 10,
@@ -238,7 +258,7 @@ export const ParcelPanel: React.FC = () => {
             aria-label="Building type"
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
+              gridTemplateColumns: vp.isMobile ? 'repeat(3, 1fr)' : 'repeat(5, 1fr)',
               gap: 4,
               marginBottom: 10,
             }}

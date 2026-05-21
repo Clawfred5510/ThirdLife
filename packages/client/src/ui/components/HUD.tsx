@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { onPlayerAdd, onPlayerRemove, getRoom } from '../../network/Client';
 import { apiGet } from '../../network/api';
+import { useViewport } from '../hooks/useViewport';
 
 interface WorldInfo { tick: number; gdp: number; }
 
@@ -8,6 +9,7 @@ export const HUD: React.FC = () => {
   const [playerCount, setPlayerCount] = useState(0);
   const [connected, setConnected] = useState(false);
   const [world, setWorld] = useState<WorldInfo>({ tick: 0, gdp: 0 });
+  const vp = useViewport();
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -38,6 +40,36 @@ export const HUD: React.FC = () => {
       unsubRemove();
     };
   }, []);
+
+  // Mobile: collapse to a tiny status dot in the top-right. Title +
+  // tick/GDP + player count are eaten by the existing space-shortage —
+  // they're stats you can browse in the Notifications app instead.
+  if (vp.isMobile) {
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          top: 16, right: 70,         // 70px of inset leaves room for the Minimap top-right corner.
+          display: 'flex', alignItems: 'center', gap: 4,
+          padding: '4px 8px',
+          background: 'rgba(0,0,0,0.5)',
+          borderRadius: 12,
+          color: '#F5E6D0',
+          fontFamily: 'sans-serif',
+          fontSize: 10,
+          pointerEvents: 'none',
+        }}
+      >
+        <span
+          style={{
+            width: 6, height: 6, borderRadius: '50%',
+            backgroundColor: connected ? '#3F7A3D' : '#B5563A',
+          }}
+        />
+        <span>{playerCount}</span>
+      </div>
+    );
+  }
 
   return (
     <div

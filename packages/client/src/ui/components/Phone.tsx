@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPost, apiDelete, hasAuthToken, API_BASE } from '../../network/api';
+import { useViewport } from '../hooks/useViewport';
 import {
   hasInjectedWallet,
   getStoredPlayerId,
@@ -195,6 +196,7 @@ export const Phone: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [activeApp, setActiveApp] = useState<ActiveApp>(null);
   const [now, setNow] = useState(() => new Date());
+  const vp = useViewport();
 
   // Status-bar clock — pure cosmetic, ticks once per minute.
   useEffect(() => {
@@ -247,7 +249,11 @@ export const Phone: React.FC = () => {
       </button>
 
       {open && (
-        <div style={S.phoneFrame} role="dialog" aria-label="Phone">
+        <div
+          style={vp.isMobile ? { ...S.phoneFrame, ...S.phoneFrameMobile } : S.phoneFrame}
+          role="dialog"
+          aria-label="Phone"
+        >
           {/* Bezel */}
           <div style={S.phoneScreen}>
             {/* Status bar */}
@@ -2275,6 +2281,14 @@ const S: Record<string, React.CSSProperties> = {
     boxShadow: '0 8px 40px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(216,148,56,0.18)',
     pointerEvents: 'auto',
     fontFamily: 'sans-serif',
+  },
+  // Mobile: phone takes the full viewport with a comfy inset so the
+  // bezel rounding is still visible. Bottom-anchored so the FAB toggle
+  // remains tappable just above its bottom-right corner.
+  phoneFrameMobile: {
+    top: 8, bottom: 88, left: 8, right: 8,
+    width: 'auto', height: 'auto',
+    borderRadius: 24,
   },
   phoneScreen: {
     width: '100%', height: '100%',

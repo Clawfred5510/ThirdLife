@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { PlayerResources } from '@gamestu/shared';
 import { apiGet, hasAuthToken } from '../../network/api';
 import { onRankUp } from '../../network/Client';
+import { useViewport } from '../hooks/useViewport';
 
 const ICONS: Record<string, string> = { food: '🌾', materials: '⛏️', energy: '⚡', luxury: '💎' };
 
@@ -28,6 +29,7 @@ interface RankSnapshot {
 export const ResourceBar: React.FC = () => {
   const [resources, setResources] = useState<PlayerResources>({ food: 0, materials: 0, energy: 0, luxury: 0 });
   const [rank, setRank] = useState<RankSnapshot | null>(null);
+  const vp = useViewport();
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -72,11 +74,27 @@ export const ResourceBar: React.FC = () => {
   const pct = rank ? Math.round(Math.min(1, Math.max(0, rank.progress)) * 100) : 0;
   const currentLabel = rank?.rank ? TIER_LABEL[rank.rank] : 'Unranked';
 
+  // Mobile: bar shifts to top-center (under the chat FAB) so it doesn't
+  // collide with the build menu that lives at the bottom of the viewport.
+  // Resource items also use a smaller font to fit a narrow screen.
+  const wrapStyle: React.CSSProperties = vp.isMobile
+    ? { ...S.wrap, bottom: 'auto', top: 70 }
+    : S.wrap;
+  const barStyle: React.CSSProperties = vp.isMobile
+    ? { ...S.bar, gap: 6, padding: '4px 10px' }
+    : S.bar;
+  const itemStyle: React.CSSProperties = vp.isMobile
+    ? { ...S.item, fontSize: 11 }
+    : S.item;
+  const progressBarStyle: React.CSSProperties = vp.isMobile
+    ? { ...S.progressBar, width: 'min(320px, calc(100vw - 40px))' }
+    : S.progressBar;
+
   return (
-    <div style={S.wrap}>
-      <div style={S.bar}>
+    <div style={wrapStyle}>
+      <div style={barStyle}>
         {Object.entries(resources).map(([key, val]) => (
-          <div key={key} style={S.item}>
+          <div key={key} style={itemStyle}>
             <span>{ICONS[key] || '📦'}</span>
             <span style={S.val}>{typeof val === 'number' ? val.toFixed(1) : val}</span>
             <span style={S.label}>{key}</span>
@@ -85,7 +103,7 @@ export const ResourceBar: React.FC = () => {
       </div>
       {showProgress && nextTier && (
         <div
-          style={S.progressBar}
+          style={progressBarStyle}
           title={`${currentLabel} → ${TIER_LABEL[nextTier]} (${(rank!.lifetime).toLocaleString()} / ${(rank!.next_threshold ?? 0).toLocaleString()} luxury used)`}
         >
           <div style={S.progressMeta}>
