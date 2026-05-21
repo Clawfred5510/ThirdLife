@@ -2323,19 +2323,19 @@ const S: Record<string, React.CSSProperties> = {
     background: 'rgba(255,255,255,0.4)',
   },
 
-  // ── Home wallpaper — warm dusk gradient over a textured tan ─────────
+  // ── Home wallpaper — soft cartoon sky gradient with warm-cream apps ──
   homeWallpaper: {
     flex: 1, padding: '20px 16px',
-    background: 'linear-gradient(165deg, #3F2A1B 0%, #6B4226 50%, #B5563A 100%)',
+    background: 'linear-gradient(170deg, #FCE5B6 0%, #F0B884 45%, #D86E4A 100%)',
     display: 'flex', flexDirection: 'column',
   },
   homeTitle: {
-    fontSize: 15, color: '#F5E6D0',
+    fontSize: 16, color: '#3A2A1F',
     textAlign: 'center', marginBottom: 16,
-    textShadow: '0 1px 3px rgba(0,0,0,0.6)',
-    letterSpacing: 1,
-    fontFamily: 'Georgia, "Source Serif", serif',
-    fontWeight: 600,
+    textShadow: '0 1px 0 rgba(255,255,255,0.4)',
+    letterSpacing: 0.4,
+    fontFamily: '"Fraunces", Georgia, serif',
+    fontWeight: 800,
   },
   appGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
@@ -2369,9 +2369,10 @@ const S: Record<string, React.CSSProperties> = {
     border: 'none', cursor: 'pointer', fontSize: 16,
   },
   appHeaderTitle: {
-    fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6,
+    fontSize: 14, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6,
     color: '#F5E6D0',
-    fontFamily: 'Georgia, "Source Serif", serif',
+    fontFamily: '"Fraunces", Georgia, serif',
+    letterSpacing: 0.2,
   },
   appHeaderIcon: { fontSize: 14 },
   appBody: {

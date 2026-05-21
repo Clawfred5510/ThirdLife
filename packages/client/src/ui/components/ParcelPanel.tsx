@@ -144,73 +144,102 @@ export const ParcelPanel: React.FC = () => {
   const isOwnedByMe = parcel.owner_id !== '' && parcel.owner_id === sessionId;
   const isOwnedByOther = parcel.owner_id !== '' && parcel.owner_id !== sessionId;
 
+  // Cartoon palette — warm parchment surface, terra cotta CTAs, soft
+  // drop shadows. All panels in this file inherit from this; the
+  // overrides below just tweak position/size per mobile vs desktop.
+  const COLORS = {
+    surface: '#FAF3E0',
+    surfaceAlt: '#F0E5C9',
+    border: '#E3CBA8',
+    text: '#3A2A1F',
+    textMuted: '#8B6E4E',
+    accent: '#D86E4A',
+    accentText: '#FFFFFF',
+    gold: '#E5A845',
+    food: '#5BAA5A',
+    materials: '#A26B3F',
+    energy: '#E5A845',
+    luxury: '#9B6BBE',
+    housing: '#5C8FB3',
+    civic: '#C77B4F',
+    soft: 'rgba(58,42,31,0.18)',
+  };
+  const panelStyleBase: React.CSSProperties = {
+    background: COLORS.surface,
+    color: COLORS.text,
+    fontFamily: '"Nunito", system-ui, sans-serif',
+    boxShadow: `0 8px 24px ${COLORS.soft}, inset 0 0 0 1px ${COLORS.border}`,
+    zIndex: 100,
+  };
   const panelStyle: React.CSSProperties = vp.isMobile
     ? {
+        ...panelStyleBase,
         position: 'absolute',
-        bottom: 8,
-        left: 8,
-        right: 8,
+        bottom: 8, left: 8, right: 8,
         maxHeight: '70vh',
         overflowY: 'auto',
-        background: 'rgba(0, 0, 0, 0.88)',
-        color: '#e0e0e0',
-        padding: '12px 14px',
-        borderRadius: 10,
-        fontFamily: 'monospace',
-        fontSize: 12,
-        zIndex: 100,
-        border: '1px solid rgba(255,255,255,0.12)',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+        padding: '14px 16px',
+        borderRadius: 16,
+        fontSize: 13,
       }
     : {
+        ...panelStyleBase,
         position: 'absolute',
-        bottom: 20,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        background: 'rgba(0, 0, 0, 0.82)',
-        color: '#e0e0e0',
-        padding: '14px 20px',
-        borderRadius: 8,
-        fontFamily: 'monospace',
-        fontSize: 13,
-        minWidth: 320,
-        maxWidth: 400,
-        zIndex: 100,
-        border: '1px solid rgba(255,255,255,0.12)',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+        bottom: 20, left: '50%', transform: 'translateX(-50%)',
+        padding: '18px 22px',
+        borderRadius: 18,
+        fontSize: 14,
+        minWidth: 340,
+        maxWidth: 440,
       };
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 10,
-    textTransform: 'uppercase',
+    fontSize: 11,
+    textTransform: 'uppercase' as const,
     letterSpacing: 1,
-    opacity: 0.5,
-    marginBottom: 4,
+    color: COLORS.textMuted,
+    fontWeight: 700,
+    marginBottom: 6,
   };
 
   const inputStyle: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.08)',
-    border: '1px solid rgba(255,255,255,0.15)',
-    borderRadius: 4,
-    color: '#e0e0e0',
-    padding: '4px 8px',
-    fontSize: 13,
-    fontFamily: 'monospace',
+    background: '#FFFCF2',
+    border: `2px solid ${COLORS.border}`,
+    borderRadius: 10,
+    color: COLORS.text,
+    padding: '8px 12px',
+    fontSize: 14,
+    fontFamily: '"Nunito", system-ui, sans-serif',
+    fontWeight: 500,
     width: '100%',
-    marginBottom: 6,
+    marginBottom: 8,
     boxSizing: 'border-box' as const,
+    outline: 'none',
   };
 
   const buttonStyle: React.CSSProperties = {
-    background: '#4a90d9',
+    background: COLORS.accent,
     border: 'none',
-    borderRadius: 4,
-    color: 'white',
-    padding: '6px 16px',
-    fontSize: 13,
-    fontFamily: 'monospace',
+    borderRadius: 12,
+    color: COLORS.accentText,
+    padding: '10px 22px',
+    fontSize: 14,
+    fontFamily: '"Nunito", system-ui, sans-serif',
     cursor: 'pointer',
-    fontWeight: 'bold' as const,
+    fontWeight: 800 as const,
+    boxShadow: `0 4px 0 #B0573B, 0 6px 12px ${COLORS.soft}`,
+    transition: 'transform 0.08s ease',
+  };
+
+  // Per-category accent — building tiles pick up a small color band so
+  // the grid reads at a glance.
+  const CATEGORY_TINT: Record<string, string> = {
+    food: COLORS.food,
+    materials: COLORS.materials,
+    energy: COLORS.energy,
+    'luxury-housing': COLORS.housing,
+    'luxury-civic': COLORS.civic,
+    legacy: COLORS.textMuted,
   };
 
   return (
@@ -220,20 +249,38 @@ export const ParcelPanel: React.FC = () => {
       aria-label={`Parcel ${parcel.id} details`}
       aria-modal="false"
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 14, fontWeight: 'bold' }}>
-          Parcel #{parcel.id}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 10,
+        paddingBottom: 8,
+        borderBottom: `2px solid ${COLORS.border}`,
+      }}>
+        <span style={{
+          fontSize: 14,
+          fontWeight: 800,
+          color: COLORS.text,
+        }}>
+          📍 Parcel #{parcel.id}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 11, opacity: 0.6 }}>
+          <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 600 }}>
             ({parcel.grid_x}, {parcel.grid_y})
           </span>
           <button
             onClick={() => selectParcel(null)}
             aria-label="Close parcel details (Escape)"
             style={{
-              background: 'transparent', border: 'none', color: '#e0e0e0',
-              fontSize: 16, cursor: 'pointer', padding: '0 4px', lineHeight: 1,
+              background: COLORS.surfaceAlt,
+              border: 'none',
+              color: COLORS.text,
+              fontSize: 14,
+              cursor: 'pointer',
+              padding: 0,
+              lineHeight: 1,
+              width: 24, height: 24, borderRadius: 12,
+              fontWeight: 800,
             }}
           >
             ×
@@ -250,8 +297,22 @@ export const ParcelPanel: React.FC = () => {
 
       {!parcel.owner_id && !RESERVED_PARCEL_IDS.includes(parcel.id) && (
         <>
-          <div style={{ marginBottom: 8, opacity: 0.8 }}>
-            Unclaimed parcel — <span style={{ opacity: 0.6 }}>pick what to build:</span>
+          <div style={{
+            marginBottom: 10,
+            fontFamily: '"Fraunces", Georgia, serif',
+            fontSize: 18, fontWeight: 800,
+            color: COLORS.text,
+          }}>
+            Pick what to build
+            <span style={{
+              display: 'block',
+              fontFamily: '"Nunito", system-ui, sans-serif',
+              fontSize: 11, fontWeight: 600,
+              color: COLORS.textMuted,
+              marginTop: 2,
+            }}>
+              Unclaimed parcel
+            </span>
           </div>
           <div
             role="radiogroup"
@@ -278,6 +339,7 @@ export const ParcelPanel: React.FC = () => {
               const title = canBuild
                 ? `${b.label} · Tier ${b.tier} · ${total.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`
                 : `${b.label} — ${blockers.join(' · ')}`;
+              const tint = CATEGORY_TINT[b.category] ?? COLORS.textMuted;
               return (
                 <button
                   key={b.type}
@@ -288,42 +350,65 @@ export const ParcelPanel: React.FC = () => {
                   disabled={!canBuild}
                   onClick={() => setPickedBuilding(b.type)}
                   style={{
-                    background: selected
-                      ? '#facc15'
-                      : (canBuild ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'),
-                    color: selected ? '#1a1409' : (canBuild ? '#e0e0e0' : 'rgba(224,224,224,0.35)'),
+                    background: selected ? COLORS.surfaceAlt : '#FFFCF2',
+                    color: canBuild ? COLORS.text : 'rgba(58,42,31,0.35)',
                     border: selected
-                      ? '1px solid #facc15'
-                      : (!rankOk ? '1px solid rgba(181,86,58,0.45)' : '1px solid rgba(255,255,255,0.15)'),
-                    borderRadius: 4,
-                    padding: '6px 4px',
-                    fontSize: 10,
-                    fontFamily: 'monospace',
+                      ? `2.5px solid ${COLORS.accent}`
+                      : `2px solid ${!rankOk ? 'rgba(226,92,77,0.35)' : COLORS.border}`,
+                    borderRadius: 12,
+                    padding: '8px 6px 6px',
+                    fontFamily: '"Nunito", system-ui, sans-serif',
+                    fontSize: 11,
+                    fontWeight: 700,
                     cursor: canBuild ? 'pointer' : 'not-allowed',
                     textAlign: 'center',
-                    lineHeight: 1.3,
+                    lineHeight: 1.25,
                     position: 'relative',
+                    boxShadow: selected
+                      ? `0 4px 0 #B0573B, 0 6px 12px ${COLORS.soft}`
+                      : (canBuild ? `0 2px 0 ${COLORS.border}` : 'none'),
+                    opacity: canBuild ? 1 : 0.6,
                   }}
                 >
-                  <div style={{ fontWeight: 'bold' }}>{b.label}</div>
-                  <div style={{ opacity: 0.6, fontSize: 8, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  {/* Chain accent band */}
+                  <div style={{
+                    height: 4,
+                    background: tint,
+                    borderRadius: 2,
+                    margin: '-2px -2px 6px',
+                    opacity: canBuild ? 1 : 0.5,
+                  }} />
+                  <div style={{ fontWeight: 800, fontSize: 11 }}>{b.label}</div>
+                  <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>
                     T{b.tier} · {b.category.replace('luxury-', '')}
                   </div>
-                  <div style={{ opacity: 0.75, fontSize: 9 }}>{b.cost.toLocaleString()}</div>
+                  <div style={{
+                    fontSize: 11,
+                    color: COLORS.gold,
+                    fontWeight: 700,
+                    marginTop: 4,
+                    fontVariantNumeric: 'tabular-nums' as const,
+                  }}>
+                    {b.cost.toLocaleString()}
+                  </div>
                   {b.materialCost > 0 && (
                     <div style={{
-                      opacity: enoughMaterials ? 0.6 : 0.9,
-                      fontSize: 8,
-                      color: enoughMaterials ? '#e0e0e0' : '#fca5a5',
+                      fontSize: 9,
+                      fontWeight: 600,
+                      color: enoughMaterials ? COLORS.materials : '#C04331',
                     }}>
-                      +{b.materialCost.toLocaleString()} mat
+                      +{b.materialCost.toLocaleString()} ⛏️
                     </div>
                   )}
                   {!rankOk && (
                     <div style={{
-                      position: 'absolute', top: 2, right: 3,
-                      fontSize: 7, fontWeight: 700,
-                      color: '#fca5a5', letterSpacing: 0.4,
+                      position: 'absolute', top: 4, right: 5,
+                      padding: '1px 4px',
+                      borderRadius: 6,
+                      fontSize: 8, fontWeight: 800,
+                      color: '#FFFFFF',
+                      background: 'rgba(226,92,77,0.85)',
+                      letterSpacing: 0.4,
                     }}>
                       🔒 {TIER_LABEL[b.minRank].slice(0, 3).toUpperCase()}
                     </div>
@@ -352,26 +437,33 @@ export const ParcelPanel: React.FC = () => {
             if (blockers.length === 0) return null;
             return (
               <div style={{
-                fontSize: 11,
-                color: '#fca5a5',
-                background: 'rgba(181,86,58,0.10)',
-                borderLeft: '2px solid #B5563A',
-                padding: '4px 6px',
-                marginBottom: 6,
-                borderRadius: 2,
-                lineHeight: 1.35,
+                fontSize: 12,
+                color: '#7A2E1F',
+                background: '#FBE5D6',
+                border: `2px solid ${COLORS.accent}`,
+                padding: '8px 10px',
+                marginBottom: 10,
+                borderRadius: 10,
+                lineHeight: 1.45,
+                fontWeight: 600,
               }}>
-                {blockers.map((b, i) => <div key={i}>• {b}</div>)}
+                {blockers.map((b, i) => <div key={i}>⚠️ {b}</div>)}
               </div>
             );
           })()}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 12 }}>
-              Total: <strong style={{ color: '#facc15' }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap' as const,
+          }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              Total: <strong style={{ color: COLORS.gold, fontSize: 16, fontWeight: 800 }}>
                 {(BUILDINGS[pickedBuilding].cost + CLAIM_COST).toLocaleString()} ${CURRENCY_NAME}
               </strong>
-              <span style={{ opacity: 0.55, marginLeft: 6 }}>
-                (land {CLAIM_COST.toLocaleString()} + {BUILDINGS[pickedBuilding].label.toLowerCase()} {BUILDINGS[pickedBuilding].cost.toLocaleString()})
+              <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 11, display: 'block' }}>
+                land {CLAIM_COST.toLocaleString()} + {BUILDINGS[pickedBuilding].label.toLowerCase()} {BUILDINGS[pickedBuilding].cost.toLocaleString()}
               </span>
             </span>
             {(() => {
@@ -396,16 +488,27 @@ export const ParcelPanel: React.FC = () => {
               );
             })()}
           </div>
-          <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>
-            Your balance: {credits.toLocaleString()} ${CURRENCY_NAME}
+          <div style={{
+            fontSize: 11,
+            color: COLORS.textMuted,
+            marginTop: 8,
+            fontWeight: 600,
+          }}>
+            Your balance: <span style={{ color: COLORS.gold }}>{credits.toLocaleString()} ${CURRENCY_NAME}</span>
           </div>
         </>
       )}
 
       {isOwnedByMe && (
         <>
-          <div style={{ marginBottom: 8, color: '#4ade80', fontWeight: 'bold' }}>
-            Your Parcel
+          <div style={{
+            marginBottom: 10,
+            color: COLORS.food,
+            fontWeight: 800,
+            fontSize: 16,
+            fontFamily: '"Fraunces", Georgia, serif',
+          }}>
+            🏠 Your Parcel
           </div>
           <div style={labelStyle}>Business Name</div>
           <input
@@ -414,13 +517,13 @@ export const ParcelPanel: React.FC = () => {
             onChange={(e) => setEditName(e.target.value)}
             placeholder="e.g. Joe's Cafe"
           />
-          <div style={{ ...labelStyle, opacity: 0.85, marginTop: 4 }}>
-            Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType ?? '—'}</span>
+          <div style={{ ...labelStyle, marginTop: 6 }}>
+            Type — <span style={{ color: COLORS.gold }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType ?? '—'}</span>
           </div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             {editType && (
               <button
-                style={{ ...buttonStyle, background: '#B5563A' }}
+                style={{ ...buttonStyle, background: '#C04331', boxShadow: '0 4px 0 #8E2F22, 0 6px 12px rgba(58,42,31,0.18)' }}
                 onClick={handleDemolish}
                 aria-label="Demolish this building (50% refund)"
               >
@@ -436,20 +539,25 @@ export const ParcelPanel: React.FC = () => {
 
       {isOwnedByOther && (
         <>
-          <div style={{ marginBottom: 6, color: '#fb923c' }}>
+          <div style={{
+            marginBottom: 8,
+            color: COLORS.accent,
+            fontWeight: 700,
+            fontSize: 13,
+          }}>
             Owned by another player
           </div>
           {parcel.business_name && (
-            <div style={{ opacity: 0.85 }}>
-              <strong>{parcel.business_name}</strong>
+            <div style={{ fontSize: 16, fontWeight: 800, fontFamily: '"Fraunces", serif' }}>
+              {parcel.business_name}
             </div>
           )}
           {parcel.business_type && (
-            <div style={{ ...labelStyle, opacity: 0.75 }}>
-              Type — <span style={{ color: '#facc15' }}>{BUILDINGS[(parcel.business_type as BuildingType)]?.label ?? parcel.business_type}</span>
+            <div style={{ ...labelStyle, marginTop: 4 }}>
+              Type — <span style={{ color: COLORS.gold }}>{BUILDINGS[(parcel.business_type as BuildingType)]?.label ?? parcel.business_type}</span>
             </div>
           )}
-          <div style={{ fontSize: 11, opacity: 0.55, marginTop: 6 }}>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 6 }}>
             Read-only — you don&apos;t own this parcel.
           </div>
         </>
