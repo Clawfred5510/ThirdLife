@@ -344,6 +344,10 @@ export function sendFastTravel(stopIndex: number): void {
   room?.send(MessageType.FAST_TRAVEL, { stopIndex });
 }
 
+export function sendRespawn(): void {
+  room?.send(MessageType.RESPAWN, {});
+}
+
 export function sendJobStart(jobType: string): void {
   room?.send(MessageType.JOB_START, { jobType });
 }

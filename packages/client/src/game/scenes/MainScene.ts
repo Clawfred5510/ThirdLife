@@ -28,6 +28,7 @@ import {
   onPlayerRemove,
   onPlayerChange,
   sendInput,
+  sendRespawn,
   getSessionId,
   PlayerSnapshot,
   onParcelState,
@@ -48,6 +49,7 @@ import {
   CAMERA_FOLLOW_MAX_ZOOM,
   DAY_CYCLE_SECONDS,
   REMOTE_PLAYER_LERP,
+  SPAWN_POINT,
 } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
@@ -320,6 +322,12 @@ export class MainScene {
       this.handleParcelUpdate(update.id, update);
     });
 
+    // Phone "Spawn" app dispatches `tl-respawn` — send the server message
+    // (so other players see us snap too) and locally snap the avatar,
+    // collider, and camera target. Local prediction owns x/z, so the
+    // server's PLAYER_UPDATE wouldn't move us without this hand-off.
+    window.addEventListener('tl-respawn', () => this.respawnLocal());
+
     // ---- Keyboard input ----
 
     this.setupKeyboardInput();
@@ -460,6 +468,31 @@ export class MainScene {
         remote.targetX = view.x;
         remote.targetZ = view.z;
       }
+    }
+  }
+
+  /** Snap the local player back to world spawn. Triggered by the phone's
+   *  "Spawn" app via the `tl-respawn` window event. Also notifies the
+   *  server so other clients see the teleport. */
+  private respawnLocal(): void {
+    sendRespawn();
+    const localId = getSessionId() ?? this.localPlayerId;
+    if (!localId) return;
+    const remote = this.remotePlayers.get(localId);
+    if (!remote) return;
+    remote.root.position.set(SPAWN_POINT.x, SPAWN_POINT.y, SPAWN_POINT.z);
+    remote.root.rotation.y = 0;
+    remote.targetX = SPAWN_POINT.x;
+    remote.targetY = SPAWN_POINT.y;
+    remote.targetZ = SPAWN_POINT.z;
+    remote.targetRotation = 0;
+    remote.prevX = SPAWN_POINT.x;
+    remote.prevZ = SPAWN_POINT.z;
+    if (this.localPlayerCollider) {
+      this.localPlayerCollider.position.set(SPAWN_POINT.x, 1.0, SPAWN_POINT.z);
+    }
+    if (this.arcCamera) {
+      this.arcCamera.target = new Vector3(SPAWN_POINT.x, SPAWN_POINT.y + 1.3, SPAWN_POINT.z);
     }
   }
 

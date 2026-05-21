@@ -88,6 +88,7 @@ export enum MessageType {
   CREDITS_UPDATE = 'credits_update',
   PLAYER_COLOR = 'player_color',
   FAST_TRAVEL = 'fast_travel',
+  RESPAWN = 'respawn',
   JOB_START = 'job_start',
   JOB_UPDATE = 'job_update',
   JOB_COMPLETE = 'job_complete',

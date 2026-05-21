@@ -8,6 +8,7 @@ import {
   MessageType,
   PlayerInput,
   BUS_STOPS,
+  SPAWN_POINT,
   features,
   Appearance,
   DEFAULT_APPEARANCE,
@@ -426,6 +427,22 @@ export class GameRoom extends Room<GameState> {
       if (!stop) return;
       player.x = stop.x;
       player.z = stop.z;
+      this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
+    });
+
+    // Phone "Spawn" app — teleport the player back to the world origin.
+    // No payload; spawn coords come from shared constants so server and
+    // client always agree. Position is persisted so a reconnect lands
+    // at spawn too.
+    this.onMessage(MessageType.RESPAWN, (client: Client) => {
+      const player = this.players.get(client.sessionId);
+      if (!player) return;
+      player.x = SPAWN_POINT.x;
+      player.y = SPAWN_POINT.y;
+      player.z = SPAWN_POINT.z;
+      player.rotation = 0;
+      this.pendingInputs.delete(client.sessionId);
+      savePlayerPosition(this.pid(client.sessionId), player.x, player.y, player.z);
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
 

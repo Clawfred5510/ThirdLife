@@ -511,6 +511,10 @@ export const INCOME_TICK_MS = TICK_LENGTH_MS;
 export const TRADING_FEE_BPS = 100;
 // TRANSFER_FEE_BPS and BPS_DENOMINATOR are re-exported from pricing.ts.
 
+/** Default world spawn point. New players are seeded here in the DB
+ *  and the phone's "Spawn" app teleports back to it. */
+export const SPAWN_POINT = { x: 0, y: 0, z: -80 };
+
 export const BUS_STOPS = [
   { name: 'Downtown Central', x: 450, z: -250 },
   { name: 'Residential Park', x: -500, z: 500 },

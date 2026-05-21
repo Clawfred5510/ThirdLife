@@ -20,7 +20,7 @@ import {
 
 type AppId =
   | 'leaderboard' | 'market' | 'events' | 'world2d' | 'governance'
-  | 'agents' | 'closet' | 'wallet' | 'inventory' | 'rank';
+  | 'agents' | 'closet' | 'wallet' | 'inventory' | 'rank' | 'spawn';
 type ActiveApp = AppId | null;
 
 interface AppDef {
@@ -47,6 +47,9 @@ const APPS: AppDef[] = [
   // UI Overhaul: rename Events → Notifications. The events feed now
   // also surfaces offline-accrual recap entries and craft notifications.
   { id: 'events',      label: 'Notifications', icon: '🔔', color: '#D8C4A0' }, // sandstone
+  // Action-style tile: tapping teleports the player to world spawn and
+  // closes the phone (no in-phone view, like Closet).
+  { id: 'spawn',       label: 'Spawn',       icon: '🏠', color: '#3F7A3D' }, // forest
 ];
 
 // ── Shared types ──────────────────────────────────────────────────────
@@ -226,9 +229,15 @@ export const Phone: React.FC = () => {
   // The Closet app is special: it doesn't have an in-phone view. Tapping the
   // icon dispatches the open-character-creator event and closes the phone so
   // the user gets the full-screen editor without overlapping UI.
+  // Spawn is also action-only: it fires a tl-respawn event and closes.
   const launchApp = (id: AppId) => {
     if (id === 'closet') {
       window.dispatchEvent(new CustomEvent('open-character-creator'));
+      close();
+      return;
+    }
+    if (id === 'spawn') {
+      window.dispatchEvent(new CustomEvent('tl-respawn'));
       close();
       return;
     }
