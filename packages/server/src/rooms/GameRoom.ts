@@ -679,6 +679,22 @@ export class GameRoom extends Room<GameState> {
     }
     this.pidBySession.set(client.sessionId, persistentId);
 
+    // One wallet, one live session. If the same persistentId is already
+    // connected from a different session, drop the older one so the new
+    // device takes over. Without this, two devices on the same wallet
+    // each control their own server-side PlayerData but broadcast under
+    // the SAME wallet id — knownPlayers on every client dedupes by id
+    // and the avatars desync.
+    for (const [otherSessionId, otherPid] of this.pidBySession) {
+      if (otherSessionId === client.sessionId) continue;
+      if (otherPid !== persistentId) continue;
+      const otherClient = this.clients.find((c) => c.sessionId === otherSessionId);
+      if (otherClient) {
+        try { otherClient.leave(4002, 'wallet_taken_over_elsewhere'); } catch { /* best effort */ }
+      }
+      // onLeave will fire and clean pidBySession + players for this session.
+    }
+
     const displayName = options.name || `Player_${persistentId.slice(0, 4)}`;
     const row = getOrCreatePlayer(persistentId, displayName);
 
