@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { apiGet, apiPost, apiDelete, hasAuthToken } from '../../network/api';
+import { apiGet, apiPost, apiDelete, hasAuthToken, API_BASE } from '../../network/api';
 import {
   hasInjectedWallet,
   getStoredPlayerId,
@@ -557,7 +557,15 @@ const ROLE_HINT: Record<AgentRole, string> = {
   craft: 'Consumes input resource to mint a named luxury item every tick.',
 };
 
-interface AgentsMine { wallet: string; agents: AgentRow[]; limit: number; }
+interface AgentsMine {
+  wallet: string;
+  agents: AgentRow[];
+  /** Legacy single-cap (in-game). New clients read in_game_limit + external_limit. */
+  limit: number;
+  in_game_limit?: number;
+  external_limit?: number;
+  rank?: string;
+}
 
 interface WorldParcel {
   id: number;
@@ -605,30 +613,80 @@ const AgentsBody: React.FC = () => {
     );
   }
 
+  // Split into external (pinned, green) + in-game (default, brown).
+  // Both groups share the same AgentCard component — the green theme is
+  // applied conditionally on agent.is_external.
+  const externalAgents = data?.agents.filter((a) => a.is_external) ?? [];
+  const inGameAgents = data?.agents.filter((a) => !a.is_external) ?? [];
+  const inGameLimit = data?.in_game_limit ?? data?.limit ?? 0;
+  const externalLimit = data?.external_limit ?? 0;
+  const atInGameCap = !!data && inGameAgents.length >= inGameLimit;
+
   return (
     <>
       <div style={S.agentHeader}>
         <span style={S.agentCount}>
-          {data ? `${data.agents.length}/${data.limit}` : '…'} agents
+          {data ? (
+            <>
+              <strong style={{ color: '#F5E6D0' }}>{inGameAgents.length}</strong>/{inGameLimit} in-game
+              <span style={{ color: '#7A6850', margin: '0 4px' }}>·</span>
+              <strong style={{ color: '#9FD89A' }}>{externalAgents.length}</strong>/{externalLimit} external
+            </>
+          ) : '…'}
         </span>
         <button
           onClick={() => setShowCreate(true)}
-          disabled={!!data && data.agents.length >= data.limit}
+          disabled={atInGameCap}
           style={S.createBtn}
+          title={atInGameCap ? 'In-game agent cap reached — rank up to add more' : 'Spawn a new in-game agent'}
         >
-          + New agent
+          + New in-game
         </button>
       </div>
       {err && <div style={S.errMsg}>{err}</div>}
       {data && data.agents.length === 0 && (
         <div style={S.emptyPad}>
-          You have no agents yet. Create one — each agent is an autonomous economic actor you fund and direct.
+          You have no agents yet. Spawn an in-game agent below, or wire up an
+          external AI via the API.
         </div>
       )}
       <div style={S.agentList}>
-        {data?.agents.map((a) => (
-          <AgentCard key={a.id} agent={a} onChange={refresh} />
-        ))}
+        {/* External agents pin to the top in a green-themed group so they
+            stand out visually from the brownish-yellow in-game cards. */}
+        {externalAgents.length > 0 && (
+          <>
+            <div style={S.agentSectionLabel}>
+              <span style={{ color: '#9FD89A' }}>▍</span> External agents
+              <span style={S.agentSectionMeta}>
+                {externalAgents.length}/{externalLimit}
+              </span>
+            </div>
+            {externalAgents.map((a) => (
+              <AgentCard key={a.id} agent={a} onChange={refresh} />
+            ))}
+          </>
+        )}
+        {/* Connect-external CTA — registration is documentation-driven
+            (the player or their external AI signs the wallet challenge
+            against /agents/register-external), so we point at the spec
+            rather than embed a modal. */}
+        <ExternalAgentCTA
+          atCap={!!data && externalAgents.length >= externalLimit}
+          limit={externalLimit}
+        />
+        {inGameAgents.length > 0 && (
+          <>
+            <div style={{ ...S.agentSectionLabel, marginTop: 8 }}>
+              <span style={{ color: '#D89438' }}>▍</span> In-game agents
+              <span style={S.agentSectionMeta}>
+                {inGameAgents.length}/{inGameLimit}
+              </span>
+            </div>
+            {inGameAgents.map((a) => (
+              <AgentCard key={a.id} agent={a} onChange={refresh} />
+            ))}
+          </>
+        )}
       </div>
       {showCreate && (
         <CreateAgentModal
@@ -644,6 +702,48 @@ const AgentsBody: React.FC = () => {
         />
       )}
     </>
+  );
+};
+
+/**
+ * External-agent connect call-to-action.
+ *
+ * External agents are wallet-signed REST clients (OpenClaw, Hermes,
+ * custom scripts) — they aren't created from the in-game phone. This
+ * card explains the flow in one sentence and links to the live API
+ * spec on the running server. Greens out when the player has hit
+ * their external-agent cap.
+ */
+const ExternalAgentCTA: React.FC<{ atCap: boolean; limit: number }> = ({ atCap, limit }) => {
+  const docsUrl = `${API_BASE}/api/v1/spec`;
+  return (
+    <div style={S.externalCTA}>
+      <div style={S.externalCTAHead}>
+        <span style={S.externalCTAIcon} aria-hidden>⚡</span>
+        <span style={S.externalCTATitle}>Connect an external AI agent</span>
+      </div>
+      <div style={S.externalCTABody}>
+        External agents trade on the marketplace on your behalf via REST.
+        Registration is wallet-signed — you (or your AI) follow the docs at{' '}
+        <code style={S.externalCTACode}>/api/v1/agents/register-external</code>.
+        {atCap ? (
+          <>
+            {' '}<strong style={{ color: '#fca5a5' }}>Cap reached</strong> — rank up
+            to connect more (current cap: {limit}).
+          </>
+        ) : (
+          <> Up to {limit} at your current rank.</>
+        )}
+      </div>
+      <a
+        href={docsUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        style={S.externalCTABtn}
+      >
+        View API docs →
+      </a>
+    </div>
   );
 };
 
@@ -705,10 +805,13 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
   const reqBuilding = agent.job ? JOBS[agent.job]?.requires_building : undefined;
 
   return (
-    <div style={S.agentCard}>
+    <div style={agent.is_external ? { ...S.agentCard, ...S.agentCardExternal } : S.agentCard}>
       <div style={S.agentCardHead}>
         <span style={S.agentName}>
-          <span style={{ marginRight: 4 }}>{jobIcon}</span>{agent.name}
+          <span style={{ marginRight: 4 }}>{agent.is_external ? '🛰️' : jobIcon}</span>{agent.name}
+          {agent.is_external && (
+            <span style={S.externalBadge} aria-label="External agent">EXT</span>
+          )}
         </span>
         <span style={S.agentBal}>{formatAmeta(agent.balance)} $AMETA</span>
       </div>
@@ -2096,6 +2199,68 @@ const S: Record<string, React.CSSProperties> = {
     background: 'rgba(245,230,208,0.04)',
     borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.12)',
     display: 'flex', flexDirection: 'column', gap: 4,
+  },
+  // External-agent green theme — visually distinct from the
+  // brownish-yellow in-game default. Forest-green border + a faint
+  // green tint + a green left rail via box-shadow.
+  agentCardExternal: {
+    background: 'rgba(63,122,61,0.12)',
+    borderColor: 'rgba(159,216,154,0.55)',
+    boxShadow: 'inset 3px 0 0 rgba(159,216,154,0.9), 0 2px 8px rgba(0,0,0,0.25)',
+  },
+  externalBadge: {
+    marginLeft: 6,
+    padding: '1px 5px',
+    fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+    color: '#1F1812',
+    background: '#9FD89A',
+    borderRadius: 3,
+    verticalAlign: 'middle',
+  },
+  agentSectionLabel: {
+    fontSize: 10, fontWeight: 700,
+    letterSpacing: 0.6, textTransform: 'uppercase' as const,
+    color: '#F5E6D0',
+    display: 'flex', alignItems: 'center', gap: 6,
+    padding: '2px 0',
+  },
+  agentSectionMeta: {
+    fontSize: 9, color: '#7A6850', fontWeight: 500, letterSpacing: 0.3,
+    marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' as const,
+  },
+  externalCTA: {
+    padding: '10px 12px', borderRadius: 8,
+    background: 'rgba(63,122,61,0.06)',
+    borderWidth: 1, borderStyle: 'dashed' as const, borderColor: 'rgba(159,216,154,0.45)',
+    display: 'flex', flexDirection: 'column', gap: 6,
+  },
+  externalCTAHead: { display: 'flex', alignItems: 'center', gap: 6 },
+  externalCTAIcon: { fontSize: 16 },
+  externalCTATitle: {
+    fontSize: 12, fontWeight: 700,
+    color: '#9FD89A',
+    fontFamily: 'Georgia, serif',
+    letterSpacing: 0.3,
+  },
+  externalCTABody: {
+    fontSize: 11, color: '#A89378', lineHeight: 1.45,
+  },
+  externalCTACode: {
+    background: 'rgba(0,0,0,0.4)',
+    color: '#9FD89A',
+    padding: '0 4px',
+    borderRadius: 3,
+    fontSize: 10,
+    fontFamily: '"Courier New", monospace',
+  },
+  externalCTABtn: {
+    alignSelf: 'flex-start' as const,
+    padding: '6px 10px',
+    fontSize: 11, fontWeight: 600, letterSpacing: 0.3,
+    color: '#1F1812', background: '#9FD89A',
+    border: 'none', borderRadius: 6,
+    textDecoration: 'none',
+    cursor: 'pointer',
   },
   agentCardHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   agentName: { fontSize: 13, color: '#F5E6D0', fontWeight: 600, fontFamily: 'Georgia, serif' },

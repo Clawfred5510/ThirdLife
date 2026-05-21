@@ -953,7 +953,17 @@ router.get('/agents/mine', authWallet, (req: Request, res: Response) => {
       created_at: a.created_at,
     };
   });
-  res.json({ wallet, agents: out, limit: inGameAgentCapFor(wallet), rank: 'bronze' });
+  res.json({
+    wallet,
+    agents: out,
+    // `limit` kept for back-compat with older clients that only know
+    // the single in-game cap. New clients should read in_game_limit +
+    // external_limit and split the UI list.
+    limit: inGameAgentCapFor(wallet),
+    in_game_limit: inGameAgentCapFor(wallet),
+    external_limit: externalAgentCapFor(wallet),
+    rank: rankFor(wallet),
+  });
 });
 
 // Public catalog of job presets — used by the Phone create flow so the
