@@ -64,6 +64,7 @@ import {
   getLastSettledTick,
   setLastSettledTick,
   bumpAgentLifetimeStats,
+  bumpLifetimeLuxury,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -883,6 +884,13 @@ export class GameRoom extends Room<GameState> {
       const r = getPlayerResources(walletId);
       r.luxury += luxuryDelta;
       updatePlayerResources(walletId, r);
+      // UI Overhaul: offline-accrual luxury counts toward rank too.
+      // Mirrors the live tick's bumpLifetimeLuxury call. The connecting
+      // client will pick up the new rank/lifetime when it requests
+      // /wallet/rank after join; we don't need a RANK_UP broadcast since
+      // there's no confetti moment for accrual (the offline_accrual
+      // notification already surfaces the gain).
+      bumpLifetimeLuxury(walletId, luxuryDelta);
     }
     if (wageTotal > 0) {
       const perAgent = WORK_WAGE_AMETA_PER_TICK * missedTicks;
@@ -1469,6 +1477,30 @@ export class GameRoom extends Room<GameState> {
           resources.materials += bucket.legacyAdd.materials;
           resources.energy    += bucket.legacyAdd.energy;
           resources.luxury    += bucket.legacyAdd.luxury;
+
+          // UI Overhaul (rank model change 2026-05-20):
+          // Rank progress now tracks lifetime luxury *earned*, not only
+          // luxury *spent via items*. Fold this tick's production luxury
+          // (passive housing/civic + legacy luxury rate) into the same
+          // counter that powers the Rank app + bottom progress bar.
+          // Market buys are intentionally NOT counted — only luxury you
+          // produced from your own holdings advances rank, so the loop
+          // can't be cheesed by purchasing and reselling luxury.
+          const producedLuxury = bucket.passiveLuxury + bucket.legacyAdd.luxury;
+          if (producedLuxury > 0) {
+            const r2 = bumpLifetimeLuxury(ownerId, producedLuxury);
+            if (r2.rankBefore !== r2.rankAfter && r2.rankAfter) {
+              this.broadcast(MessageType.RANK_UP, {
+                player_id: ownerId,
+                from: r2.rankBefore,
+                to: r2.rankAfter,
+                lifetime: r2.lifetime,
+              });
+              addEvent('rank_up', ownerId, {
+                from: r2.rankBefore, to: r2.rankAfter, lifetime: r2.lifetime,
+              }, 'major');
+            }
+          }
         }
 
         // Persist any items crafted this tick + notify the client.

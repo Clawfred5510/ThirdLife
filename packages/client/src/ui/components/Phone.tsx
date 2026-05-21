@@ -1869,9 +1869,10 @@ const RankBody: React.FC = () => {
       </div>
 
       <div style={S.rankHint}>
-        Use luxury items in your Inventory to climb the ranks. Each item adds its
-        luxury value to your lifetime total. Higher ranks unlock more agents, more
-        land, and lower marketplace fees.
+        Every luxury you earn — whether produced passively by your Housing/Civic
+        buildings or gained by using a luxury item — adds to your lifetime total.
+        Higher ranks unlock more agents, more land, and lower marketplace fees.
+        (Luxury bought on the market does not count.)
       </div>
     </div>
   );

@@ -143,6 +143,15 @@ interface DBBackend {
   };
   /** Cumulative luxury burned. 0 if the player has never burned. */
   getLifetimeLuxuryBurned(playerId: string): number;
+  /** UI Overhaul: rank is now driven by lifetime luxury *earned*, not
+   *  only luxury *burned via items*. This helper folds production luxury
+   *  (passive housing/civic emission, legacy luxury rates, offline-accrual
+   *  luxury replay) into the same `lifetime_luxury_burned` column and
+   *  recomputes the rank atomically. Returns the new lifetime + rank
+   *  before/after so the caller can detect promotion. */
+  bumpLifetimeLuxury(
+    playerId: string, amount: number,
+  ): { lifetime: number; rankBefore: string | null; rankAfter: string | null };
   /** Current rank, or null if the player has never burned. */
   getPlayerRank(playerId: string): string | null;
   /** Force-set a player's rank (used by migration paths; usually computed
@@ -1048,6 +1057,31 @@ class SQLiteDatabase implements DBBackend {
     return row?.n ?? 0;
   }
 
+  bumpLifetimeLuxury(
+    playerId: string, amount: number,
+  ): { lifetime: number; rankBefore: string | null; rankAfter: string | null } {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      // No-op for zero/negative — preserve current lifetime + rank.
+      const cur = this.db.prepare(
+        `SELECT rank, lifetime_luxury_burned AS n FROM players WHERE id = ?`,
+      ).get(playerId) as { rank: string | null; n: number | null } | undefined;
+      return { lifetime: cur?.n ?? 0, rankBefore: cur?.rank ?? null, rankAfter: cur?.rank ?? null };
+    }
+    const txn = this.db.transaction(() => {
+      const pre = this.db.prepare(
+        `SELECT rank, lifetime_luxury_burned AS n FROM players WHERE id = ?`,
+      ).get(playerId) as { rank: string | null; n: number | null } | undefined;
+      const rankBefore = pre?.rank ?? null;
+      const newLifetime = (pre?.n ?? 0) + amount;
+      const rankAfter = rankFromLifetimeBurn(newLifetime);
+      this.db.prepare(
+        `UPDATE players SET lifetime_luxury_burned = ?, rank = ? WHERE id = ?`,
+      ).run(newLifetime, rankAfter, playerId);
+      return { lifetime: newLifetime, rankBefore, rankAfter };
+    });
+    return txn();
+  }
+
   getPlayerRank(playerId: string): string | null {
     const row = this.db.prepare(
       `SELECT rank FROM players WHERE id = ?`,
@@ -1594,6 +1628,20 @@ class MemoryDB implements DBBackend {
     return this.lifetimeBurn.get(playerId) ?? 0;
   }
 
+  bumpLifetimeLuxury(
+    playerId: string, amount: number,
+  ): { lifetime: number; rankBefore: string | null; rankAfter: string | null } {
+    const rankBefore = this.rankByPlayer.get(playerId) ?? null;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { lifetime: this.lifetimeBurn.get(playerId) ?? 0, rankBefore, rankAfter: rankBefore };
+    }
+    const lifetime = (this.lifetimeBurn.get(playerId) ?? 0) + amount;
+    this.lifetimeBurn.set(playerId, lifetime);
+    const rankAfter = rankFromLifetimeBurn(lifetime);
+    this.rankByPlayer.set(playerId, rankAfter);
+    return { lifetime, rankBefore, rankAfter };
+  }
+
   getPlayerRank(playerId: string): string | null {
     return this.rankByPlayer.get(playerId) ?? null;
   }
@@ -1814,6 +1862,9 @@ export function addPlayerItems(playerId: string, itemKind: string, delta: number
 }
 export function burnLuxuryItems(playerId: string, itemKind: string, quantity: number, burnValue: number) {
   return backend.burnLuxuryItems(playerId, itemKind, quantity, burnValue);
+}
+export function bumpLifetimeLuxury(playerId: string, amount: number) {
+  return backend.bumpLifetimeLuxury(playerId, amount);
 }
 export function getLifetimeLuxuryBurned(playerId: string) {
   return backend.getLifetimeLuxuryBurned(playerId);
