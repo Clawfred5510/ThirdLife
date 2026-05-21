@@ -12,9 +12,13 @@ export class Game {
       stencil: true,
     });
 
-    window.addEventListener('resize', () => {
-      this.engine.resize();
-    });
+    const resize = () => this.engine.resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+    // visualViewport fires on iOS Safari URL-bar collapse/expand, which
+    // doesn't always trigger a regular `resize` event. Without this the
+    // canvas keeps its stale buffer size and renders into a scaled letterbox.
+    window.visualViewport?.addEventListener('resize', resize);
   }
 
   async start() {

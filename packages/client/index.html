@@ -2,7 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale=1 + user-scalable=no locks pinch-zoom (would otherwise
+         strand users half-zoomed); viewport-fit=cover lets us paint under the
+         notch and we add safe-area padding below; interactive-widget keeps the
+         soft keyboard from resizing the canvas. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- Standalone-mode hints so "Add to Home Screen" launches without
+         Safari chrome. status-bar=black-translucent matches our dark UI. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#1F1812" />
     <title>ThirdLife</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -10,9 +20,31 @@
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;900&family=Fraunces:opsz,wght@9..144,600;9..144,800&display=swap" rel="stylesheet" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Nunito', system-ui, sans-serif; }
-      #game-canvas { width: 100%; height: 100%; touch-action: none; }
-      #ui-root { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+      /* position:fixed pins the document to the actual visible area — on
+         iOS Safari, height:100% / 100vh include the collapsing URL bar
+         and cause the canvas to scroll. fixed + inset:0 = exact viewport. */
+      html, body {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-user-select: none;
+        user-select: none;
+        font-family: 'Nunito', system-ui, sans-serif;
+      }
+      #game-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+      /* UI root sits inside the safe area so notches/home indicator don't
+         overlap interactive widgets. Children opt back into pointer-events. */
+      #ui-root {
+        position: absolute;
+        top: env(safe-area-inset-top, 0);
+        right: env(safe-area-inset-right, 0);
+        bottom: env(safe-area-inset-bottom, 0);
+        left: env(safe-area-inset-left, 0);
+        pointer-events: none;
+      }
       #ui-root > * { pointer-events: auto; }
     </style>
   </head>
