@@ -28,6 +28,9 @@ import {
   LUXURY_ITEMS,
   ITEM_FOR_BUILDING,
   TIER_INDEX,
+  TIER_NAMES,
+  type Tier,
+  RANK_BURN_THRESHOLD,
   PROPERTY_FEE_BPS,
   BPS_DENOMINATOR,
   WORK_WAGE_AMETA_PER_TICK,
@@ -65,6 +68,7 @@ import {
   setLastSettledTick,
   bumpAgentLifetimeStats,
   bumpLifetimeLuxury,
+  getLifetimeLuxuryBurned,
 } from '../db';
 import { advanceWorldTick, recordGdp } from '../world';
 import { runAutopilotPass } from '../autopilot';
@@ -1119,9 +1123,46 @@ export class GameRoom extends Room<GameState> {
       return true;
     }
 
+    if (lower === 'rank') {
+      const playerId = this.pid(client.sessionId);
+      const arg = (rest[0] ?? '').toLowerCase();
+      if (!TIER_NAMES.includes(arg as Tier)) {
+        replyTo(
+          `Usage: /rank <bronze|silver|gold|platinum|diamond>. Got "${arg}".`,
+        );
+        return true;
+      }
+      const target = arg as Tier;
+      const targetThreshold = RANK_BURN_THRESHOLD[target];
+      const current = getLifetimeLuxuryBurned(playerId);
+      const delta = Math.max(0, targetThreshold - current);
+      if (delta === 0) {
+        replyTo(
+          `Already at or above ${target} (lifetime luxury used: ${current.toLocaleString()}).`,
+        );
+        return true;
+      }
+      const r = bumpLifetimeLuxury(playerId, delta);
+      if (r.rankBefore !== r.rankAfter && r.rankAfter) {
+        this.broadcast(MessageType.RANK_UP, {
+          player_id: playerId,
+          from: r.rankBefore,
+          to: r.rankAfter,
+          lifetime: r.lifetime,
+        });
+        addEvent('rank_up', playerId, {
+          from: r.rankBefore, to: r.rankAfter, lifetime: r.lifetime,
+        }, 'major');
+      }
+      replyTo(
+        `Set rank to ${target} (lifetime ${r.lifetime.toLocaleString()}).`,
+      );
+      return true;
+    }
+
     if (lower === 'help') {
       replyTo(
-        'Test commands: /skip [N], /tick, /give [amount], /give credit [amount], /godmode [on|off], /help',
+        'Test commands: /skip [N], /tick, /give [amount], /give credit [amount], /godmode [on|off], /rank <tier>, /help',
       );
       return true;
     }
