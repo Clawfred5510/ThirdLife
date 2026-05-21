@@ -223,6 +223,13 @@ export const Phone: React.FC = () => {
     return () => window.removeEventListener('tl-open-app', handler);
   }, []);
 
+  // Broadcast open/close so mobile overlays (Joystick, ChatPanel) can
+  // collapse while the phone is taking the full viewport. Without this
+  // the phone bezel covers the joystick and chat FAB.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('tl-phone-toggle', { detail: { open } }));
+  }, [open]);
+
   const close = () => { setOpen(false); setActiveApp(null); };
   const goHome = () => setActiveApp(null);
 

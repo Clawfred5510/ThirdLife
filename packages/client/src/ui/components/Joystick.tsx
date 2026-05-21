@@ -48,6 +48,7 @@ function pushVirtual(state: VirtualInput): void {
 
 export const Joystick: React.FC = () => {
   const [enabled, setEnabled] = useState<boolean>(() => isTouchPrimary());
+  const [phoneOpen, setPhoneOpen] = useState(false);
   const baseRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<number | null>(null);
@@ -62,6 +63,17 @@ export const Joystick: React.FC = () => {
     const onChange = () => setEnabled(isTouchPrimary());
     mq.addEventListener?.('change', onChange);
     return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+
+  // Hide the joystick while the phone is open — the phone bezel covers
+  // its hit area anyway and keeping it active means stray input.
+  useEffect(() => {
+    const onToggle = (e: Event) => {
+      const d = (e as CustomEvent<{ open: boolean }>).detail;
+      setPhoneOpen(!!d?.open);
+    };
+    window.addEventListener('tl-phone-toggle', onToggle);
+    return () => window.removeEventListener('tl-phone-toggle', onToggle);
   }, []);
 
   useEffect(() => {
@@ -145,7 +157,7 @@ export const Joystick: React.FC = () => {
     };
   }, [enabled]);
 
-  if (!enabled) return null;
+  if (!enabled || phoneOpen) return null;
 
   return (
     <div style={S.wrapper} aria-hidden>

@@ -74,17 +74,16 @@ export const ResourceBar: React.FC = () => {
   const pct = rank ? Math.round(Math.min(1, Math.max(0, rank.progress)) * 100) : 0;
   const currentLabel = rank?.rank ? TIER_LABEL[rank.rank] : 'Unranked';
 
-  // Mobile: bar shifts to top-center (under the chat FAB) so it doesn't
-  // collide with the build menu that lives at the bottom of the viewport.
-  // Resource items also use a smaller font to fit a narrow screen.
+  // Mobile: bar shifts to top-center (below the wallet/minimap row) and
+  // drops the word labels so the four icons + numbers fit a narrow screen.
   const wrapStyle: React.CSSProperties = vp.isMobile
-    ? { ...S.wrap, bottom: 'auto', top: 70 }
+    ? { ...S.wrap, bottom: 'auto', top: 56 }
     : S.wrap;
   const barStyle: React.CSSProperties = vp.isMobile
-    ? { ...S.bar, gap: 6, padding: '4px 10px' }
+    ? { ...S.bar, gap: 8, padding: '3px 10px' }
     : S.bar;
   const itemStyle: React.CSSProperties = vp.isMobile
-    ? { ...S.item, fontSize: 11 }
+    ? { ...S.item, fontSize: 11, gap: 2 }
     : S.item;
   const progressBarStyle: React.CSSProperties = vp.isMobile
     ? { ...S.progressBar, width: 'min(320px, calc(100vw - 40px))' }
@@ -97,7 +96,7 @@ export const ResourceBar: React.FC = () => {
           <div key={key} style={itemStyle}>
             <span>{ICONS[key] || '📦'}</span>
             <span style={S.val}>{typeof val === 'number' ? val.toFixed(1) : val}</span>
-            <span style={S.label}>{key}</span>
+            {!vp.isMobile && <span style={S.label}>{key}</span>}
           </div>
         ))}
       </div>

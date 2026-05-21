@@ -27,12 +27,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   containerMobile: {
     position: 'absolute',
-    // On mobile, chat docks at the bottom and only takes ~30% of the
-    // screen so it doesn't cover gameplay. The dismiss ✕ sits in the
-    // top-right corner of the panel.
+    // On mobile, chat docks at the bottom-left and stops short of the
+    // phone FAB (56+24=80px right inset) so the text box doesn't slide
+    // under it. ~30% of screen height keeps gameplay visible.
     bottom: 16,
     left: 8,
-    right: 8,
+    right: 80,
     maxHeight: '30vh',
     display: 'flex',
     flexDirection: 'column',
@@ -101,9 +101,21 @@ export const ChatPanel: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [phoneOpen, setPhoneOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const vp = useViewport();
+
+  // Hide the chat overlay while the phone is open — the bezel covers
+  // both the FAB (top-left) and the docked panel (bottom).
+  useEffect(() => {
+    const onToggle = (e: Event) => {
+      const d = (e as CustomEvent<{ open: boolean }>).detail;
+      setPhoneOpen(!!d?.open);
+    };
+    window.addEventListener('tl-phone-toggle', onToggle);
+    return () => window.removeEventListener('tl-phone-toggle', onToggle);
+  }, []);
 
   useEffect(() => {
     const unsub = onChat((msg: ChatMessage) => {
@@ -142,6 +154,10 @@ export const ChatPanel: React.FC = () => {
     },
     [handleSend],
   );
+
+  // Hide entire overlay while the phone is open on mobile — the bezel
+  // covers the chat anyway and stray taps go through the wrong layer.
+  if (vp.isMobile && phoneOpen) return null;
 
   // Mobile: chat collapses to a 💬 button in the corner; tap to expand
   // into a slim popup that doesn't cover the game view. Desktop: always

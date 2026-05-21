@@ -13,9 +13,11 @@ import {
   PlayerSnapshot,
 } from '../../network/Client';
 import type { ParcelData } from '@gamestu/shared';
+import { useViewport } from '../hooks/useViewport';
 
 // i18n: compass label is a single character — no localization needed
-const SIZE = 150;
+const SIZE_DESKTOP = 150;
+const SIZE_MOBILE = 100;
 
 // Mirror of buildings.ts STRIDE — keep in sync if STRIDE changes there
 const MINIMAP_STRIDE = 48;
@@ -24,16 +26,16 @@ const MINIMAP_STRIDE = 48;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const PARCEL_COLOR_FALLBACK = '#4A90D9';
 
-function worldToMinimap(wx: number, wz: number): [number, number] {
-  const mx = ((wx + WORLD_HALF) / (WORLD_HALF * 2)) * SIZE;
-  const my = ((-wz + WORLD_HALF) / (WORLD_HALF * 2)) * SIZE; // flip z so +Z is canvas-down
+function worldToMinimap(wx: number, wz: number, size: number): [number, number] {
+  const mx = ((wx + WORLD_HALF) / (WORLD_HALF * 2)) * size;
+  const my = ((-wz + WORLD_HALF) / (WORLD_HALF * 2)) * size; // flip z so +Z is canvas-down
   return [mx, my];
 }
 
-function gridToMinimap(gx: number, gy: number): [number, number] {
+function gridToMinimap(gx: number, gy: number, size: number): [number, number] {
   const wx = gx * MINIMAP_STRIDE - WORLD_HALF + 20;
   const wz = gy * MINIMAP_STRIDE - WORLD_HALF + 20;
-  return worldToMinimap(wx, wz);
+  return worldToMinimap(wx, wz, size);
 }
 
 const LANDMARK_GLYPH: Record<string, string> = {
@@ -41,6 +43,8 @@ const LANDMARK_GLYPH: Record<string, string> = {
 };
 
 export const Minimap: React.FC = () => {
+  const vp = useViewport();
+  const SIZE = vp.isMobile ? SIZE_MOBILE : SIZE_DESKTOP;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playersRef = useRef<Map<string, PlayerSnapshot>>(new Map());
   const parcelsRef = useRef<Map<number, ParcelData>>(new Map());
@@ -65,14 +69,14 @@ export const Minimap: React.FC = () => {
     ctx.lineWidth = 0.5;
     const step = MINIMAP_STRIDE * 5;
     for (let worldX = -WORLD_HALF; worldX <= WORLD_HALF; worldX += step) {
-      const [cx] = worldToMinimap(worldX, 0);
+      const [cx] = worldToMinimap(worldX, 0, SIZE);
       ctx.beginPath();
       ctx.moveTo(cx, 0);
       ctx.lineTo(cx, SIZE);
       ctx.stroke();
     }
     for (let worldZ = -WORLD_HALF; worldZ <= WORLD_HALF; worldZ += step) {
-      const [, cy] = worldToMinimap(0, worldZ);
+      const [, cy] = worldToMinimap(0, worldZ, SIZE);
       ctx.beginPath();
       ctx.moveTo(0, cy);
       ctx.lineTo(SIZE, cy);
@@ -86,7 +90,7 @@ export const Minimap: React.FC = () => {
       if (!parcel.owner_id) continue;
       const wx = parcel.grid_x * MINIMAP_STRIDE - WORLD_HALF + 20;
       const wz = parcel.grid_y * MINIMAP_STRIDE - WORLD_HALF + 20;
-      const [cx, cy] = worldToMinimap(wx, wz);
+      const [cx, cy] = worldToMinimap(wx, wz, SIZE);
       ctx.fillStyle = HEX_COLOR_RE.test(parcel.color) ? parcel.color : PARCEL_COLOR_FALLBACK;
       ctx.fillRect(cx, cy, 2, 2);
     }
@@ -101,7 +105,7 @@ export const Minimap: React.FC = () => {
     for (const lm of LANDMARKS) {
       const gx = Math.floor(lm.parcelId / GRID_COLS);
       const gy = lm.parcelId % GRID_COLS;
-      const [cx, cy] = gridToMinimap(gx, gy);
+      const [cx, cy] = gridToMinimap(gx, gy, SIZE);
       const glyph = LANDMARK_GLYPH[lm.type] ?? '◆';
       ctx.fillStyle = lm.type === 'town_hall' ? '#FFFFFF' : '#FFE08A';
       ctx.fillText(glyph, cx, cy);
@@ -140,7 +144,7 @@ export const Minimap: React.FC = () => {
 
     ctx.fillStyle = '#FF6B6B';
     for (const player of rendered) {
-      const [cx, cy] = worldToMinimap(player.x, player.z);
+      const [cx, cy] = worldToMinimap(player.x, player.z, SIZE);
       const px = Math.max(1, Math.min(SIZE - 1, cx));
       const py = Math.max(1, Math.min(SIZE - 1, cy));
       ctx.beginPath();
@@ -150,7 +154,7 @@ export const Minimap: React.FC = () => {
 
     // ── Layer 6: Local player ─────────────────────────────────────────────
     if (localPlayer) {
-      const [mx, my] = worldToMinimap(localPlayer.x, localPlayer.z);
+      const [mx, my] = worldToMinimap(localPlayer.x, localPlayer.z, SIZE);
       // rotation=0 means forward = +Z in world. The z-flip in worldToMinimap
       // already inverts the y axis, so apex = my - cos(rotation) maps that
       // forward vector onto canvas-up correctly. (Originally had a +PI
@@ -183,7 +187,7 @@ export const Minimap: React.FC = () => {
     ctx.font = 'bold 8px monospace';
     ctx.textBaseline = 'top';
     ctx.fillText('N', 4, 11);
-  }, []);
+  }, [SIZE]);
 
   useEffect(() => {
     // Player subscriptions
@@ -253,8 +257,8 @@ export const Minimap: React.FC = () => {
       aria-label="Open full world map"
       style={{
         position: 'absolute',
-        top: 16,
-        right: 16,
+        top: vp.isMobile ? 8 : 16,
+        right: vp.isMobile ? 8 : 16,
         width: SIZE,
         height: SIZE,
         padding: 0,
