@@ -834,37 +834,95 @@ router.post('/agents/:id/autopilot', authWallet, (req: Request, res: Response) =
 // Reassign an agent's workplace. Owner-only. The new parcel must have the
 // right building type for the agent's job (or any building if the job has
 // no requirement — though such jobs ignore workplace anyway).
+/**
+ * Reassign an agent. Body:
+ *   { workplace_parcel_id: number | null, role?: AgentRole }
+ *
+ * Both fields are optional individually but at least one must be
+ * provided. When `role` is given, the workplace must be category-
+ * compatible with the new role (same rules as /agents/register):
+ *   produce | craft  → food | materials | energy
+ *   work             → luxury-housing | luxury-civic
+ *
+ * Atomicity: workplace and role writes happen sequentially. If the
+ * category check fails, neither is committed.
+ */
 router.post('/agents/:id/reassign', authWallet, (req: Request, res: Response) => {
   const wallet = (req as AuthedRequest).walletId!;
   const agentId = String(req.params.id);
-  const { workplace_parcel_id } = (req.body ?? {}) as { workplace_parcel_id?: number | null };
+  const body = (req.body ?? {}) as { workplace_parcel_id?: number | null; role?: AgentRole };
 
   const agent = getAgentById(agentId);
   if (!agent) return res.status(404).json({ error: 'agent_not_found' });
   if (agent.owner_wallet?.toLowerCase() !== wallet.toLowerCase()) {
     return res.status(403).json({ error: 'not_owner' });
   }
+  if (agent.is_external === 1) {
+    return res.status(400).json({ error: 'cannot_reassign_external_agent' });
+  }
+  if (body.role !== undefined && !AGENT_ROLES.includes(body.role)) {
+    return res.status(400).json({
+      error: 'invalid_role',
+      valid_roles: AGENT_ROLES,
+    });
+  }
+  if (body.workplace_parcel_id === undefined && body.role === undefined) {
+    return res.status(400).json({ error: 'nothing_to_change' });
+  }
 
-  if (workplace_parcel_id === null || workplace_parcel_id === undefined) {
-    setAgentWorkplace(agentId, null);
-    return res.json({ ok: true, workplace_parcel_id: null });
-  }
-  if (!Number.isInteger(workplace_parcel_id)) {
-    return res.status(400).json({ error: 'workplace_parcel_id must be an integer or null' });
+  // Effective role after the call — used for the workplace category check.
+  const effectiveRole = (body.role ?? agent.role) as AgentRole;
+
+  let resolvedParcelId: number | null;
+  if (body.workplace_parcel_id === null) {
+    resolvedParcelId = null;
+  } else if (body.workplace_parcel_id === undefined) {
+    resolvedParcelId = agent.workplace_parcel_id ?? null;
+  } else {
+    if (!Number.isInteger(body.workplace_parcel_id)) {
+      return res.status(400).json({ error: 'workplace_parcel_id must be an integer or null' });
+    }
+    const parcels = getAllParcels();
+    const p = parcels.find((x) => x.id === body.workplace_parcel_id);
+    if (!p) return res.status(404).json({ error: 'parcel_not_found' });
+    const bt = (p as { building_type?: string }).building_type;
+    const spec = bt ? BUILDINGS[bt as BuildingType] : undefined;
+    if (!spec) return res.status(400).json({ error: 'workplace_has_no_building' });
+    const isProduction = spec.category === 'food' || spec.category === 'materials' || spec.category === 'energy';
+    const isLuxury = spec.category === 'luxury-housing' || spec.category === 'luxury-civic';
+    const okForRole =
+      (effectiveRole === 'produce' && isProduction) ||
+      (effectiveRole === 'craft' && isProduction) ||
+      (effectiveRole === 'work' && isLuxury);
+    if (!okForRole) {
+      return res.status(400).json({
+        error: 'workplace_incompatible_with_role',
+        role: effectiveRole,
+        category: spec.category,
+      });
+    }
+    resolvedParcelId = p.id;
   }
 
-  const job = agent.job as JobId | null;
-  const reqType = job && JOBS[job]?.requires_building;
-  const parcels = getAllParcels();
-  const p = parcels.find((x) => x.id === workplace_parcel_id);
-  if (!p) return res.status(404).json({ error: 'parcel_not_found' });
-  if (reqType && (p as any).building_type !== reqType) {
-    return res.status(400).json({ error: 'parcel_wrong_building_type', expected: reqType });
+  // Commit: workplace first, then role. Both DB writes are idempotent
+  // and cheap so a partial failure (process kill mid-call) only leaves
+  // the workplace updated — the next reassign call will catch it up.
+  if (body.workplace_parcel_id !== undefined) {
+    setAgentWorkplace(agentId, resolvedParcelId);
   }
-  setAgentWorkplace(agentId, p.id);
-  addEvent('agent_reassigned', agentId, { workplace_parcel_id: p.id });
+  if (body.role !== undefined && body.role !== agent.role) {
+    setAgentRole(agentId, body.role);
+  }
+  addEvent('agent_reassigned', agentId, {
+    workplace_parcel_id: resolvedParcelId,
+    role: body.role ?? agent.role,
+  });
   notifyAgentChanged(agentId);
-  res.json({ ok: true, workplace_parcel_id: p.id });
+  res.json({
+    ok: true,
+    workplace_parcel_id: resolvedParcelId,
+    role: body.role ?? agent.role,
+  });
 });
 
 /**

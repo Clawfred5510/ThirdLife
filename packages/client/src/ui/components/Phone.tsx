@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPost, apiDelete, hasAuthToken, API_BASE } from '../../network/api';
 import {
   hasInjectedWallet,
@@ -867,7 +867,7 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
               now flow straight to the wallet — no per-agent funding
               needed. The endpoints stay on the server for back-compat
               but are hidden from the UI. */}
-          {reqBuilding && (
+          {!agent.is_external && (
             <button onClick={() => setMode('reassign')} style={S.reclaimBtn}>
               Reassign
             </button>
@@ -898,11 +898,10 @@ const AgentCard: React.FC<{ agent: AgentRow; onChange: () => void }> = ({ agent,
         </div>
       )}
       {/* Fund/Reclaim mode removed in UI Overhaul (2026-05-20). */}
-      {mode === 'reassign' && reqBuilding && (
-        <ReassignPicker
+      {mode === 'reassign' && (
+        <ReassignModal
           agent={agent}
-          requiredBuilding={reqBuilding}
-          onCancel={() => setMode('idle')}
+          onClose={() => setMode('idle')}
           onDone={() => { setMode('idle'); onChange(); }}
         />
       )}
@@ -1019,32 +1018,48 @@ const RoleSwitcher: React.FC<{
   );
 };
 
-const ReassignPicker: React.FC<{
+/**
+ * Reassign-agent flow — walks the same wizard as create, minus the
+ * Name step. Pre-fills the agent's current role's category so simply
+ * picking a different parcel works in two clicks. Calls
+ * POST /agents/:id/reassign with { role, workplace_parcel_id }.
+ *
+ *   Step 1  Category    — change job category (or keep current)
+ *   Step 2  Detail      — workplace picker, or item grid for Luxury
+ *   Step 3  Confirm     — review + save
+ */
+const ReassignModal: React.FC<{
   agent: AgentRow;
-  requiredBuilding: string;
-  onCancel: () => void;
+  onClose: () => void;
   onDone: () => void;
-}> = ({ agent, requiredBuilding, onCancel, onDone }) => {
-  const [owned, setOwned] = useState<WorldParcel[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+}> = ({ agent, onClose, onDone }) => {
+  // Pre-select the category that matches the agent's current role.
+  // For role='produce'/'craft' we look at the current workplace's
+  // category to bucket food/materials/energy/luxury; if there's no
+  // workplace we default to 'food'.
+  const initialCategory = useMemo<CategoryDef>(() => {
+    if (agent.role === 'work') return CATEGORIES.find((c) => c.key === 'work')!;
+    if (agent.role === 'craft') return CATEGORIES.find((c) => c.key === 'luxury')!;
+    // role === 'produce'. We don't know the current building type from
+    // the AgentRow alone; default to Food and let the user re-pick.
+    return CATEGORIES.find((c) => c.key === 'food')!;
+  }, [agent.role]);
+
+  const [step, setStep] = useState<'category' | 'detail' | 'confirm'>('category');
+  const [category, setCategory] = useState<CategoryDef>(initialCategory);
+  const [workplaceId, setWorkplaceId] = useState<number | null>(null);
+  const [workplaceLabel, setWorkplaceLabel] = useState<string>('');
+  const [craftItem, setCraftItem] = useState<LuxuryItemKind | null>(null);
   const [busy, setBusy] = useState(false);
-  const myWallet = (() => { try { return localStorage.getItem('tl_player_id'); } catch { return null; } })();
+  const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiGet<WorldResp>('/world')
-      .then((r) => {
-        const mine = r.parcels_data.filter(
-          (p) => p.owner_id === myWallet && p.business_type === requiredBuilding,
-        );
-        setOwned(mine);
-      })
-      .catch((e) => setErr((e as Error).message));
-  }, [myWallet, requiredBuilding]);
-
-  const reassign = async (parcelId: number) => {
-    setBusy(true); setErr(null);
+  const submit = async () => {
+    setErr(null);
+    setBusy(true);
     try {
-      await apiPost(`/agents/${agent.id}/reassign`, { workplace_parcel_id: parcelId }, { authed: true });
+      const body: Record<string, unknown> = { role: category.role };
+      if (workplaceId !== null) body.workplace_parcel_id = workplaceId;
+      await apiPost(`/agents/${agent.id}/reassign`, body, { authed: true });
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -1053,34 +1068,109 @@ const ReassignPicker: React.FC<{
     }
   };
 
+  const stepNumber = step === 'category' ? 1 : step === 'detail' ? 2 : 3;
+
   return (
-    <div style={S.allocateRow}>
-      {!owned && <span style={S.formMsg}>Loading owned {requiredBuilding}s…</span>}
-      {owned && owned.length === 0 && (
-        <span style={S.formMsg}>
-          You don't own a {requiredBuilding}. Build one first, then reassign.
-        </span>
-      )}
-      {owned && owned.length > 0 && (
-        <select
-          disabled={busy}
-          onChange={(e) => {
-            const v = parseInt(e.target.value, 10);
-            if (Number.isFinite(v)) reassign(v);
-          }}
-          style={S.select}
-          defaultValue=""
-        >
-          <option value="" disabled>Pick a {requiredBuilding}…</option>
-          {owned.map((p) => (
-            <option key={p.id} value={p.id}>
-              #{p.id} — {p.business_name || requiredBuilding} ({p.grid_x},{p.grid_y})
-            </option>
-          ))}
-        </select>
-      )}
-      <button onClick={onCancel} style={S.cancelTextBtn}>cancel</button>
-      {err && <div style={S.formMsg}>{err}</div>}
+    <div style={S.modalScrim} onClick={onClose}>
+      <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={S.modalTitle}>
+          Reassign {agent.name} — step {stepNumber} of 3
+        </div>
+
+        {step === 'category' && (
+          <>
+            <div style={S.modalNote}>What should <strong>{agent.name}</strong> make?</div>
+            <div style={S.categoryGrid}>
+              {CATEGORIES.filter((c) => c.key !== 'work').map((c) => (
+                <button
+                  key={c.key}
+                  onClick={() => setCategory(c)}
+                  style={{
+                    ...S.categoryCard,
+                    ...(category.key === c.key ? S.categoryCardActive : {}),
+                  }}
+                  title={c.hint}
+                >
+                  <div style={S.categoryIcon}>{c.icon}</div>
+                  <div style={S.categoryLabel}>{c.label}</div>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setCategory(CATEGORIES.find((c) => c.key === 'work')!)}
+              style={{
+                ...S.categoryWideCard,
+                ...(category.key === 'work' ? S.categoryCardActive : {}),
+              }}
+              title="Stand at a Housing or Civic building and earn a wage"
+            >
+              <span style={S.categoryIconInline}>💰</span>
+              <span style={S.categoryWideLabel}>Work (Produce $AMETA)</span>
+            </button>
+            <div style={S.categoryHint}>{category.hint}</div>
+            <div style={S.modalActions}>
+              <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
+              <button onClick={() => setStep('detail')} style={S.submit}>Next</button>
+            </div>
+          </>
+        )}
+
+        {step === 'detail' && category.key !== 'luxury' && (
+          <WorkplaceStep
+            buildingCategories={category.buildingCategories!}
+            categoryLabel={category.label}
+            selected={workplaceId}
+            onPick={(id, label) => { setWorkplaceId(id); setWorkplaceLabel(label); }}
+            onBack={() => setStep('category')}
+            onContinue={() => setStep('confirm')}
+            onCancel={onClose}
+          />
+        )}
+
+        {step === 'detail' && category.key === 'luxury' && (
+          <LuxuryItemStep
+            selected={craftItem}
+            onPick={(item, parcelId, label) => {
+              setCraftItem(item);
+              setWorkplaceId(parcelId);
+              setWorkplaceLabel(label);
+            }}
+            onBack={() => setStep('category')}
+            onContinue={() => setStep('confirm')}
+            onCancel={onClose}
+          />
+        )}
+
+        {step === 'confirm' && (
+          <>
+            <div style={S.confirmRow}>
+              <span style={S.confirmIcon}>{category.icon}</span>
+              <div>
+                <div style={S.confirmName}>{agent.name}</div>
+                <div style={S.confirmRole}>{category.label}</div>
+              </div>
+            </div>
+            <div style={S.confirmDetails}>
+              <div>
+                Workplace: {workplaceId !== null ? workplaceLabel : 'unassigned (will idle)'}
+              </div>
+              {craftItem && (
+                <div>Crafts: {LUXURY_ITEMS[craftItem].label}</div>
+              )}
+              <div style={{ fontSize: 10, color: '#7A6850', marginTop: 4 }}>
+                No new agent purchase fee — this only updates the role + workplace.
+              </div>
+            </div>
+            {err && <div style={S.errMsg}>{err}</div>}
+            <div style={S.modalActions}>
+              <button onClick={() => setStep('detail')} style={S.cancelTextBtn}>back</button>
+              <button onClick={submit} disabled={busy} style={S.submit}>
+                {busy ? '…' : 'Reassign'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };
