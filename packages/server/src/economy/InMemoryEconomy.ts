@@ -8,6 +8,7 @@ import {
 } from '../db';
 import { TRANSFER_FEE_BPS, BPS_DENOMINATOR } from '@gamestu/shared';
 import { IEconomy, WORLD_TREASURY_ID } from './IEconomy';
+import { notifyWalletChanged } from '../events/walletEvents';
 
 /**
  * Default economy backend — credits live in the players table credits
@@ -34,6 +35,7 @@ export class InMemoryEconomy implements IEconomy {
     const current = getPlayerCredits(playerId);
     updatePlayerCredits(playerId, current + amount);
     addEvent('credit', playerId, { amount, reason });
+    notifyWalletChanged(playerId);
   }
 
   async debit(
@@ -46,6 +48,7 @@ export class InMemoryEconomy implements IEconomy {
     if (current < amount) return { ok: false, reason: 'insufficient_balance' };
     updatePlayerCredits(playerId, current - amount);
     addEvent('debit', playerId, { amount, reason });
+    notifyWalletChanged(playerId);
     return { ok: true };
   }
 
@@ -78,6 +81,8 @@ export class InMemoryEconomy implements IEconomy {
       updatePlayerCredits(WORLD_TREASURY_ID, treasury + fee);
     }
     addEvent('transfer', fromId, { to: toId, amount, fee, reason });
+    notifyWalletChanged(fromId);
+    notifyWalletChanged(toId);
     return { ok: true, fee };
   }
 
@@ -103,6 +108,7 @@ export class InMemoryEconomy implements IEconomy {
     updatePlayerCredits(fromId, fromBal - amount);
     updatePlayerCredits(toId,   getPlayerCredits(toId) + amount);
     addEvent('allocate', walletId, { agent: agentId, amount, direction });
+    notifyWalletChanged(walletId);
     return { ok: true };
   }
 }

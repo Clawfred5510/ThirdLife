@@ -71,6 +71,7 @@ import { runAutopilotPass } from '../autopilot';
 import { rankFor } from '../ranks';
 import { economy, WORLD_TREASURY_ID } from '../economy';
 import { onAgentChanged } from '../events/agentEvents';
+import { onWalletChanged } from '../events/walletEvents';
 // Sub-unit properties module retired 2026-05-20. Imports removed.
 import { resolveDecreesTick } from '../governance';
 import { getWorldTick } from '../world';
@@ -118,6 +119,9 @@ export class GameRoom extends Room<GameState> {
   /** Unsubscribe handle for the agent-events bus (set in onCreate, called in onDispose). */
   private offAgentChanged: (() => void) | null = null;
 
+  /** Unsubscribe handle for the wallet-events bus. */
+  private offWalletChanged: (() => void) | null = null;
+
   /**
    * Test-mode godmode wallets — keyed by wallet/player id. Toggled via
    * the `/godmode on|off` chat command (gated on TEST_BALANCE). At the
@@ -160,6 +164,13 @@ export class GameRoom extends Room<GameState> {
     // immediately in the world (no 60s autopilot-tick wait).
     this.offAgentChanged = onAgentChanged(() => {
       this.refreshAgents(false);
+    });
+
+    // Subscribe to wallet-events so REST-side debits/credits (agent
+    // purchase, marketplace fills routed via the API, etc.) refresh the
+    // connected client's wallet UI without waiting for the next tick.
+    this.offWalletChanged = onWalletChanged((walletId) => {
+      this.pushCreditsForWallet(walletId);
     });
 
     // Sub-unit backfill removed 2026-05-20 with Phase C retirement.
@@ -1729,5 +1740,23 @@ export class GameRoom extends Room<GameState> {
   onDispose() {
     console.log(`GameRoom disposed: ${this.roomId}`);
     if (this.offAgentChanged) { this.offAgentChanged(); this.offAgentChanged = null; }
+    if (this.offWalletChanged) { this.offWalletChanged(); this.offWalletChanged = null; }
+  }
+
+  /**
+   * Find the connected client whose persistent wallet id matches the
+   * given walletId and push a fresh CREDITS_UPDATE. Called from the
+   * wallet-events bus whenever the economy debits/credits/transfers.
+   */
+  private pushCreditsForWallet(walletId: string): void {
+    if (!walletId) return;
+    const lower = walletId.toLowerCase();
+    this.players.forEach((player, sessionId) => {
+      if (player.id.toLowerCase() !== lower) return;
+      const fresh = getPlayerCreditsFromDb(player.id);
+      player.credits = fresh;
+      const client = this.clients.find((c) => c.sessionId === sessionId);
+      if (client) client.send(MessageType.CREDITS_UPDATE, { credits: fresh });
+    });
   }
 }

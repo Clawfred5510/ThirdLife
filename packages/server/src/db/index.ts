@@ -599,20 +599,16 @@ class SQLiteDatabase implements DBBackend {
     if (row) {
       this.stmtUpdateLogin.run(id);
       row.last_login = new Date().toISOString();
-      // TEST_BALANCE: override credits on every login for testing
-      const testBal = process.env.TEST_BALANCE;
-      if (testBal) {
-        const bal = parseInt(testBal, 10);
-        if (!isNaN(bal)) {
-          this.stmtUpdateCredits.run(bal, id);
-          row.credits = bal;
-        }
-      }
+      // Owner direction 2026-05-20: TEST_BALANCE only seeds new players.
+      // Re-topping on every login masked legitimate cost deductions
+      // (agent purchase, build, claim) — the user would buy an agent
+      // for 200K, reconnect, and see their balance back at 10M.
+      // Use /godmode or /give chat commands for mid-session top-ups.
       return row;
     }
     this.stmtInsertPlayer.run(id, name);
     row = this.stmtGetPlayer.get(id) as PlayerRow;
-    // Apply TEST_BALANCE to new players too
+    // First-time seed only.
     const testBal = process.env.TEST_BALANCE;
     if (testBal) {
       const bal = parseInt(testBal, 10);

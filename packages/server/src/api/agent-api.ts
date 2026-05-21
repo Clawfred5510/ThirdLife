@@ -463,8 +463,9 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
   }
 
   // 200K $AMETA agent purchase fee (spec §9). Routed to the world treasury.
-  // TEST_BALANCE-overridden test wallets pay this too — but they get
-  // re-topped on every login so it's a no-op for owner testing.
+  // The economy().debit fires notifyWalletChanged → GameRoom pushes a
+  // fresh CREDITS_UPDATE to the owner's connected client, so the Wallet
+  // UI reflects the deduction immediately without waiting for a tick.
   const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
   if (!purchaseDebit.ok) {
     return res.status(400).json({
