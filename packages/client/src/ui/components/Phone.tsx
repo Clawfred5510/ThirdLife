@@ -2375,13 +2375,30 @@ const S: Record<string, React.CSSProperties> = {
     textTransform: 'capitalize' as const,
   },
   tabActive: { color: '#F5E6D0', background: 'rgba(216,148,56,0.18)', borderColor: '#D89438' },
-  list: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, overflowY: 'auto' },
-  row: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '2px 4px' },
+  list: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' },
+  // Phone screen is only 320px wide, so notification rows must wrap.
+  // alignItems flex-start keeps the severity dot at the top of multi-
+  // line entries instead of vertically-centering it.
+  row: {
+    display: 'flex', alignItems: 'flex-start', gap: 6,
+    fontSize: 12, padding: '4px 4px',
+    width: '100%',
+  },
   rank: { width: 24, color: '#A89378', fontVariantNumeric: 'tabular-nums' },
   name: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   valueG: { fontVariantNumeric: 'tabular-nums', color: '#D89438' },
-  badge: { width: 6, height: 6, borderRadius: '50%', flexShrink: 0 },
-  text: { color: '#F5E6D0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  badge: { width: 6, height: 6, borderRadius: '50%', flexShrink: 0, marginTop: 6 },
+  text: {
+    color: '#F5E6D0',
+    flex: 1,
+    minWidth: 0,
+    // Wrap long notification strings so they stay inside the 320px
+    // phone frame instead of getting ellipsis-truncated.
+    whiteSpace: 'normal',
+    wordBreak: 'break-word',
+    overflowWrap: 'anywhere',
+    lineHeight: 1.4,
+  },
   cols: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 },
   colHeader: { fontSize: 11, color: '#A89378', marginTop: 4, marginBottom: 4, fontFamily: 'Georgia, serif' },
   level: { display: 'flex', justifyContent: 'space-between', fontSize: 12, fontVariantNumeric: 'tabular-nums', padding: '2px 4px' },
