@@ -33,16 +33,17 @@ import { BuildingSpec, BuildingOutput } from './shared';
  * separate future pass driven by the visual reference.
  */
 
+// GLB asset mapping — buildings listed here render from a baked Meshy
+// export. Buildings NOT in the map fall through to the procedural
+// builders in proceduralBuilding.ts (which still handles farm, house,
+// bank, factory, hall, mine, market, shop, office, apartment via code).
+//
+// Add a new asset by dropping <name>.glb into
+// packages/client/public/assets/models/buildings/ and adding a row
+// here keyed by the BuildingType (matches packages/shared constants).
 const ASSET_BY_TYPE: Record<string, string> = {
-  apartment: 'apartment.glb',
-  bank:      'bank.glb',
-  factory:   'factory.glb',
-  farm:      'farm.glb',
-  hall:      'hall.glb',
-  house:     'house.glb',
-  mine:      'mine.glb',
-  office:    'office.glb',
-  shop:      'shop.glb',
+  // Tier 4 energy. Owner-added 2026-05-21.
+  nuclear_plant: 'nuclear-reactor.glb',
 };
 
 interface PaintRecipe {
@@ -161,13 +162,18 @@ export function buildGlbBuilding(
     // wall→roof colour split.
     const yRange = computeWorldYRange(meshes);
 
-    const sharedMat = vertexColorMatFor(scene, type);
+    // When a PaintRecipe is defined we use the legacy two-tone vertex-
+    // colour pipeline + a white StandardMaterial to consume them.
+    // Without a recipe we preserve the GLB's own embedded materials
+    // (PBR textures from Meshy, baked vertex colours, etc.) which is
+    // the path the nuclear_plant uses.
+    const sharedMat = recipe ? vertexColorMatFor(scene, type) : null;
     for (const m of meshes) {
       ensureNormals(m);
       if (m instanceof Mesh && recipe && yRange) {
         applyTwoToneVertexColors(m, recipe, yRange);
       }
-      m.material = sharedMat;
+      if (sharedMat) m.material = sharedMat;
       m.checkCollisions = false;
       m.isPickable = true;
       m.receiveShadows = true;
