@@ -112,6 +112,13 @@ function summarizeEvent(e: EventRow): string {
     case 'burn_luxury': return `burned ${data.quantity}× ${data.item_kind} for +${data.rank_points_gained} rank`;
     case 'rank_up':     return `🎉 RANK UP: ${data.from ?? 'unranked'} → ${data.to}`;
     case 'craft_item':  return `agent crafted ${data.quantity}× ${data.item_kind} at parcel #${data.parcel}`;
+    case 'building_unpowered': {
+      const n = data.unpowered_count ?? 0;
+      const short = data.energy_short_by ?? 0;
+      const sample = Array.isArray(data.sample_parcels) ? (data.sample_parcels as number[]) : [];
+      const where = sample.length ? ` (e.g. #${sample.join(', #')})` : '';
+      return `⚡ ${n} building${n === 1 ? '' : 's'} idle — short ${short} energy${where}`;
+    }
     case 'offline_accrual': {
       const t = data.missed_ticks ?? 0;
       const lux = data.luxury ?? 0;

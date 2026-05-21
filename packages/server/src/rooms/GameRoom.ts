@@ -117,6 +117,22 @@ export class GameRoom extends Room<GameState> {
   /** Unsubscribe handle for the agent-events bus (set in onCreate, called in onDispose). */
   private offAgentChanged: (() => void) | null = null;
 
+  /**
+   * Test-mode godmode wallets — keyed by wallet/player id. Toggled via
+   * the `/godmode on|off` chat command (gated on TEST_BALANCE). At the
+   * top of each per-player tick settlement, every resource for these
+   * wallets is floored to 1,000,000 so production runs without ever
+   * starving for energy and the player can shop the marketplace freely.
+   */
+  private godmodeWallets = new Set<string>();
+
+  /**
+   * Per-wallet last tick at which we emitted a `building_unpowered`
+   * event. Used to throttle the notification — we don't want one event
+   * per /skip iteration; once every 6 ticks (~1 in-game hour) is plenty.
+   */
+  private lastUnpoweredEventTick = new Map<string, number>();
+
   onCreate() {
     this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime), 1000 / TICK_RATE);
@@ -1015,8 +1031,58 @@ export class GameRoom extends Room<GameState> {
       return true;
     }
 
+    if (lower === 'give') {
+      const playerId = this.pid(client.sessionId);
+      const raw = rest[0];
+      const amount = raw == null ? 100_000 : Number.parseInt(raw, 10);
+      if (!Number.isFinite(amount) || amount < 1) {
+        replyTo(`Usage: /give <amount>  (default 100000). Got "${raw}".`);
+        return true;
+      }
+      const r = getPlayerResources(playerId);
+      const next = {
+        food: r.food + amount,
+        materials: r.materials + amount,
+        energy: r.energy + amount,
+        luxury: r.luxury + amount,
+      };
+      updatePlayerResources(playerId, next);
+      client.send(MessageType.RESOURCE_UPDATE, next);
+      replyTo(`Granted ${amount.toLocaleString()} of each resource.`);
+      return true;
+    }
+
+    if (lower === 'godmode' || lower === 'god') {
+      const playerId = this.pid(client.sessionId);
+      const arg = (rest[0] ?? '').toLowerCase();
+      if (arg === 'off' || arg === 'false' || arg === '0') {
+        this.godmodeWallets.delete(playerId);
+        replyTo('Godmode OFF.');
+      } else {
+        this.godmodeWallets.add(playerId);
+        replyTo(
+          'Godmode ON — resources floor at 1,000,000 each tick. Type "/godmode off" to disable.',
+        );
+        // Apply the floor immediately so the user sees the result without
+        // waiting for the next tick.
+        const r = getPlayerResources(playerId);
+        const FLOOR = 1_000_000;
+        const next = {
+          food: Math.max(r.food, FLOOR),
+          materials: Math.max(r.materials, FLOOR),
+          energy: Math.max(r.energy, FLOOR),
+          luxury: Math.max(r.luxury, FLOOR),
+        };
+        updatePlayerResources(playerId, next);
+        client.send(MessageType.RESOURCE_UPDATE, next);
+      }
+      return true;
+    }
+
     if (lower === 'help') {
-      replyTo('Test commands: /skip [N], /tick, /help');
+      replyTo(
+        'Test commands: /skip [N], /tick, /give [amount], /godmode [on|off], /help',
+      );
       return true;
     }
 
@@ -1296,6 +1362,17 @@ export class GameRoom extends Room<GameState> {
         const bucket = byOwner.get(ownerId);
         const resources = getPlayerResources(ownerId);
 
+        // Test mode: godmode wallets get a 1M resource floor BEFORE the
+        // tick spends anything, so power plants are always powered, food
+        // never runs out, and the marketplace is unrestricted.
+        if (this.godmodeWallets.has(ownerId)) {
+          const FLOOR = 1_000_000;
+          if (resources.food < FLOOR) resources.food = FLOOR;
+          if (resources.materials < FLOOR) resources.materials = FLOOR;
+          if (resources.energy < FLOOR) resources.energy = FLOOR;
+          if (resources.luxury < FLOOR) resources.luxury = FLOOR;
+        }
+
         const itemDeltas = new Map<LuxuryItemKind, number>();
         // Per-agent stats accumulated this tick — flushed to DB + sent
         // as craft events at the end of the player's settlement.
@@ -1317,6 +1394,27 @@ export class GameRoom extends Room<GameState> {
             Math.floor(resources.energy / ENERGY_PER_PRODUCING_BUILDING_PER_TICK),
           );
           resources.energy -= poweredCount * ENERGY_PER_PRODUCING_BUILDING_PER_TICK;
+
+          // Notify the player when buildings sit idle for lack of energy.
+          // Throttled to one event per wallet per 6 ticks (~1 in-game
+          // hour) so /skip 100 doesn't spam 100 entries into Notifications.
+          const unpoweredCount = sorted.length - poweredCount;
+          if (unpoweredCount > 0) {
+            const nowTick = getWorldTick();
+            const last = this.lastUnpoweredEventTick.get(ownerId) ?? -999;
+            if (nowTick - last >= 6) {
+              this.lastUnpoweredEventTick.set(ownerId, nowTick);
+              const sample = sorted.slice(poweredCount, poweredCount + 3).map((p) => p.parcelId);
+              addEvent('building_unpowered', ownerId, {
+                unpowered_count: unpoweredCount,
+                powered_count: poweredCount,
+                energy_short_by: unpoweredCount * ENERGY_PER_PRODUCING_BUILDING_PER_TICK,
+                sample_parcels: sample,
+              }, 'normal');
+            }
+          } else if (unpoweredCount === 0) {
+            this.lastUnpoweredEventTick.delete(ownerId);
+          }
 
           for (let i = 0; i < poweredCount; i++) {
             const p = sorted[i];
