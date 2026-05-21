@@ -128,18 +128,34 @@ export function buildGlbBuilding(
   const filename = ASSET_BY_TYPE[type];
   if (!filename) throw new Error(`buildGlbBuilding: no GLB mapped for type '${type}'`);
 
-  // Tight invisible collision box at the building footprint. Player
-  // walks around the building; nothing inside to enter for now.
-  const collider = MeshBuilder.CreateBox(`glbCol_${type}_${id}`, {
-    width: PARCEL_FOOTPRINT * 0.78,
-    height: COLLIDER_HEIGHT,
-    depth: PARCEL_FOOTPRINT * 0.78,
-  }, scene);
-  collider.parent = root;
-  collider.position.y = COLLIDER_HEIGHT / 2;
-  collider.isVisible = false;
-  collider.checkCollisions = true;
-  collider.isPickable = true;
+  // Collision ring — four thin walls around the building footprint,
+  // not a single solid box. Why: the server has no collision and just
+  // integrates PLAYER_INPUT forward at PLAYER_SPEED. A solid box stops
+  // the client cold while the server walks the player straight through;
+  // the resulting position desync trips the 60-unit hard-snap and the
+  // player "teleports back" a parcel or two. Thin walls let
+  // moveWithCollisions slide the player along, which roughly tracks
+  // the server's no-collision integration and keeps the desync small.
+  const RING_INSET = PARCEL_FOOTPRINT * 0.40;  // half-side
+  const WALL_THICKNESS = 0.6;
+  const collisionWalls: AbstractMesh[] = [];
+  const buildWall = (suffix: string, w: number, d: number, ox: number, oz: number) => {
+    const m = MeshBuilder.CreateBox(`glbCol_${type}_${id}_${suffix}`, {
+      width: w, height: COLLIDER_HEIGHT, depth: d,
+    }, scene);
+    m.parent = root;
+    m.position.set(ox, COLLIDER_HEIGHT / 2, oz);
+    m.isVisible = false;
+    m.checkCollisions = true;
+    m.isPickable = false;
+    collisionWalls.push(m);
+  };
+  // North + South walls span the full width, sit at ±RING_INSET in Z.
+  buildWall('n', RING_INSET * 2, WALL_THICKNESS, 0, -RING_INSET);
+  buildWall('s', RING_INSET * 2, WALL_THICKNESS, 0,  RING_INSET);
+  // East + West walls span the full depth, sit at ±RING_INSET in X.
+  buildWall('e', WALL_THICKNESS, RING_INSET * 2,  RING_INSET, 0);
+  buildWall('w', WALL_THICKNESS, RING_INSET * 2, -RING_INSET, 0);
 
   // GLB lives under its own wrap so fit-to-footprint scaling doesn't
   // touch the collider.
@@ -185,7 +201,7 @@ export function buildGlbBuilding(
   return {
     root,
     exteriorCasters: [],   // shadow casting deferred — would need post-load registration
-    collisionWalls: [collider],
+    collisionWalls,
     roofMeshes: [],        // no interior to fade into
     centerXZ: [position.x, position.z],
     halfExtentsXZ: [PARCEL_FOOTPRINT / 2, PARCEL_FOOTPRINT / 2],
