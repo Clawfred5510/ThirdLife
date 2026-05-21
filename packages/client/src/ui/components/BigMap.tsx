@@ -213,8 +213,10 @@ export const BigMap: React.FC = () => {
 
 const S: Record<string, React.CSSProperties> = {
   backdrop: {
-    position: 'absolute', inset: 0, zIndex: 30,
-    background: 'rgba(0,0,0,0.65)',
+    // High z-index so the dim covers minimap/HUD; minimap has implicit
+    // z-index:auto so it would otherwise bleed through at this scale.
+    position: 'absolute', inset: 0, zIndex: 100,
+    background: 'rgba(15, 12, 10, 0.96)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     pointerEvents: 'auto', fontFamily: 'sans-serif',
   },

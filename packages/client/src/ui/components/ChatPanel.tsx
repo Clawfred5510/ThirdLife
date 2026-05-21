@@ -27,12 +27,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   containerMobile: {
     position: 'absolute',
-    // On mobile, chat docks at the bottom-left and stops short of the
-    // phone FAB (56+24=80px right inset) so the text box doesn't slide
-    // under it. ~30% of screen height keeps gameplay visible.
+    // Bottom-left dock. `right: 80` keeps the input clear of the phone
+    // FAB. `maxWidth: 400` keeps the panel a chat-sized card on iPad
+    // landscape instead of stretching across the whole width.
     bottom: 16,
     left: 8,
     right: 80,
+    maxWidth: 400,
     maxHeight: '30vh',
     display: 'flex',
     flexDirection: 'column',

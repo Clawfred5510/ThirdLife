@@ -266,7 +266,13 @@ export const Phone: React.FC = () => {
 
       {open && (
         <div
-          style={vp.isMobile ? { ...S.phoneFrame, ...S.phoneFrameMobile } : S.phoneFrame}
+          style={
+            vp.isNarrow
+              ? { ...S.phoneFrame, ...S.phoneFrameMobile }
+              : vp.isMobile
+                ? { ...S.phoneFrame, ...S.phoneFrameCompact }
+                : S.phoneFrame
+          }
           role="dialog"
           aria-label="Phone"
         >
@@ -2298,13 +2304,23 @@ const S: Record<string, React.CSSProperties> = {
     pointerEvents: 'auto',
     fontFamily: 'sans-serif',
   },
-  // Mobile: phone takes the full viewport with a comfy inset so the
-  // bezel rounding is still visible. Bottom-anchored so the FAB toggle
-  // remains tappable just above its bottom-right corner.
+  // Narrow (true phone): bezel fills the viewport with a comfy inset.
   phoneFrameMobile: {
     top: 8, bottom: 88, left: 8, right: 8,
     width: 'auto', height: 'auto',
     borderRadius: 24,
+  },
+  // Compact (iPad landscape, foldable, dev-tools docked): keep the
+  // desktop-style corner card but clamp height to the visible area so
+  // the bezel never clips off the top of a short viewport.
+  phoneFrameCompact: {
+    top: 'auto' as 'auto',
+    bottom: 88,
+    right: 16,
+    left: 'auto' as 'auto',
+    width: 320,
+    height: 'min(580px, calc(100vh - 104px))',
+    borderRadius: 28,
   },
   phoneScreen: {
     width: '100%', height: '100%',

@@ -176,10 +176,14 @@ export const ParcelPanel: React.FC = () => {
         ...panelStyleBase,
         position: 'absolute',
         // Top inset clears the wallet/minimap row (~120). Bottom inset
-        // clears the phone FAB strip (~80). overflowY:auto + WebkitOverflowScrolling
-        // lets the build grid scroll inside the panel without the panel
-        // itself spilling past the viewport.
-        top: 120, bottom: 80, left: 8, right: 8,
+        // clears the phone FAB strip (~80). Centered with a max-width so
+        // iPad landscape doesn't get a panel stretched across the whole
+        // viewport; narrow phones still get full-width via the 16px insets.
+        top: 120, bottom: 80,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 'calc(100% - 16px)',
+        maxWidth: 560,
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch' as 'touch',
         padding: '14px 16px',
