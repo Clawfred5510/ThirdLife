@@ -734,6 +734,27 @@ export class MainScene {
     // Camera + label anchor on the shirt mesh (torso-height) for a nice eye-level target.
     const mesh = avatar.body as AbstractMesh;
 
+    // UI Overhaul (2026-05-20): make the agent body clickable so the
+    // player can pop up the AgentInfoPanel from the 3D world. Only AI
+    // agents (bot_kind set) — humans don't get a popup target.
+    if (!isLocal && player.bot_kind && this.sceneRef) {
+      const pickTargets: AbstractMesh[] = [];
+      for (const m of [avatar.body, avatar.head, avatar.legs] as Array<AbstractMesh | null | undefined>) {
+        if (m) pickTargets.push(m);
+      }
+      for (const m of pickTargets) {
+        m.isPickable = true;
+        m.actionManager = new ActionManager(this.sceneRef);
+        m.actionManager.registerAction(
+          new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+            window.dispatchEvent(new CustomEvent('tl-agent-clicked', {
+              detail: { agentId: sessionId, name: player.name },
+            }));
+          }),
+        );
+      }
+    }
+
     // Floating name label
     const labelRect = new Rectangle(`label_${sessionId}`);
     labelRect.width = '100px';

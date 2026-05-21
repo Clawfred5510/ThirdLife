@@ -82,6 +82,13 @@ export type JobCompleteCallback = (result: { jobType: string; reward: number }) 
 export type TutorialCallback = (message: string) => void;
 export type ParcelStateCallback = (parcels: ParcelData[]) => void;
 export type ParcelUpdateCallback = (update: Partial<ParcelData> & { owner_name?: string; error?: string }) => void;
+export type RankUpEvent = {
+  player_id: string;
+  from: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
+  to: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond';
+  lifetime: number;
+};
+export type RankUpCallback = (e: RankUpEvent) => void;
 
 const onPlayerAddListeners: PlayerAddCallback[] = [];
 const onPlayerRemoveListeners: PlayerRemoveCallback[] = [];
@@ -93,6 +100,7 @@ const onJobCompleteListeners: JobCompleteCallback[] = [];
 const onTutorialListeners: TutorialCallback[] = [];
 const onParcelStateListeners: ParcelStateCallback[] = [];
 const onParcelUpdateListeners: ParcelUpdateCallback[] = [];
+const onRankUpListeners: RankUpCallback[] = [];
 
 export function onPlayerAdd(cb: PlayerAddCallback): () => void {
   onPlayerAddListeners.push(cb);
@@ -162,6 +170,13 @@ export function onParcelUpdate(cb: ParcelUpdateCallback): () => void {
   return () => {
     const i = onParcelUpdateListeners.indexOf(cb);
     if (i !== -1) onParcelUpdateListeners.splice(i, 1);
+  };
+}
+export function onRankUp(cb: RankUpCallback): () => void {
+  onRankUpListeners.push(cb);
+  return () => {
+    const i = onRankUpListeners.indexOf(cb);
+    if (i !== -1) onRankUpListeners.splice(i, 1);
   };
 }
 
@@ -275,6 +290,19 @@ export async function connect(playerName: string): Promise<Room> {
 
   room.onMessage(MessageType.WORK_RESULT, (msg: unknown) => {
     window.dispatchEvent(new CustomEvent('work-result', { detail: msg }));
+  });
+
+  // UI Overhaul: rank-up confetti modal listens for these. Filter to
+  // the local player here so the modal only fires for the connected
+  // wallet, not for someone else on the same map.
+  room.onMessage(MessageType.RANK_UP, (msg: RankUpEvent) => {
+    if (msg.player_id !== mySessionId) return;
+    for (const cb of onRankUpListeners) cb(msg);
+  });
+
+  // ITEM_UPDATE for live Inventory refresh on craft / burn.
+  room.onMessage(MessageType.ITEM_UPDATE, (msg: unknown) => {
+    window.dispatchEvent(new CustomEvent('item-update', { detail: msg }));
   });
 
   console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);

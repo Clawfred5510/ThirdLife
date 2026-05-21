@@ -14,6 +14,8 @@ import { BigMap } from './components/BigMap';
 import { Joystick } from './components/Joystick';
 import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
+import { AgentInfoPanel } from './components/AgentInfoPanel';
+import { RankUpModal } from './components/RankUpModal';
 
 /** Lazy-loaded components gated by feature flags. */
 const JobBoard = React.lazy(() =>
@@ -39,6 +41,8 @@ export const App: React.FC = () => {
       <ParcelPanel />
       <GameMenu />
       <CharacterCreator />
+      <AgentInfoPanel />
+      <RankUpModal />
       {features.JOBS && (
         <React.Suspense fallback={null}>
           <JobBoard />

@@ -23,6 +23,7 @@ import {
   burnLuxuryItems,
   getPlayerItems,
   getLifetimeLuxuryBurned,
+  getAgentLifetimeStats,
   getAuthSessionPlayerId,
   workProduce,
   buyLand,
@@ -1034,6 +1035,11 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
   const parcels = getPlayerParcels(id);
   const nw = getNetWorth(id);
   const recentEvents = getEvents(50, { playerId: id });
+  // UI Overhaul: include agent metadata (role, dormancy, workplace,
+  // owner_wallet) + lifetime production stats so the 3D click popup
+  // can render task / earnings / lifetime summary in one shot.
+  const agent = getAgentById(id);
+  const lifetime = agent ? getAgentLifetimeStats(id) : { wages: 0, resources: {}, items: {} };
   res.json({
     id,
     name: nw?.name ?? id,
@@ -1053,6 +1059,15 @@ router.get('/agents/:id/stats', (req: Request, res: Response) => {
       business_name: p.business_name,
     })),
     recent_events: recentEvents,
+    agent: agent ? {
+      role: agent.role,
+      is_external: agent.is_external === 1,
+      workplace_parcel_id: agent.workplace_parcel_id,
+      owner_wallet: agent.owner_wallet,
+      dormant: agent.dormant_at_tick != null,
+      starvation_ticks: agent.starvation_ticks ?? 0,
+      lifetime,
+    } : null,
   });
 });
 
