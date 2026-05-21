@@ -13,6 +13,8 @@ import {
   AGENT_PERSONALITIES, AGENT_STRATEGIES,
   AgentPersonality, AgentStrategy,
   JOBS, JOB_IDS, JobId,
+  LUXURY_ITEMS, LuxuryItemKind,
+  BUILDINGS, BuildingType, BuildingCategory,
 } from '@gamestu/shared';
 
 type AppId =
@@ -1073,37 +1075,67 @@ const ReassignPicker: React.FC<{
 // Step 3: Name + initial fund
 // Step 4: Confirm + spawn
 
-type CreateStep = 'job' | 'workplace' | 'name' | 'confirm';
+/**
+ * Create-agent flow — owner redesign 2026-05-20:
+ *
+ *   Step 1  Name        — name your agent (asked first)
+ *   Step 2  Category    — pick what they make:
+ *                          🌾 Food / ⛏️ Materials / ⚡ Energy / 💎 Luxury
+ *                          + wide button below for "Work (Produce $AMETA)"
+ *   Step 3  Detail      — depending on category:
+ *                          produce → pick which owned production parcel
+ *                          craft (luxury) → pick which luxury item to mint
+ *                                           (auto-resolves to the matching parcel)
+ *                          work → pick which Housing/Civic parcel
+ *   Step 4  Confirm     — review + spawn
+ *
+ * The legacy JobId picker is removed from the UI. The server keeps a
+ * job synonym internally for back-compat with the audit event payload.
+ */
+type CreateCategory = 'food' | 'materials' | 'energy' | 'luxury' | 'work';
+type CreateStep = 'name' | 'category' | 'detail' | 'confirm';
+
+interface CategoryDef {
+  key: CreateCategory;
+  label: string;
+  icon: string;
+  hint: string;
+  role: 'work' | 'produce' | 'craft';
+  // null for 'luxury' (the picker is an item grid, not a building list).
+  buildingCategories: BuildingCategory[] | null;
+}
+
+const CATEGORIES: CategoryDef[] = [
+  { key: 'food',      label: 'Food',      icon: '🌾', hint: 'Produce food at a Farm-chain building',         role: 'produce', buildingCategories: ['food'] },
+  { key: 'materials', label: 'Materials', icon: '⛏️', hint: 'Produce materials at a Mine-chain building',    role: 'produce', buildingCategories: ['materials'] },
+  { key: 'energy',    label: 'Energy',    icon: '⚡', hint: 'Produce energy at a Power-chain building',      role: 'produce', buildingCategories: ['energy'] },
+  { key: 'luxury',    label: 'Luxury',    icon: '💎', hint: 'Craft a luxury item at one of your production buildings', role: 'craft',   buildingCategories: null },
+  { key: 'work',      label: 'Work (Produce $AMETA)', icon: '💰', hint: 'Stand at a Housing or Civic building and earn a wage', role: 'work', buildingCategories: ['luxury-housing', 'luxury-civic'] },
+];
 
 const CreateAgentModal: React.FC<{
   onClose: () => void;
   onCreated: () => void;
 }> = ({ onClose, onCreated }) => {
-  const [step, setStep] = useState<CreateStep>('job');
-  const [job, setJob] = useState<JobId | null>(null);
+  const [step, setStep] = useState<CreateStep>('name');
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState<CategoryDef | null>(null);
   const [workplaceId, setWorkplaceId] = useState<number | null>(null);
   const [workplaceLabel, setWorkplaceLabel] = useState<string>('');
-  const [name, setName] = useState('');
+  const [craftItem, setCraftItem] = useState<LuxuryItemKind | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const jobSpec = job ? JOBS[job] : null;
-  const needsWorkplace = !!jobSpec?.requires_building;
-
-  const advanceFromJob = () => {
-    if (!job) return;
-    setStep(needsWorkplace ? 'workplace' : 'name');
-  };
-
   const submit = async () => {
-    if (!job) return;
+    if (!category) return;
     setErr(null);
-    if (!name.trim()) { setErr('Name required.'); return; }
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { name: name.trim(), job };
+      const body: Record<string, unknown> = {
+        name: name.trim(),
+        role: category.role,
+      };
       if (workplaceId !== null) body.workplace_parcel_id = workplaceId;
-
       const created = await apiPost<{ ok: boolean; agent: { id: string } }>(
         '/agents/register', body, { authed: true },
       );
@@ -1116,53 +1148,14 @@ const CreateAgentModal: React.FC<{
     }
   };
 
+  const stepNumber = step === 'name' ? 1 : step === 'category' ? 2 : step === 'detail' ? 3 : 4;
+
   return (
     <div style={S.modalScrim} onClick={onClose}>
       <div style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalTitle}>
-          New agent — step {step === 'job' ? '1' : step === 'workplace' ? '2' : step === 'name' ? '3' : '4'} of {needsWorkplace ? 4 : 3}
+          New agent — step {stepNumber} of 4
         </div>
-
-        {step === 'job' && (
-          <>
-            <div style={S.modalNote}>Pick a role. Each job determines what your agent does and where it stands.</div>
-            <div style={S.jobGrid}>
-              {/* UI Overhaul (2026-05-20): the 'trader' + 'greeter' job
-                  presets are scrapped — trader behaviour is now exclusive
-                  to external agents, greeter mapped to the retired
-                  'social' personality. Show only the active jobs. */}
-              {JOB_IDS
-                .filter((id) => id !== 'trader' && id !== 'greeter')
-                .map((id) => (
-                  <button
-                    key={id}
-                    onClick={() => setJob(id)}
-                    style={{ ...S.jobCard, ...(job === id ? S.jobCardActive : {}) }}
-                  >
-                    <div style={S.jobIcon}>{JOBS[id].icon}</div>
-                    <div style={S.jobLabel}>{JOBS[id].label}</div>
-                    <div style={S.jobSummary}>{JOBS[id].summary}</div>
-                  </button>
-                ))}
-            </div>
-            <div style={S.modalActions}>
-              <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
-              <button onClick={advanceFromJob} disabled={!job} style={S.submit}>Next</button>
-            </div>
-          </>
-        )}
-
-        {step === 'workplace' && jobSpec && (
-          <WorkplaceStep
-            requiredBuilding={jobSpec.requires_building!}
-            jobLabel={jobSpec.label}
-            selected={workplaceId}
-            onPick={(id, label) => { setWorkplaceId(id); setWorkplaceLabel(label); }}
-            onBack={() => setStep('job')}
-            onContinue={() => setStep('name')}
-            onCancel={onClose}
-          />
-        )}
 
         {step === 'name' && (
           <>
@@ -1174,18 +1167,10 @@ const CreateAgentModal: React.FC<{
               placeholder="Name (unique)" maxLength={32}
               style={S.input} autoFocus
             />
-            {/* Initial-fund input removed (UI Overhaul 2026-05-20):
-                in-game agents earn wages straight to the wallet, so the
-                "fund the agent" flow is no longer needed. */}
             <div style={S.modalActions}>
+              <button onClick={onClose} style={S.cancelTextBtn}>cancel</button>
               <button
-                onClick={() => setStep(needsWorkplace ? 'workplace' : 'job')}
-                style={S.cancelTextBtn}
-              >
-                back
-              </button>
-              <button
-                onClick={() => setStep('confirm')}
+                onClick={() => setStep('category')}
                 disabled={!name.trim()}
                 style={S.submit}
               >
@@ -1195,22 +1180,104 @@ const CreateAgentModal: React.FC<{
           </>
         )}
 
-        {step === 'confirm' && jobSpec && (
+        {step === 'category' && (
+          <>
+            <div style={S.modalNote}>What do you want <strong>{name}</strong> to make?</div>
+            <div style={S.categoryGrid}>
+              {CATEGORIES.filter((c) => c.key !== 'work').map((c) => (
+                <button
+                  key={c.key}
+                  onClick={() => setCategory(c)}
+                  style={{
+                    ...S.categoryCard,
+                    ...(category?.key === c.key ? S.categoryCardActive : {}),
+                  }}
+                  title={c.hint}
+                >
+                  <div style={S.categoryIcon}>{c.icon}</div>
+                  <div style={S.categoryLabel}>{c.label}</div>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setCategory(CATEGORIES.find((c) => c.key === 'work') ?? null)}
+              style={{
+                ...S.categoryWideCard,
+                ...(category?.key === 'work' ? S.categoryCardActive : {}),
+              }}
+              title="Stand at a Housing or Civic building and earn a wage"
+            >
+              <span style={S.categoryIconInline}>💰</span>
+              <span style={S.categoryWideLabel}>Work (Produce $AMETA)</span>
+            </button>
+            {category && (
+              <div style={S.categoryHint}>{category.hint}</div>
+            )}
+            <div style={S.modalActions}>
+              <button onClick={() => setStep('name')} style={S.cancelTextBtn}>back</button>
+              <button
+                onClick={() => setStep('detail')}
+                disabled={!category}
+                style={S.submit}
+              >
+                Next
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 'detail' && category && category.key !== 'luxury' && (
+          <WorkplaceStep
+            buildingCategories={category.buildingCategories!}
+            categoryLabel={category.label}
+            selected={workplaceId}
+            onPick={(id, label) => { setWorkplaceId(id); setWorkplaceLabel(label); }}
+            onBack={() => setStep('category')}
+            onContinue={() => setStep('confirm')}
+            onCancel={onClose}
+          />
+        )}
+
+        {step === 'detail' && category && category.key === 'luxury' && (
+          <LuxuryItemStep
+            selected={craftItem}
+            onPick={(item, parcelId, label) => {
+              setCraftItem(item);
+              setWorkplaceId(parcelId);
+              setWorkplaceLabel(label);
+            }}
+            onBack={() => setStep('category')}
+            onContinue={() => setStep('confirm')}
+            onCancel={onClose}
+          />
+        )}
+
+        {step === 'confirm' && category && (
           <>
             <div style={S.confirmRow}>
-              <span style={S.confirmIcon}>{jobSpec.icon}</span>
+              <span style={S.confirmIcon}>{category.icon}</span>
               <div>
                 <div style={S.confirmName}>{name}</div>
-                <div style={S.confirmRole}>{jobSpec.label}</div>
+                <div style={S.confirmRole}>{category.label}</div>
               </div>
             </div>
             <div style={S.confirmDetails}>
-              <div>Workplace: {workplaceId !== null ? workplaceLabel : (needsWorkplace ? 'auto-assigned (any open)' : 'roams')}</div>
+              <div>
+                Workplace:{' '}
+                {workplaceId !== null
+                  ? workplaceLabel
+                  : category.key === 'luxury'
+                    ? 'auto — pick an item first'
+                    : 'unassigned (will idle until reassigned)'}
+              </div>
+              {craftItem && (
+                <div>Crafts: {LUXURY_ITEMS[craftItem].label}</div>
+              )}
               <div>Purchase cost: 200,000 $AMETA (from wallet)</div>
             </div>
             {err && <div style={S.errMsg}>{err}</div>}
             <div style={S.modalActions}>
-              <button onClick={() => setStep('name')} style={S.cancelTextBtn}>back</button>
+              <button onClick={() => setStep('detail')} style={S.cancelTextBtn}>back</button>
               <button onClick={submit} disabled={busy} style={S.submit}>
                 {busy ? '…' : 'Spawn agent'}
               </button>
@@ -1222,15 +1289,20 @@ const CreateAgentModal: React.FC<{
   );
 };
 
+/**
+ * Workplace picker — generalized to accept one or more BuildingCategory
+ * filters instead of a single building type. Used by Food/Materials/Energy
+ * (single production category) and Work (housing + civic combined).
+ */
 const WorkplaceStep: React.FC<{
-  requiredBuilding: string;
-  jobLabel: string;
+  buildingCategories: BuildingCategory[];
+  categoryLabel: string;
   selected: number | null;
   onPick: (parcelId: number, label: string) => void;
   onBack: () => void;
   onContinue: () => void;
   onCancel: () => void;
-}> = ({ requiredBuilding, jobLabel, selected, onPick, onBack, onContinue, onCancel }) => {
+}> = ({ buildingCategories, categoryLabel, selected, onPick, onBack, onContinue, onCancel }) => {
   const [owned, setOwned] = useState<WorldParcel[] | null>(null);
   const [foreignCount, setForeignCount] = useState<number>(0);
   const myWallet = (() => { try { return localStorage.getItem('tl_player_id'); } catch { return null; } })();
@@ -1238,47 +1310,143 @@ const WorkplaceStep: React.FC<{
   useEffect(() => {
     apiGet<WorldResp>('/world')
       .then((r) => {
-        const matching = r.parcels_data.filter((p) => p.business_type === requiredBuilding);
+        const matching = r.parcels_data.filter((p) => {
+          const bt = p.business_type as BuildingType;
+          const spec = BUILDINGS[bt];
+          return spec && buildingCategories.includes(spec.category);
+        });
         const mine = matching.filter((p) => p.owner_id === myWallet);
         const foreign = matching.filter((p) => p.owner_id !== myWallet);
         setOwned(mine);
         setForeignCount(foreign.length);
       })
       .catch(() => { setOwned([]); });
-  }, [myWallet, requiredBuilding]);
+  }, [myWallet, buildingCategories.join(',')]);
 
   return (
     <>
-      <div style={S.modalNote}>Pick where your {jobLabel} will work.</div>
-      {!owned && <div style={S.formMsg}>Loading owned {requiredBuilding}s…</div>}
+      <div style={S.modalNote}>Pick a {categoryLabel.toLowerCase()} building to work at.</div>
+      {!owned && <div style={S.formMsg}>Loading your buildings…</div>}
       {owned && owned.length === 0 && (
         <div style={S.modalNote}>
-          You don't own a {requiredBuilding}. Your agent will work at one of the {foreignCount}
-          {' '}existing {requiredBuilding}{foreignCount === 1 ? '' : 's'} owned by other players.
-          You'll still earn the resources your agent produces; the parcel owner keeps their building income.
+          You don't own any {categoryLabel.toLowerCase()} buildings yet.
+          {foreignCount > 0 && (
+            <>
+              {' '}Skip below and your agent will work at one of the {foreignCount}
+              {' '}existing {categoryLabel.toLowerCase()} building{foreignCount === 1 ? '' : 's'}
+              {' '}owned by other players.
+            </>
+          )}
         </div>
       )}
       {owned && owned.length > 0 && (
         <div style={S.parcelList}>
-          {owned.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => onPick(p.id, `#${p.id} — ${p.business_name || requiredBuilding}`)}
-              style={{ ...S.parcelOption, ...(selected === p.id ? S.parcelOptionActive : {}) }}
-            >
-              <div style={S.parcelOptionTitle}>#{p.id} — {p.business_name || requiredBuilding}</div>
-              <div style={S.parcelOptionMeta}>grid ({p.grid_x}, {p.grid_y})</div>
-            </button>
-          ))}
+          {owned.map((p) => {
+            const bt = p.business_type as BuildingType;
+            const spec = BUILDINGS[bt];
+            const label = spec?.label ?? bt;
+            return (
+              <button
+                key={p.id}
+                onClick={() => onPick(p.id, `#${p.id} — ${p.business_name || label}`)}
+                style={{ ...S.parcelOption, ...(selected === p.id ? S.parcelOptionActive : {}) }}
+              >
+                <div style={S.parcelOptionTitle}>
+                  #{p.id} — {p.business_name || label}
+                </div>
+                <div style={S.parcelOptionMeta}>
+                  {label} · grid ({p.grid_x}, {p.grid_y})
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
       <div style={S.modalActions}>
         <button onClick={onCancel} style={S.cancelTextBtn}>cancel</button>
         <button onClick={onBack} style={S.cancelTextBtn}>back</button>
-        <button onClick={onContinue} style={S.submit}>
-          {owned && owned.length > 0 && selected === null
-            ? 'Skip — auto-pick'
-            : 'Next'}
+        <button onClick={onContinue} disabled={selected === null && (owned?.length ?? 0) > 0} style={S.submit}>
+          Next
+        </button>
+      </div>
+    </>
+  );
+};
+
+/**
+ * Luxury crafting picker — grid of all 15 luxury items. Each item is
+ * enabled only if the player owns at least one matching production
+ * building. Picking an item auto-resolves the workplace to the first
+ * owned matching parcel (sufficient for v1; multi-building owners can
+ * later reassign from the agent card).
+ */
+const LuxuryItemStep: React.FC<{
+  selected: LuxuryItemKind | null;
+  onPick: (item: LuxuryItemKind, parcelId: number, label: string) => void;
+  onBack: () => void;
+  onContinue: () => void;
+  onCancel: () => void;
+}> = ({ selected, onPick, onBack, onContinue, onCancel }) => {
+  const [parcels, setParcels] = useState<WorldParcel[] | null>(null);
+  const myWallet = (() => { try { return localStorage.getItem('tl_player_id'); } catch { return null; } })();
+
+  useEffect(() => {
+    apiGet<WorldResp>('/world')
+      .then((r) => {
+        setParcels(r.parcels_data.filter((p) => p.owner_id === myWallet));
+      })
+      .catch(() => { setParcels([]); });
+  }, [myWallet]);
+
+  const items = Object.values(LUXURY_ITEMS);
+  const ownedBuildings = new Set((parcels ?? []).map((p) => p.business_type));
+
+  return (
+    <>
+      <div style={S.modalNote}>
+        Pick a luxury item to craft. Greyed-out items require building you don't yet own.
+      </div>
+      {!parcels && <div style={S.formMsg}>Loading your buildings…</div>}
+      {parcels && (
+        <div style={S.itemGrid}>
+          {items.map((item) => {
+            const ownsBuilding = ownedBuildings.has(item.building);
+            const isSelected = selected === item.kind;
+            return (
+              <button
+                key={item.kind}
+                disabled={!ownsBuilding}
+                onClick={() => {
+                  const parcel = (parcels ?? []).find((p) => p.business_type === item.building);
+                  if (parcel) {
+                    onPick(item.kind, parcel.id, `#${parcel.id} — ${parcel.business_name || (BUILDINGS[item.building as BuildingType]?.label ?? item.building)}`);
+                  }
+                }}
+                style={{
+                  ...S.itemSlot,
+                  ...(ownsBuilding ? S.itemSlotEnabled : S.itemSlotDisabled),
+                  ...(isSelected ? S.itemSlotActive : {}),
+                }}
+                title={ownsBuilding
+                  ? `${item.label} — crafted at ${item.building} · yields ${item.burnValue} luxury`
+                  : `Requires a ${BUILDINGS[item.building as BuildingType]?.label ?? item.building} (you don't own one)`}
+              >
+                <div style={S.itemSlotIcon}>
+                  {/* Use the catalog icon if we have it client-side, else a chain glyph. */}
+                  {INVENTORY_CATALOG.find((c) => c.kind === item.kind)?.icon ?? '✨'}
+                </div>
+                <div style={S.itemSlotLabel}>{item.label}</div>
+                <div style={S.itemSlotMeta}>T{item.tier} · {item.chain}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div style={S.modalActions}>
+        <button onClick={onCancel} style={S.cancelTextBtn}>cancel</button>
+        <button onClick={onBack} style={S.cancelTextBtn}>back</button>
+        <button onClick={onContinue} disabled={selected === null} style={S.submit}>
+          Next
         </button>
       </div>
     </>
@@ -2461,6 +2629,62 @@ const S: Record<string, React.CSSProperties> = {
   jobIcon: { fontSize: 22 },
   jobLabel: { fontSize: 12, fontWeight: 600, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
   jobSummary: { fontSize: 10, color: '#A89378', lineHeight: 1.3 },
+
+  // ── Category picker (create wizard, step 2) ──────────────────────────
+  // 2x2 grid of resource cards (Food/Materials/Energy/Luxury) above a
+  // wide bottom button for Work-mode wages.
+  categoryGrid: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6,
+  },
+  categoryCard: {
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.18)',
+    borderRadius: 8, padding: '14px 6px', cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+    textAlign: 'center' as const,
+  },
+  categoryCardActive: {
+    background: 'rgba(216,148,56,0.22)',
+    borderColor: '#D89438',
+    boxShadow: '0 0 12px rgba(216,148,56,0.25)',
+  },
+  categoryIcon: { fontSize: 30 },
+  categoryIconInline: { fontSize: 18 },
+  categoryLabel: { fontSize: 13, fontWeight: 600, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
+  // The bottom wide button is intentionally thinner + longer than the
+  // 2x2 cards — owner direction 2026-05-20.
+  categoryWideCard: {
+    width: '100%',
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.18)',
+    borderRadius: 8, padding: '8px 10px', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 6,
+  },
+  categoryWideLabel: { fontSize: 13, fontWeight: 600, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
+  categoryHint: { fontSize: 11, color: '#A89378', fontStyle: 'italic', padding: '0 2px' },
+
+  // ── Luxury item picker (create wizard, step 3 — luxury branch) ───────
+  itemGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4,
+    maxHeight: 280, overflowY: 'auto',
+  },
+  itemSlot: {
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.15)',
+    borderRadius: 6, padding: '6px 4px',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
+    cursor: 'pointer',
+  },
+  itemSlotEnabled: { opacity: 1 },
+  itemSlotDisabled: { opacity: 0.35, cursor: 'not-allowed' },
+  itemSlotActive: {
+    background: 'rgba(216,148,56,0.22)',
+    borderColor: '#D89438',
+  },
+  itemSlotIcon: { fontSize: 22 },
+  itemSlotLabel: { fontSize: 10, color: '#F5E6D0', fontWeight: 600, textAlign: 'center' as const, lineHeight: 1.2 },
+  itemSlotMeta: { fontSize: 8, color: '#A89378', textTransform: 'uppercase' as const, letterSpacing: 0.3 },
 
   // ── Workplace step (parcel picker) ────────────────────────────────────
   parcelList: {

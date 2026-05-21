@@ -348,10 +348,14 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
   const wallet = (req as AuthedRequest).walletId!;
   const body = (req.body ?? {}) as {
     name?: string;
-    job?: JobId;
+    // Preferred new shape: role + workplace_parcel_id. The role enum
+    // (work | produce | craft) is the v1 agent model — the legacy job
+    // presets (farmer/miner/etc.) are no longer surfaced in the UI.
+    role?: AgentRole;
     workplace_parcel_id?: number;
+    // Legacy shapes (back-compat for scripts pre-dating the role model).
+    job?: JobId;
     initial_fund?: number;
-    // legacy fields (back-compat for the old form): personality + strategy_preset
     personality?: AgentPersonality;
     strategy_preset?: AgentStrategy;
   };
@@ -360,12 +364,41 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
     return res.status(400).json({ error: 'name (string) required' });
   }
 
-  // Resolve job. Either an explicit JobId (new flow) or inferred from
-  // legacy personality+strategy (back-compat for scripts that pre-date jobs).
+  // Resolve job. Three accepted request shapes, in priority order:
+  //   1. Explicit role (new flow) — pick a synthetic job for back-compat
+  //      audit fields based on the workplace's building category.
+  //   2. Explicit JobId (transitional flow, still accepted).
+  //   3. Legacy personality + strategy (pre-job-preset clients).
   let job: JobId;
   let personality: AgentPersonality;
   let strategy: AgentStrategy;
-  if (body.job) {
+  let chosenRole: AgentRole | null = null;
+  if (body.role) {
+    if (!AGENT_ROLES.includes(body.role)) {
+      return res.status(400).json({ error: `unknown role, expected one of: ${AGENT_ROLES.join(', ')}` });
+    }
+    chosenRole = body.role;
+    // Map role + workplace category to a synthetic job preset so existing
+    // audit fields + appearance overlays stay consistent. The job no
+    // longer drives behaviour — role does.
+    const parcels = getAllParcels();
+    const wp = body.workplace_parcel_id !== undefined
+      ? parcels.find((p) => p.id === body.workplace_parcel_id)
+      : undefined;
+    const wpType = (wp as { building_type?: string } | undefined)?.building_type;
+    const cat = wpType ? BUILDINGS[wpType as BuildingType]?.category : undefined;
+    if (chosenRole === 'work') {
+      job = 'banker';
+    } else if (chosenRole === 'craft') {
+      job = 'builder';
+    } else { // produce
+      if (cat === 'materials') job = 'miner';
+      else if (cat === 'energy') job = 'farmer'; // energy worker — closest preset
+      else job = 'farmer';
+    }
+    personality = JOBS[job].personality;
+    strategy = JOBS[job].strategy;
+  } else if (body.job) {
     if (!JOB_IDS.includes(body.job)) {
       return res.status(400).json({ error: `unknown job, expected one of: ${JOB_IDS.join(', ')}` });
     }
@@ -380,7 +413,7 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
       ? body.strategy_preset : 'balanced';
     job = JOB_IDS.find((id) => JOBS[id].personality === personality) ?? 'farmer';
   } else {
-    return res.status(400).json({ error: `job required, one of: ${JOB_IDS.join(', ')}` });
+    return res.status(400).json({ error: `role or job required` });
   }
 
   // Rank-gated in-game cap. Phase 4 will populate the rank; until then
@@ -409,15 +442,45 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
   }
   await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
 
-  // Workplace resolution. If the job needs a parcel, pick one:
-  //   1. caller passed an explicit workplace_parcel_id → validate match
-  //   2. else first owned parcel with the right building type
-  //   3. else any other player's parcel with the right building type
-  //   4. else null and the agent will idle until a workplace is reassigned
+  // Workplace resolution.
+  //
+  // Two paths:
+  //   (a) Role-based (new flow): caller picked a specific parcel — we
+  //       only validate ownership/existence + role/category compatibility
+  //       (produce → food|materials|energy, work → luxury-housing|civic,
+  //       craft → food|materials|energy). The client filters the picker
+  //       so a bad combo only happens from a hand-rolled API call.
+  //   (b) Job-based (legacy flow): use the job's requires_building hint
+  //       to validate and to auto-pick when no explicit parcel was sent.
   const jobSpec = JOBS[job];
   let workplaceParcelId: number | null = null;
   let workplaceOwnedByCaller = false;
-  if (jobSpec.requires_building) {
+  if (chosenRole !== null) {
+    if (body.workplace_parcel_id !== undefined) {
+      const parcels = getAllParcels();
+      const p = parcels.find((x) => x.id === body.workplace_parcel_id);
+      if (!p) return res.status(404).json({ error: 'workplace_parcel_not_found' });
+      const bt = (p as { building_type?: string }).building_type;
+      const spec = bt ? BUILDINGS[bt as BuildingType] : undefined;
+      if (!spec) return res.status(400).json({ error: 'workplace_has_no_building' });
+      const isProduction = spec.category === 'food' || spec.category === 'materials' || spec.category === 'energy';
+      const isLuxury = spec.category === 'luxury-housing' || spec.category === 'luxury-civic';
+      const okForRole =
+        (chosenRole === 'produce' && isProduction) ||
+        (chosenRole === 'craft' && isProduction) ||
+        (chosenRole === 'work' && isLuxury);
+      if (!okForRole) {
+        return res.status(400).json({
+          error: 'workplace_incompatible_with_role',
+          role: chosenRole,
+          category: spec.category,
+        });
+      }
+      workplaceParcelId = p.id;
+      workplaceOwnedByCaller = p.owner_id === wallet;
+    }
+    // role given but no workplace_parcel_id → unemployed agent (idle).
+  } else if (jobSpec.requires_building) {
     const reqType = jobSpec.requires_building;
     if (body.workplace_parcel_id !== undefined) {
       const parcels = getAllParcels();
@@ -465,6 +528,12 @@ router.post('/agents/register', authWallet, async (req: Request, res: Response) 
   } catch (err: any) {
     if (err?.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Agent name already taken' });
     return res.status(500).json({ error: 'Registration failed' });
+  }
+  // Persist the chosen role explicitly when the caller used the new
+  // flow. registerAgent defaults role='work' on insert, which is wrong
+  // for produce/craft choices.
+  if (chosenRole !== null) {
+    setAgentRole(id, chosenRole);
   }
 
   // Position the agent immediately so the body appears in the right
