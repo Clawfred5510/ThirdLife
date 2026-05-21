@@ -17,7 +17,7 @@ import {
 
 type AppId =
   | 'leaderboard' | 'market' | 'events' | 'properties' | 'world2d' | 'governance'
-  | 'agents' | 'closet' | 'wallet' | 'inventory';
+  | 'agents' | 'closet' | 'wallet' | 'inventory' | 'rank';
 type ActiveApp = AppId | null;
 
 interface AppDef {
@@ -32,6 +32,7 @@ interface AppDef {
 const APPS: AppDef[] = [
   { id: 'wallet',      label: 'Wallet',      icon: '👛', color: '#3F2A6E' }, // deep violet
   { id: 'inventory',   label: 'Inventory',   icon: '🎒', color: '#7A4F2E' }, // wood — luxury items
+  { id: 'rank',        label: 'Rank',        icon: '🎖️', color: '#B5563A' }, // terra cotta
   { id: 'agents',      label: 'My Agents',   icon: '🤖', color: '#5C6F8A' }, // slate-blue
   { id: 'closet',      label: 'Closet',      icon: '👕', color: '#A8556B' }, // dusty rose
   { id: 'market',      label: 'Market',      icon: '📈', color: '#3F7A3D' }, // forest
@@ -270,6 +271,7 @@ const AppView: React.FC<{ app: AppDef; onBack: () => void }> = ({ app, onBack })
         {app.id === 'agents' && <AgentsBody />}
         {app.id === 'wallet' && <WalletBody />}
         {app.id === 'inventory' && <InventoryBody />}
+        {app.id === 'rank' && <RankBody />}
       </div>
     </div>
   );
@@ -1411,6 +1413,9 @@ const BurnDialog: React.FC<{
     setErr(null);
     try {
       await apiPost('/actions/burn', { item_kind: item.kind, quantity: n }, { authed: true });
+      // Notify other UI surfaces (Rank app, resource-bar luxury fill) so
+      // they refresh without waiting for a poll cycle.
+      window.dispatchEvent(new CustomEvent('burn-result', { detail: { kind: item.kind, qty: n } }));
       onBurned();
     } catch (e) {
       setErr((e as Error).message);
@@ -1716,6 +1721,160 @@ const World2DBody: React.FC = () => {
     </>
   );
 };
+
+// ── Rank app ──────────────────────────────────────────────────────────
+//
+// Reads /wallet/rank for live progress + benefits, refreshes on the
+// 'burn-result' window event so a burn from the Inventory app updates
+// the rank panel immediately. Falls back to a "no rank yet" CTA when
+// the wallet has never burned a luxury item.
+
+type RankTier = 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond';
+interface RankSnapshot {
+  lifetime: number;
+  rank: RankTier | null;
+  next_rank: RankTier | null;
+  prev_threshold: number;
+  next_threshold: number | null;
+  progress: number; // 0..1
+  benefits: {
+    in_game_agent_cap: number;
+    external_agent_cap: number;
+    land_cap: number;
+    marketplace_fee_bps: number;
+  };
+}
+
+const RANK_TIER_COLOR: Record<RankTier, string> = {
+  bronze:   '#CD7F32',
+  silver:   '#C0C0C0',
+  gold:     '#FFD700',
+  platinum: '#E5E4E2',
+  diamond:  '#B9F2FF',
+};
+const RANK_TIER_LABEL: Record<RankTier, string> = {
+  bronze: 'Bronze', silver: 'Silver', gold: 'Gold', platinum: 'Platinum', diamond: 'Diamond',
+};
+
+const RankBody: React.FC = () => {
+  const [snap, setSnap] = useState<RankSnapshot | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!hasAuthToken()) {
+      setErr('Connect your wallet to view rank progress.');
+      return;
+    }
+    try {
+      const r = await apiGet<RankSnapshot>('/wallet/rank', { authed: true });
+      setSnap(r);
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const onBurn = () => refresh();
+    window.addEventListener('burn-result', onBurn);
+    return () => window.removeEventListener('burn-result', onBurn);
+  }, [refresh]);
+
+  if (err) return <div style={S.rankErr}>{err}</div>;
+  if (!snap) return <div style={S.rankLoading}>Loading rank…</div>;
+
+  const current = snap.rank;
+  const next = snap.next_rank;
+  const pct = Math.round(snap.progress * 100);
+  const toGo =
+    snap.next_threshold != null ? Math.max(0, snap.next_threshold - snap.lifetime) : 0;
+
+  return (
+    <div style={S.rankWrap}>
+      <div style={S.rankCard}>
+        <div
+          style={{
+            ...S.rankCrest,
+            background: current
+              ? `radial-gradient(circle at 35% 30%, ${RANK_TIER_COLOR[current]}, ${RANK_TIER_COLOR[current]}99 60%, ${RANK_TIER_COLOR[current]}33)`
+              : 'rgba(245,230,208,0.08)',
+            boxShadow: current ? `0 0 18px ${RANK_TIER_COLOR[current]}99` : 'none',
+            color: current ? '#1f1812' : '#A89378',
+          }}
+          aria-label={current ? `${RANK_TIER_LABEL[current]} crest` : 'No rank'}
+        >
+          {current ? RANK_TIER_LABEL[current][0] : '–'}
+        </div>
+        <div style={S.rankCardRight}>
+          <div style={S.rankLabel}>Current rank</div>
+          <div style={S.rankTitle}>
+            {current ? RANK_TIER_LABEL[current] : 'Unranked'}
+          </div>
+          <div style={S.rankLifetime}>
+            Lifetime luxury burned:{' '}
+            <strong style={{ color: '#F5E6D0' }}>{snap.lifetime.toLocaleString()}</strong>
+          </div>
+        </div>
+      </div>
+
+      {next ? (
+        <div style={S.rankProgressSection}>
+          <div style={S.rankProgressLabel}>
+            <span>
+              Progress to <strong style={{ color: RANK_TIER_COLOR[next] }}>{RANK_TIER_LABEL[next]}</strong>
+            </span>
+            <span>{pct}%</span>
+          </div>
+          <div style={S.rankProgressTrack}>
+            <div
+              style={{
+                ...S.rankProgressFill,
+                width: `${pct}%`,
+                background: `linear-gradient(90deg, ${RANK_TIER_COLOR[next]}, ${RANK_TIER_COLOR[next]}cc)`,
+              }}
+            />
+          </div>
+          <div style={S.rankProgressFooter}>
+            <span>
+              {snap.lifetime.toLocaleString()} / {(snap.next_threshold ?? 0).toLocaleString()}
+            </span>
+            <span>{toGo.toLocaleString()} to go</span>
+          </div>
+        </div>
+      ) : (
+        <div style={S.rankMaxedOut}>
+          Maximum rank reached — you are Diamond.
+        </div>
+      )}
+
+      <div style={S.rankBenefitsSection}>
+        <div style={S.rankBenefitsHeader}>Current rank benefits</div>
+        <div style={S.rankBenefitsGrid}>
+          <Benefit label="In-game agents" value={snap.benefits.in_game_agent_cap} />
+          <Benefit label="External agents" value={snap.benefits.external_agent_cap} />
+          <Benefit label="Land cap" value={snap.benefits.land_cap} />
+          <Benefit
+            label="Market fee"
+            value={`${(snap.benefits.marketplace_fee_bps / 100).toFixed(0)}%`}
+          />
+        </div>
+      </div>
+
+      <div style={S.rankHint}>
+        Burn luxury items in your Inventory to climb the ranks. Higher ranks unlock
+        more agents, more land, and lower marketplace fees.
+      </div>
+    </div>
+  );
+};
+
+const Benefit: React.FC<{ label: string; value: number | string }> = ({ label, value }) => (
+  <div style={S.rankBenefitItem}>
+    <div style={S.rankBenefitValue}>{value}</div>
+    <div style={S.rankBenefitLabel}>{label}</div>
+  </div>
+);
 
 const S: Record<string, React.CSSProperties> = {
   // ── Floating phone-icon FAB ──────────────────────────────────────────
@@ -2184,5 +2343,79 @@ const S: Record<string, React.CSSProperties> = {
     borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(239,68,68,0.30)',
     borderRadius: 6, cursor: 'pointer',
     marginTop: 4,
+  },
+
+  // ── Rank app ──────────────────────────────────────────────────────
+  rankWrap: { display: 'flex', flexDirection: 'column', gap: 14, padding: '4px 2px' },
+  rankErr: { padding: 12, fontSize: 12, color: '#fca5a5' },
+  rankLoading: { padding: 12, fontSize: 12, color: '#A89378' },
+  rankCard: {
+    display: 'flex', alignItems: 'center', gap: 14,
+    padding: 12,
+    background: 'rgba(245,230,208,0.04)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(216,148,56,0.15)',
+    borderRadius: 10,
+  },
+  rankCrest: {
+    width: 60, height: 60, borderRadius: 30,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 26, fontWeight: 900, fontFamily: 'Georgia, serif',
+    textShadow: '0 1px 0 rgba(255,255,255,0.4)',
+    flexShrink: 0,
+  },
+  rankCardRight: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 },
+  rankLabel: { fontSize: 10, color: '#A89378', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 },
+  rankTitle: { fontSize: 18, fontWeight: 700, color: '#F5E6D0', fontFamily: 'Georgia, serif' },
+  rankLifetime: { fontSize: 11, color: '#A89378' },
+
+  rankProgressSection: { display: 'flex', flexDirection: 'column', gap: 6 },
+  rankProgressLabel: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    fontSize: 12, color: '#F5E6D0', fontVariantNumeric: 'tabular-nums',
+  },
+  rankProgressTrack: {
+    position: 'relative',
+    height: 10, width: '100%',
+    background: 'rgba(0,0,0,0.4)',
+    borderRadius: 5,
+    overflow: 'hidden',
+    boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.6)',
+  },
+  rankProgressFill: {
+    position: 'absolute', left: 0, top: 0, bottom: 0,
+    borderRadius: 5,
+    transition: 'width 0.3s ease',
+  },
+  rankProgressFooter: {
+    display: 'flex', justifyContent: 'space-between',
+    fontSize: 10, color: '#A89378', fontVariantNumeric: 'tabular-nums',
+  },
+  rankMaxedOut: {
+    padding: '10px 12px',
+    fontSize: 12, color: '#B9F2FF', textAlign: 'center',
+    background: 'rgba(185,242,255,0.06)',
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(185,242,255,0.2)',
+    borderRadius: 8,
+  },
+
+  rankBenefitsSection: { display: 'flex', flexDirection: 'column', gap: 6 },
+  rankBenefitsHeader: {
+    fontSize: 10, color: '#A89378',
+    textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600,
+  },
+  rankBenefitsGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6,
+  },
+  rankBenefitItem: {
+    padding: '6px 8px',
+    background: 'rgba(245,230,208,0.04)',
+    borderRadius: 6,
+  },
+  rankBenefitValue: { fontSize: 16, color: '#F5E6D0', fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
+  rankBenefitLabel: { fontSize: 9, color: '#A89378', textTransform: 'uppercase', letterSpacing: 0.4 },
+
+  rankHint: {
+    fontSize: 10, color: '#7A6850', lineHeight: 1.4,
+    fontStyle: 'italic', padding: '0 2px',
   },
 };

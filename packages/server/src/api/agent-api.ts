@@ -83,6 +83,14 @@ import {
   applyJobLook,
   DEFAULT_APPEARANCE,
   Appearance,
+  TIER_NAMES,
+  type Tier,
+  RANK_BURN_THRESHOLD,
+  rankFromLifetimeBurn,
+  IN_GAME_AGENT_CAP_BY_RANK,
+  EXTERNAL_AGENT_CAP_BY_RANK,
+  LAND_CAP_BY_RANK,
+  MARKETPLACE_FEE_BPS_BY_RANK,
 } from '@gamestu/shared';
 import { setAgentWorkplace, savePlayerPosition } from '../db';
 
@@ -842,6 +850,49 @@ router.get('/wallet/items', authWallet, (req: Request, res: Response) => {
   res.json({
     items: getPlayerItems(wallet),
     lifetime_luxury_burned: getLifetimeLuxuryBurned(wallet),
+  });
+});
+
+/**
+ * UI Overhaul: rank progress snapshot for the Phone "Rank" app + the
+ * resource-bar luxury progress fill. Returns the current rank, the
+ * lifetime burn, the next-tier threshold (or null at diamond), and a
+ * benefit summary keyed off the rank caps in pricing.ts.
+ *
+ * The benefit numbers are read from the shared pricing constants, so
+ * the UI never has to duplicate the spec.
+ */
+router.get('/wallet/rank', authWallet, (req: Request, res: Response) => {
+  const wallet = (req as AuthedRequest).walletId!;
+  const lifetime = getLifetimeLuxuryBurned(wallet);
+  const current = rankFromLifetimeBurn(lifetime); // null if no burns yet
+  const tierIndex = current ? TIER_NAMES.indexOf(current) : -1;
+  const nextTier: Tier | null =
+    tierIndex >= 0 && tierIndex < TIER_NAMES.length - 1
+      ? TIER_NAMES[tierIndex + 1]
+      : tierIndex === -1
+      ? 'bronze'
+      : null;
+  const prevThreshold = current ? RANK_BURN_THRESHOLD[current] : 0;
+  const nextThreshold = nextTier ? RANK_BURN_THRESHOLD[nextTier] : null;
+  const span = nextThreshold != null ? Math.max(1, nextThreshold - prevThreshold) : 1;
+  const progress = nextThreshold != null
+    ? Math.min(1, Math.max(0, (lifetime - prevThreshold) / span))
+    : 1;
+  const tierForCaps: Tier = current ?? 'bronze';
+  res.json({
+    lifetime,
+    rank: current,
+    next_rank: nextTier,
+    prev_threshold: prevThreshold,
+    next_threshold: nextThreshold,
+    progress, // 0..1
+    benefits: {
+      in_game_agent_cap: IN_GAME_AGENT_CAP_BY_RANK[tierForCaps],
+      external_agent_cap: EXTERNAL_AGENT_CAP_BY_RANK[tierForCaps],
+      land_cap: LAND_CAP_BY_RANK[tierForCaps],
+      marketplace_fee_bps: MARKETPLACE_FEE_BPS_BY_RANK[tierForCaps],
+    },
   });
 });
 
