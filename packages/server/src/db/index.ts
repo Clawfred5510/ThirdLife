@@ -568,6 +568,40 @@ class SQLiteDatabase implements DBBackend {
     } catch (e) {
       console.warn('[db] wallet_bots migration failed:', (e as Error).message);
     }
+
+    // One-shot migration (2026-05-26): convert any remaining legacy
+    // building types (Phase D Meshy-era catalog) to their v1-tier
+    // equivalent. After this runs the BUILDING_SPECS legacy entries
+    // become unreachable from prod data and the next release can strip
+    // them from the union + procedural builders + autopilot legacy
+    // bridge. Mapping mirrors the voucher equivalence map in
+    // docs/voucher-viability-top10-2026-05-23.md. Idempotent: re-runs
+    // are no-ops once every legacy parcel has been migrated.
+    try {
+      const result = this.db.prepare(
+        `UPDATE parcels SET building_type = CASE building_type
+           WHEN 'shop'       THEN 'office'
+           WHEN 'hall'       THEN 'market'
+           WHEN 'club'       THEN 'bank'
+           WHEN 'hospital'   THEN 'bank'
+           WHEN 'library'    THEN 'market'
+           WHEN 'station'    THEN 'market'
+           WHEN 'skyscraper' THEN 'town_hall'
+           WHEN 'mall'       THEN 'town_hall'
+           WHEN 'stadium'    THEN 'town_hall'
+           WHEN 'luxury_apt' THEN 'penthouse'
+         END
+         WHERE building_type IN (
+           'shop', 'hall', 'club', 'hospital', 'library', 'station',
+           'skyscraper', 'mall', 'stadium', 'luxury_apt'
+         )`,
+      ).run();
+      if (result.changes > 0) {
+        console.log(`[db] migrated ${result.changes} legacy-type parcel(s) to v1 equivalent`);
+      }
+    } catch (e) {
+      console.warn('[db] legacy parcel migration failed:', (e as Error).message);
+    }
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }

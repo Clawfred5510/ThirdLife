@@ -438,9 +438,9 @@ export const JOBS: Record<JobId, JobSpec> = {
   },
   shopkeeper: {
     id: 'shopkeeper', label: 'Shopkeeper', icon: '🛍️',
-    summary: 'Runs a shop. Produces luxury goods each tick.',
+    summary: 'Runs an office. Produces luxury goods each tick.',
     personality: 'worker', strategy: 'balanced',
-    requires_building: 'shop',
+    requires_building: 'office',
     hat_style: 'beanie', hat_color: '#f5e6d0',
   },
   trader: {
