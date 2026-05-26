@@ -221,7 +221,14 @@ export function buildGlbBuilding(
       }
       if (sharedMat) m.material = sharedMat;
       m.checkCollisions = false;
-      m.isPickable = true;
+      // Building meshes must NOT intercept pick rays — the parcel's
+      // `lot_*` ground tile owns the OnPickTrigger that opens
+      // ParcelPanel (see MainScene.spawnBuildingsAndSetupParcels).
+      // With isPickable=true a click on the building was being
+      // absorbed and the panel never opened. Was a latent bug while
+      // only nuclear_plant rendered as GLB; surfaced when the synty
+      // drop routed every building through this path.
+      m.isPickable = false;
       m.receiveShadows = true;
     }
   }).catch((err) => {
