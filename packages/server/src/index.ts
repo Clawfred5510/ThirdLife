@@ -9,7 +9,7 @@ import agentApi from './api/agent-api';
 import authApi from './api/auth';
 import { GAME_NAME, features, initFeatures } from '@gamestu/shared';
 import { config } from './config';
-import { getAllParcels, getAllPlayers } from './db';
+import { getAllParcels, getAllPlayers, maybeRunWipeAndVoucherize } from './db';
 
 initFeatures(config.features);
 
@@ -27,6 +27,10 @@ process.on('uncaughtException', (err) => {
 console.log(
   `[features] JOBS=${features.JOBS} NPCS=${features.NPCS} TUTORIAL=${features.TUTORIAL} DAY_NIGHT=${features.DAY_NIGHT}`
 );
+
+// One-shot world reset to vouchers. Gated on WIPE_AND_VOUCHERIZE env;
+// unset = no-op. See db/index.ts for the full semantics.
+maybeRunWipeAndVoucherize();
 
 const app = express();
 app.use(cors({ origin: config.clientOrigin === '*' ? true : config.clientOrigin }));

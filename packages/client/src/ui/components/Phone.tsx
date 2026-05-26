@@ -1775,32 +1775,48 @@ const TIER_COLOR: Record<number, string> = {
 };
 
 const InventoryBody: React.FC = () => {
+  const [tab, setTab] = useState<'items' | 'vouchers'>('items');
+  const signedIn = hasAuthToken();
+  if (!signedIn) {
+    return <div style={S.emptyPad}>Connect a wallet to see your inventory.</div>;
+  }
+  return (
+    <>
+      <div style={S.invTabs}>
+        <button
+          style={{ ...S.invTab, ...(tab === 'items' ? S.invTabActive : {}) }}
+          onClick={() => setTab('items')}
+        >
+          Items
+        </button>
+        <button
+          style={{ ...S.invTab, ...(tab === 'vouchers' ? S.invTabActive : {}) }}
+          onClick={() => setTab('vouchers')}
+        >
+          Vouchers
+        </button>
+      </div>
+      {tab === 'items' ? <ItemsTab /> : <VouchersTab />}
+    </>
+  );
+};
+
+const ItemsTab: React.FC = () => {
   const [data, setData] = useState<InventoryResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<InvItem | null>(null);
-  const signedIn = hasAuthToken();
 
   const refresh = useCallback(() => {
-    if (!signedIn) return;
     apiGet<InventoryResp>('/wallet/items', { authed: true })
       .then((r) => { setData(r); setErr(null); })
       .catch((e) => setErr((e as Error).message));
-  }, [signedIn]);
+  }, []);
 
   useEffect(() => {
-    if (!signedIn) return;
     refresh();
     const i = setInterval(refresh, 6000);
     return () => clearInterval(i);
-  }, [signedIn, refresh]);
-
-  if (!signedIn) {
-    return (
-      <div style={S.emptyPad}>
-        Connect a wallet to see your luxury items.
-      </div>
-    );
-  }
+  }, [refresh]);
 
   const items = data?.items ?? {};
   const lifetime = data?.lifetime_luxury_burned ?? 0;
@@ -1846,6 +1862,176 @@ const InventoryBody: React.FC = () => {
     </>
   );
 };
+
+// ── Vouchers tab ─────────────────────────────────────────────────────────
+//
+// Inventory of redeem-once grants issued by the wipe-and-voucherize
+// migration. Server contract: see packages/server/src/api/agent-api.ts
+// (/vouchers, /vouchers/:id/redeem-{land,build,resource,agent}).
+
+interface VoucherPayloadBuilding { building_type: string; tier?: number; category?: string; legacy_source?: string }
+interface VoucherPayloadAgent    { name: string; avatar_url?: string; x_handle?: string }
+interface VoucherPayloadResource { resource: 'food' | 'materials' | 'energy' | 'luxury'; amount: number }
+
+interface Voucher {
+  id: string;
+  player_id: string;
+  kind: 'land' | 'building' | 'agent' | 'resource';
+  /** Server-parsed JSON. Typed as `unknown` here so per-kind narrowing is
+   *  explicit at each call site (see VoucherPayloadX interfaces above). */
+  payload: unknown;
+  source: string;
+  issued_at: string;
+  redeemed_at: string | null;
+  redeemed_target_parcel_id: number | null;
+}
+
+interface VouchersResp {
+  counts: { land: number; building: number; agent: number; resource: number };
+  active: Voucher[];
+  recently_redeemed: Voucher[];
+}
+
+const KIND_ICON: Record<Voucher['kind'], string> = {
+  land: '🟩',
+  building: '🏛️',
+  agent: '👤',
+  resource: '📦',
+};
+
+const VouchersTab: React.FC = () => {
+  const [data, setData] = useState<VouchersResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    apiGet<VouchersResp>('/vouchers', { authed: true })
+      .then((r) => { setData(r); setErr(null); })
+      .catch((e) => setErr((e as Error).message));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const i = setInterval(refresh, 8000);
+    return () => clearInterval(i);
+  }, [refresh]);
+
+  const redeem = useCallback(
+    async (v: Voucher) => {
+      setBusy(v.id);
+      try {
+        if (v.kind === 'land') {
+          const raw = window.prompt(
+            'Enter the parcel ID you want to claim (any unclaimed parcel).\n' +
+            'Tip: click a parcel on the world map to see its ID.',
+          );
+          if (!raw) return;
+          const parcel_id = parseInt(raw, 10);
+          if (!Number.isFinite(parcel_id)) { setErr('Invalid parcel ID'); return; }
+          await apiPost(`/vouchers/${v.id}/redeem-land`, { parcel_id }, { authed: true });
+        } else if (v.kind === 'building') {
+          const raw = window.prompt(
+            `Build a ${(v.payload as VoucherPayloadBuilding).building_type} on which parcel?\n` +
+            'Enter the parcel ID of one you own that has no building.',
+          );
+          if (!raw) return;
+          const parcel_id = parseInt(raw, 10);
+          if (!Number.isFinite(parcel_id)) { setErr('Invalid parcel ID'); return; }
+          await apiPost(`/vouchers/${v.id}/redeem-build`, { parcel_id }, { authed: true });
+        } else if (v.kind === 'resource') {
+          await apiPost(`/vouchers/${v.id}/redeem-resource`, {}, { authed: true });
+        } else if (v.kind === 'agent') {
+          await apiPost(`/vouchers/${v.id}/redeem-agent`, {}, { authed: true });
+        }
+        refresh();
+        setErr(null);
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  if (!data) {
+    return <div style={S.emptyPad}>{err ?? 'Loading vouchers…'}</div>;
+  }
+  const total = data.counts.land + data.counts.building + data.counts.agent + data.counts.resource;
+  if (total === 0 && data.recently_redeemed.length === 0) {
+    return (
+      <div style={S.emptyPad}>
+        No vouchers in your inventory.<br/>
+        Vouchers are granted by world migrations or in-game events.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div style={S.invHeader}>
+        <span style={S.invHeaderLabel}>Active vouchers</span>
+        <span style={S.invHeaderValue}>{total}</span>
+      </div>
+      {err && <div style={S.errMsg}>{err}</div>}
+      <div style={S.vchSummary}>
+        <span>🟩 Land × {data.counts.land}</span>
+        <span>🏛️ Building × {data.counts.building}</span>
+        <span>👤 Agent × {data.counts.agent}</span>
+        <span>📦 Resource × {data.counts.resource}</span>
+      </div>
+      <div style={S.vchList}>
+        {data.active.map((v) => (
+          <VoucherRow key={v.id} voucher={v} busy={busy === v.id} onRedeem={() => redeem(v)} />
+        ))}
+      </div>
+      {data.recently_redeemed.length > 0 && (
+        <>
+          <div style={{ ...S.invHeader, marginTop: 12 }}>
+            <span style={S.invHeaderLabel}>Recently redeemed</span>
+            <span style={S.invHeaderValue}>{data.recently_redeemed.length}</span>
+          </div>
+          <div style={S.vchList}>
+            {data.recently_redeemed.slice(-10).reverse().map((v) => (
+              <div key={v.id} style={{ ...S.vchRow, opacity: 0.5 }}>
+                <span style={S.vchIcon}>{KIND_ICON[v.kind]}</span>
+                <span style={S.vchLabel}>{describeVoucher(v)}</span>
+                <span style={S.vchMeta}>redeemed</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+};
+
+function describeVoucher(v: Voucher): string {
+  if (v.kind === 'land') return 'Free land claim';
+  if (v.kind === 'building') {
+    const p = v.payload as VoucherPayloadBuilding;
+    return `Build ${p.building_type}${p.tier ? ` (Tier ${p.tier})` : ''}`;
+  }
+  if (v.kind === 'agent') {
+    const p = v.payload as VoucherPayloadAgent;
+    return `Spawn agent: ${p.name}`;
+  }
+  if (v.kind === 'resource') {
+    const p = v.payload as VoucherPayloadResource;
+    return `${p.amount.toLocaleString()} ${p.resource}`;
+  }
+  return v.kind;
+}
+
+const VoucherRow: React.FC<{ voucher: Voucher; busy: boolean; onRedeem: () => void }> = ({ voucher, busy, onRedeem }) => (
+  <div style={S.vchRow}>
+    <span style={S.vchIcon}>{KIND_ICON[voucher.kind]}</span>
+    <span style={S.vchLabel}>{describeVoucher(voucher)}</span>
+    <button style={S.vchRedeemBtn} onClick={onRedeem} disabled={busy}>
+      {busy ? '…' : 'Redeem'}
+    </button>
+  </div>
+);
 
 const BurnDialog: React.FC<{
   item: InvItem;
@@ -2658,6 +2844,45 @@ const S: Record<string, React.CSSProperties> = {
   invIcon: { fontSize: 22, lineHeight: 1 },
   invQty: { fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: '#D89438' },
   invName: { fontSize: 8, textAlign: 'center', lineHeight: 1.1, padding: '0 1px' },
+
+  // ── Inventory tab switcher (Items / Vouchers) ─────────────────────
+  invTabs: {
+    display: 'flex', gap: 4, marginBottom: 8,
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: 'rgba(245,230,208,0.10)',
+  },
+  invTab: {
+    flex: 1, padding: '6px 10px', fontSize: 11, letterSpacing: 0.5, textTransform: 'uppercase' as const,
+    background: 'transparent', color: '#7A6850',
+    borderWidth: 0, borderBottomWidth: 2, borderBottomStyle: 'solid' as const, borderBottomColor: 'transparent',
+    cursor: 'pointer', fontFamily: 'inherit',
+  },
+  invTabActive: {
+    color: '#D89438',
+    borderBottomColor: '#D89438',
+  },
+
+  // ── Vouchers tab ──────────────────────────────────────────────────
+  vchSummary: {
+    display: 'flex', flexWrap: 'wrap' as const, gap: 8,
+    fontSize: 11, color: '#A89378',
+    padding: '6px 4px', marginBottom: 8,
+  },
+  vchList: { display: 'flex', flexDirection: 'column', gap: 4 },
+  vchRow: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    padding: '6px 8px',
+    background: 'rgba(245,230,208,0.06)',
+    borderWidth: 1, borderStyle: 'solid' as const, borderColor: 'rgba(245,230,208,0.10)',
+    borderRadius: 5, fontSize: 11,
+  },
+  vchIcon: { fontSize: 16 },
+  vchLabel: { flex: 1, color: '#F5E6D0' },
+  vchMeta: { fontSize: 10, color: '#7A6850', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  vchRedeemBtn: {
+    padding: '3px 10px', fontSize: 11, fontWeight: 600,
+    background: '#D89438', color: '#1F1812',
+    borderWidth: 0, borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit',
+  },
 
   // ── Burn confirmation dialog ──────────────────────────────────────
   burnBackdrop: {

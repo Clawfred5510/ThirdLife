@@ -4,7 +4,9 @@ import Database from 'better-sqlite3';
 import {
   LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS, rankFromLifetimeBurn,
   PROPERTY_FEE_BPS, BPS_DENOMINATOR,
+  BUILDINGS, type BuildingType,
 } from '@gamestu/shared';
+import { randomUUID } from 'crypto';
 import { WORLD_TREASURY_ID } from '../economy/IEconomy';
 
 /** Helper: 1% property fee on a given gross. Used inside the DB
@@ -82,6 +84,26 @@ export interface AgentRow {
   job: string | null;
   workplace_parcel_id: number | null;
   appearance: string | null;
+}
+
+export type VoucherKind = 'land' | 'building' | 'agent' | 'resource';
+
+export interface VoucherRow {
+  id: string;
+  player_id: string;
+  kind: VoucherKind;
+  /** JSON-parsed. Per kind:
+   *  - land:     {}
+   *  - building: { building_type: string, tier: number, category: string, legacy_source?: string }
+   *  - agent:    { name: string, avatar_url?: string, x_handle?: string }
+   *  - resource: { resource: 'food'|'materials'|'energy'|'luxury', amount: number } */
+  payload: Record<string, unknown>;
+  source: string;
+  source_ref: string | null;
+  issued_at: string;
+  redeemed_at: string | null;
+  redeemed_target_parcel_id: number | null;
+  redeemed_target_agent_id: string | null;
 }
 
 // ── SQLite vs In-Memory fallback ───────────────────────────────────────────
@@ -173,6 +195,20 @@ interface DBBackend {
   };
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
+  // ── Voucher inventory (issued by wipe-and-voucherize migration; redeemed
+  // from the Phone's Vouchers tab to claim land / build buildings / re-spawn
+  // agents / credit resources). All vouchers are wallet-scoped. ─────────
+  insertVoucher(v: {
+    id: string; player_id: string; kind: VoucherKind;
+    payload: Record<string, unknown>; source: string; source_ref?: string | null;
+  }): { ok: boolean; reason?: string };
+  listVouchersForPlayer(playerId: string, opts?: { activeOnly?: boolean }): VoucherRow[];
+  getVoucherById(id: string): VoucherRow | null;
+  markVoucherRedeemed(
+    id: string,
+    target: { parcel_id?: number; agent_id?: string } | null,
+  ): { ok: boolean; reason?: string };
+  countActiveVouchersByKind(playerId: string): Record<VoucherKind, number>;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   /** Three-way atomic transfer: debit sender (amount+fee), credit recipient
@@ -520,6 +556,28 @@ class SQLiteDatabase implements DBBackend {
         FOREIGN KEY (decree_id) REFERENCES decrees(id),
         FOREIGN KEY (voter_id) REFERENCES players(id)
       );
+
+      -- Voucher inventory. Issued by the wipe-and-voucherize migration
+      -- (gated on WIPE_AND_VOUCHERIZE env) and redeemed via the Phone's
+      -- Vouchers tab. payload JSON shape depends on kind — see
+      -- VoucherRow.payload in this file for the per-kind schema.
+      CREATE TABLE IF NOT EXISTS vouchers (
+        id TEXT PRIMARY KEY,                          -- UUID v4
+        player_id TEXT NOT NULL,                      -- wallet address (lowercased)
+        kind TEXT NOT NULL,                           -- 'land' | 'building' | 'agent' | 'resource'
+        payload TEXT NOT NULL DEFAULT '{}',           -- JSON
+        source TEXT NOT NULL,                         -- 'wipe_2026_05_26' | 'manual_grant' | ...
+        source_ref TEXT,                              -- origin row id (parcel.id, agent.id) for idempotency
+        issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+        redeemed_at TEXT,
+        redeemed_target_parcel_id INTEGER,
+        redeemed_target_agent_id TEXT,
+        FOREIGN KEY (player_id) REFERENCES players(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_vouchers_source_ref
+        ON vouchers(source, kind, source_ref) WHERE source_ref IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_vouchers_player_active
+        ON vouchers(player_id) WHERE redeemed_at IS NULL;
     `);
 
     // Twitter verification was retired in Phase 0 (spec §12). The
@@ -1198,6 +1256,69 @@ class SQLiteDatabase implements DBBackend {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
 
+  // ── Voucher CRUD ─────────────────────────────────────────────────────
+  insertVoucher(v: {
+    id: string; player_id: string; kind: VoucherKind;
+    payload: Record<string, unknown>; source: string; source_ref?: string | null;
+  }): { ok: boolean; reason?: string } {
+    try {
+      this.db.prepare(
+        `INSERT INTO vouchers (id, player_id, kind, payload, source, source_ref)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(v.id, v.player_id, v.kind, JSON.stringify(v.payload), v.source, v.source_ref ?? null);
+      return { ok: true };
+    } catch (e) {
+      const msg = (e as Error).message;
+      // The UNIQUE index on (source, kind, source_ref) makes re-runs of the
+      // migration idempotent — treat the constraint as a "already issued".
+      if (msg.includes('UNIQUE') && msg.includes('uniq_vouchers_source_ref')) {
+        return { ok: false, reason: 'already_issued' };
+      }
+      return { ok: false, reason: msg };
+    }
+  }
+
+  listVouchersForPlayer(playerId: string, opts?: { activeOnly?: boolean }): VoucherRow[] {
+    const sql = opts?.activeOnly
+      ? `SELECT * FROM vouchers WHERE player_id = ? AND redeemed_at IS NULL ORDER BY issued_at`
+      : `SELECT * FROM vouchers WHERE player_id = ? ORDER BY issued_at`;
+    const rows = this.db.prepare(sql).all(playerId) as Array<Omit<VoucherRow, 'payload'> & { payload: string }>;
+    return rows.map((r) => ({ ...r, payload: safeJsonObj(r.payload) }));
+  }
+
+  getVoucherById(id: string): VoucherRow | null {
+    const row = this.db.prepare('SELECT * FROM vouchers WHERE id = ?').get(id) as
+      | (Omit<VoucherRow, 'payload'> & { payload: string }) | undefined;
+    if (!row) return null;
+    return { ...row, payload: safeJsonObj(row.payload) };
+  }
+
+  markVoucherRedeemed(
+    id: string,
+    target: { parcel_id?: number; agent_id?: string } | null,
+  ): { ok: boolean; reason?: string } {
+    const result = this.db.prepare(
+      `UPDATE vouchers
+         SET redeemed_at = datetime('now'),
+             redeemed_target_parcel_id = ?,
+             redeemed_target_agent_id = ?
+       WHERE id = ? AND redeemed_at IS NULL`,
+    ).run(target?.parcel_id ?? null, target?.agent_id ?? null, id);
+    if (result.changes === 0) return { ok: false, reason: 'already_redeemed_or_missing' };
+    return { ok: true };
+  }
+
+  countActiveVouchersByKind(playerId: string): Record<VoucherKind, number> {
+    const rows = this.db.prepare(
+      `SELECT kind, COUNT(*) AS n FROM vouchers
+        WHERE player_id = ? AND redeemed_at IS NULL
+        GROUP BY kind`,
+    ).all(playerId) as Array<{ kind: VoucherKind; n: number }>;
+    const out: Record<VoucherKind, number> = { land: 0, building: 0, agent: 0, resource: 0 };
+    for (const r of rows) out[r.kind] = r.n;
+    return out;
+  }
+
   createAuthNonce(address: string, nonce: string, expiresAt: number): void {
     // Best-effort cleanup of expired nonces — keeps the table from growing
     // unboundedly under sustained challenge spam.
@@ -1728,6 +1849,70 @@ class MemoryDB implements DBBackend {
     }
   }
 
+  // ── Voucher CRUD (in-memory) ─────────────────────────────────────────
+  private vouchers = new Map<string, VoucherRow>();
+  // (source, kind, source_ref) → voucher id; mirrors the SQLite UNIQUE index.
+  private voucherSourceIndex = new Map<string, string>();
+
+  insertVoucher(v: {
+    id: string; player_id: string; kind: VoucherKind;
+    payload: Record<string, unknown>; source: string; source_ref?: string | null;
+  }): { ok: boolean; reason?: string } {
+    if (v.source_ref) {
+      const key = `${v.source}|${v.kind}|${v.source_ref}`;
+      if (this.voucherSourceIndex.has(key)) return { ok: false, reason: 'already_issued' };
+      this.voucherSourceIndex.set(key, v.id);
+    }
+    this.vouchers.set(v.id, {
+      id: v.id,
+      player_id: v.player_id,
+      kind: v.kind,
+      payload: v.payload,
+      source: v.source,
+      source_ref: v.source_ref ?? null,
+      issued_at: new Date().toISOString(),
+      redeemed_at: null,
+      redeemed_target_parcel_id: null,
+      redeemed_target_agent_id: null,
+    });
+    return { ok: true };
+  }
+
+  listVouchersForPlayer(playerId: string, opts?: { activeOnly?: boolean }): VoucherRow[] {
+    const out: VoucherRow[] = [];
+    for (const v of this.vouchers.values()) {
+      if (v.player_id !== playerId) continue;
+      if (opts?.activeOnly && v.redeemed_at) continue;
+      out.push(v);
+    }
+    return out.sort((a, b) => a.issued_at.localeCompare(b.issued_at));
+  }
+
+  getVoucherById(id: string): VoucherRow | null {
+    return this.vouchers.get(id) ?? null;
+  }
+
+  markVoucherRedeemed(
+    id: string,
+    target: { parcel_id?: number; agent_id?: string } | null,
+  ): { ok: boolean; reason?: string } {
+    const v = this.vouchers.get(id);
+    if (!v || v.redeemed_at) return { ok: false, reason: 'already_redeemed_or_missing' };
+    v.redeemed_at = new Date().toISOString();
+    v.redeemed_target_parcel_id = target?.parcel_id ?? null;
+    v.redeemed_target_agent_id = target?.agent_id ?? null;
+    return { ok: true };
+  }
+
+  countActiveVouchersByKind(playerId: string): Record<VoucherKind, number> {
+    const out: Record<VoucherKind, number> = { land: 0, building: 0, agent: 0, resource: 0 };
+    for (const v of this.vouchers.values()) {
+      if (v.player_id !== playerId || v.redeemed_at) continue;
+      out[v.kind] += 1;
+    }
+    return out;
+  }
+
   // Wallet auth — kept in memory; loses state on restart, fine for fallback.
   private nonces = new Map<string, number>(); // `${address}:${nonce}` -> expiresAt
   private sessions = new Map<string, { playerId: string; expiresAt: number }>();
@@ -1914,6 +2099,11 @@ export function getAgentLifetimeStats(agentId: string) {
   return backend.getAgentLifetimeStats(agentId);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
+export function insertVoucher(v: Parameters<DBBackend['insertVoucher']>[0]) { return backend.insertVoucher(v); }
+export function listVouchersForPlayer(playerId: string, opts?: { activeOnly?: boolean }) { return backend.listVouchersForPlayer(playerId, opts); }
+export function getVoucherById(id: string) { return backend.getVoucherById(id); }
+export function markVoucherRedeemed(id: string, target: { parcel_id?: number; agent_id?: string } | null) { return backend.markVoucherRedeemed(id, target); }
+export function countActiveVouchersByKind(playerId: string) { return backend.countActiveVouchersByKind(playerId); }
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function transferWithFee(fromId: string, toId: string, amount: number, fee: number, treasuryId: string) {
@@ -1958,4 +2148,297 @@ export function getRawDb(): import('better-sqlite3').Database {
     throw new Error('getRawDb() requires the SQLite backend; better-sqlite3 is not loaded.');
   }
   return sqlite.db;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Wipe-and-voucherize migration
+//
+// One-shot "convert the live world to vouchers" path. Gated on env so it
+// never runs by accident. Two modes:
+//
+//   WIPE_AND_VOUCHERIZE=preview  → walks the data, prints a per-wallet
+//                                  chart of what WOULD be issued, writes
+//                                  nothing.
+//   WIPE_AND_VOUCHERIZE=commit   → does the wipe + insert in a single
+//                                  transaction.
+//
+// Optional WIPE_AND_VOUCHERIZE_WALLET=<addr> restricts the operation to
+// one wallet (lowercased match). Useful for testing on d7av before a
+// full-world commit.
+//
+// What gets voucherized + wiped:
+//   - Every claimed parcel → 1 LAND voucher to the owner; parcel reset
+//     to (owner_id=NULL, building_type='none', business_*=NULL).
+//   - Every built parcel → +1 BUILDING voucher to the owner (payload
+//     includes v1 building_type + tier + category; legacy slugs get
+//     mapped to their v1 equivalent inline as a defensive fallback,
+//     though b81da86 should have already done the DB-side conversion).
+//   - Every in-game agent (is_external=0, owner_wallet IS NOT NULL) →
+//     1 AGENT voucher with identity payload; agent row deleted; the
+//     agent's market orders cancelled.
+//   - Every player with non-zero resource stockpile → 1 RESOURCE voucher
+//     per non-zero resource; resources zeroed.
+//
+// What is NOT touched:
+//   - Player credits ($AMETA balance — lives on-chain in the wallet)
+//   - Market trade history (audit log)
+//   - Events, decrees, auth sessions
+//   - External / API agents (is_external=1) — those belong to bot owners,
+//     not to the world reset
+//
+// Idempotency: UNIQUE INDEX uniq_vouchers_source_ref on (source, kind,
+// source_ref). The source for this run is fixed at SOURCE_TAG below.
+// A re-run with the same SOURCE_TAG cannot double-issue per parcel/agent.
+// The accompanying wipe is also idempotent because once the columns are
+// nulled / rows deleted, there's nothing left to scan on the next pass.
+// ──────────────────────────────────────────────────────────────────────────
+
+const SOURCE_TAG = 'wipe_2026_05_26';
+
+interface VoucherChartLine {
+  player_id: string;
+  land: number;
+  building: number;
+  agent: number;
+  resource: number;
+  building_breakdown: Record<string, number>;
+  resource_breakdown: Record<string, number>;
+  agent_names: string[];
+}
+
+/** Legacy → v1 building-type fallback. Defensive only: the b81da86 startup
+ *  migration should have already converted every parcel's building_type to
+ *  a v1 slug, but if for any reason a legacy slug slips through the wipe
+ *  still emits a sensible BUILDING voucher. */
+function v1EquivalentBuildingType(t: string): string {
+  switch (t) {
+    case 'shop':       return 'office';
+    case 'hall':       return 'market';
+    case 'club':       return 'bank';
+    case 'hospital':   return 'bank';
+    case 'library':    return 'market';
+    case 'station':    return 'market';
+    case 'skyscraper': return 'town_hall';
+    case 'mall':       return 'town_hall';
+    case 'stadium':    return 'town_hall';
+    case 'luxury_apt': return 'penthouse';
+    default:           return t;
+  }
+}
+
+function computeWipeChart(walletFilter: string | null): VoucherChartLine[] {
+  const db = getRawDb();
+  const byWallet = new Map<string, VoucherChartLine>();
+  const bucket = (id: string): VoucherChartLine => {
+    let b = byWallet.get(id);
+    if (!b) {
+      b = {
+        player_id: id, land: 0, building: 0, agent: 0, resource: 0,
+        building_breakdown: {}, resource_breakdown: {}, agent_names: [],
+      };
+      byWallet.set(id, b);
+    }
+    return b;
+  };
+
+  // Parcels: 1 LAND + (optionally) 1 BUILDING per claimed parcel.
+  const parcelRows = db.prepare(
+    `SELECT id, owner_id, building_type FROM parcels
+       WHERE owner_id IS NOT NULL${walletFilter ? ' AND owner_id = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: number; owner_id: string; building_type: string | null;
+  }>;
+  for (const p of parcelRows) {
+    const b = bucket(p.owner_id);
+    b.land += 1;
+    if (p.building_type && p.building_type !== 'none') {
+      const v1 = v1EquivalentBuildingType(p.building_type);
+      b.building += 1;
+      b.building_breakdown[v1] = (b.building_breakdown[v1] ?? 0) + 1;
+    }
+  }
+
+  // Agents: 1 AGENT voucher per in-game agent.
+  const agentRows = db.prepare(
+    `SELECT id, name, owner_wallet FROM agents
+       WHERE is_external = 0 AND owner_wallet IS NOT NULL${walletFilter ? ' AND owner_wallet = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: string; name: string; owner_wallet: string;
+  }>;
+  for (const a of agentRows) {
+    const b = bucket(a.owner_wallet);
+    b.agent += 1;
+    b.agent_names.push(a.name);
+  }
+
+  // Resources: 1 RESOURCE voucher per non-zero stockpile per player.
+  const resRows = db.prepare(
+    `SELECT id, food, materials, energy, luxury FROM players
+       WHERE (food > 0 OR materials > 0 OR energy > 0 OR luxury > 0)${walletFilter ? ' AND id = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: string; food: number; materials: number; energy: number; luxury: number;
+  }>;
+  for (const r of resRows) {
+    const b = bucket(r.id);
+    for (const k of ['food', 'materials', 'energy', 'luxury'] as const) {
+      const v = Math.floor(r[k]);
+      if (v > 0) {
+        b.resource += 1;
+        b.resource_breakdown[k] = v;
+      }
+    }
+  }
+
+  return [...byWallet.values()].sort((a, b) => (b.land + b.building) - (a.land + a.building));
+}
+
+function printChart(chart: VoucherChartLine[]): void {
+  console.log(`[wipe] === Voucher chart (${chart.length} wallets) ===`);
+  let totalLand = 0, totalBuild = 0, totalAgent = 0, totalRes = 0;
+  for (const c of chart) {
+    totalLand += c.land; totalBuild += c.building;
+    totalAgent += c.agent; totalRes += c.resource;
+    const bb = Object.entries(c.building_breakdown)
+      .map(([k, n]) => `${k}×${n}`).join(', ') || '—';
+    const rb = Object.entries(c.resource_breakdown)
+      .map(([k, v]) => `${k}:${v}`).join(', ') || '—';
+    console.log(
+      `[wipe]   ${c.player_id} → LAND×${c.land}  BUILDING×${c.building} (${bb})  ` +
+      `AGENT×${c.agent} [${c.agent_names.slice(0, 3).join(',')}${c.agent_names.length > 3 ? '…' : ''}]  ` +
+      `RESOURCE×${c.resource} (${rb})`,
+    );
+  }
+  console.log(
+    `[wipe] TOTALS  LAND=${totalLand}  BUILDING=${totalBuild}  ` +
+    `AGENT=${totalAgent}  RESOURCE=${totalRes}`,
+  );
+}
+
+/** Public entry point — call from server startup. */
+export function maybeRunWipeAndVoucherize(): void {
+  const mode = process.env.WIPE_AND_VOUCHERIZE;
+  if (!mode) return;
+  if (mode !== 'preview' && mode !== 'commit') {
+    console.warn(`[wipe] WIPE_AND_VOUCHERIZE=${mode} not recognised (use 'preview' or 'commit'); skipping.`);
+    return;
+  }
+
+  const walletFilter = process.env.WIPE_AND_VOUCHERIZE_WALLET?.toLowerCase().trim() || null;
+  console.log(
+    `[wipe] mode=${mode}` +
+    (walletFilter ? ` wallet=${walletFilter}` : ' (all wallets)') +
+    ` source_tag=${SOURCE_TAG}`,
+  );
+
+  const chart = computeWipeChart(walletFilter);
+  if (chart.length === 0) {
+    console.log('[wipe] nothing to do — no claimed parcels / wallet-owned agents / non-zero resources matched.');
+    return;
+  }
+  printChart(chart);
+
+  if (mode === 'preview') {
+    console.log('[wipe] PREVIEW mode — no writes. Re-run with WIPE_AND_VOUCHERIZE=commit to apply.');
+    return;
+  }
+
+  // ── COMMIT path ──
+  const db = getRawDb();
+  const insertV = db.prepare(
+    `INSERT INTO vouchers (id, player_id, kind, payload, source, source_ref)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const wipeParcel = db.prepare(
+    `UPDATE parcels SET owner_id = NULL, building_type = 'none',
+                        business_name = NULL, business_type = NULL,
+                        color = '#4a90d9', height = 4
+       WHERE id = ?`,
+  );
+  const deleteAgentOrders = db.prepare(`DELETE FROM market_orders WHERE owner_id = ?`);
+  const deleteAgent = db.prepare(`DELETE FROM agents WHERE id = ?`);
+  const wipeResources = db.prepare(
+    `UPDATE players SET food = 0, materials = 0, energy = 0, luxury = 0 WHERE id = ?`,
+  );
+
+  const parcelRows = db.prepare(
+    `SELECT id, owner_id, building_type FROM parcels
+       WHERE owner_id IS NOT NULL${walletFilter ? ' AND owner_id = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: number; owner_id: string; building_type: string | null;
+  }>;
+  const agentRows = db.prepare(
+    `SELECT id, name, owner_wallet FROM agents
+       WHERE is_external = 0 AND owner_wallet IS NOT NULL${walletFilter ? ' AND owner_wallet = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: string; name: string; owner_wallet: string;
+  }>;
+  const resRows = db.prepare(
+    `SELECT id, food, materials, energy, luxury FROM players
+       WHERE (food > 0 OR materials > 0 OR energy > 0 OR luxury > 0)${walletFilter ? ' AND id = ?' : ''}`,
+  ).all(...(walletFilter ? [walletFilter] : [])) as Array<{
+    id: string; food: number; materials: number; energy: number; luxury: number;
+  }>;
+
+  let issuedLand = 0, issuedBuild = 0, issuedAgent = 0, issuedResource = 0;
+  let wipedParcels = 0, wipedAgents = 0, wipedResources = 0;
+
+  const txn = db.transaction(() => {
+    // Parcels → LAND + (optional) BUILDING vouchers, then wipe.
+    for (const p of parcelRows) {
+      insertV.run(randomUUID(), p.owner_id, 'land', JSON.stringify({}), SOURCE_TAG, `parcel:${p.id}`);
+      issuedLand += 1;
+      if (p.building_type && p.building_type !== 'none') {
+        const v1 = v1EquivalentBuildingType(p.building_type);
+        const spec = BUILDINGS[v1 as BuildingType];
+        const payload = spec
+          ? { building_type: v1, tier: spec.tier, category: spec.category, legacy_source: p.building_type !== v1 ? p.building_type : undefined }
+          : { building_type: v1, legacy_source: p.building_type };
+        insertV.run(randomUUID(), p.owner_id, 'building', JSON.stringify(payload), SOURCE_TAG, `parcel:${p.id}`);
+        issuedBuild += 1;
+      }
+      wipeParcel.run(p.id);
+      wipedParcels += 1;
+    }
+
+    // Agents → AGENT voucher, then cancel their market orders + delete row.
+    for (const a of agentRows) {
+      insertV.run(
+        randomUUID(), a.owner_wallet, 'agent',
+        JSON.stringify({ name: a.name }),
+        SOURCE_TAG, `agent:${a.id}`,
+      );
+      issuedAgent += 1;
+      deleteAgentOrders.run(a.id);
+      deleteAgent.run(a.id);
+      wipedAgents += 1;
+    }
+
+    // Resources → 1 voucher per non-zero kind, then zero the stockpile.
+    for (const r of resRows) {
+      for (const k of ['food', 'materials', 'energy', 'luxury'] as const) {
+        const v = Math.floor(r[k]);
+        if (v > 0) {
+          insertV.run(
+            randomUUID(), r.id, 'resource',
+            JSON.stringify({ resource: k, amount: v }),
+            SOURCE_TAG, `resource:${r.id}:${k}`,
+          );
+          issuedResource += 1;
+        }
+      }
+      wipeResources.run(r.id);
+      wipedResources += 1;
+    }
+  });
+
+  try {
+    txn();
+    console.log(
+      `[wipe] COMMIT done — issued LAND×${issuedLand} BUILDING×${issuedBuild} ` +
+      `AGENT×${issuedAgent} RESOURCE×${issuedResource}; ` +
+      `wiped ${wipedParcels} parcels, ${wipedAgents} agents, ${wipedResources} resource stockpiles.`,
+    );
+  } catch (e) {
+    console.error('[wipe] COMMIT failed — transaction rolled back:', (e as Error).message);
+  }
 }
