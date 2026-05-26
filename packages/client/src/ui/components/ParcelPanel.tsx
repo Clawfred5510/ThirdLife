@@ -106,6 +106,38 @@ export const ParcelPanel: React.FC = () => {
     return () => { cancelled = true; off(); };
   }, []);
 
+  // Voucher counts (land + per-building-type). Drives the "free claim" /
+  // "free build" affordances in the build picker: a wallet that holds a
+  // voucher for a given building type sees it un-greyed even when rank /
+  // $AMETA / materials would normally disqualify, and the cost line is
+  // replaced with a "🎫 free" badge. Refetched on parcel open + every
+  // 8s while the panel is mounted.
+  const [voucherCounts, setVoucherCounts] = useState<{ land: number; building: number; buildingByType: Record<string, number> }>(
+    { land: 0, building: 0, buildingByType: {} },
+  );
+  useEffect(() => {
+    if (!hasAuthToken()) return;
+    let cancelled = false;
+    const refresh = () => {
+      apiGet<{
+        counts: { land: number; building: number; agent: number; resource: number };
+        buildings_by_type: Record<string, number>;
+      }>('/vouchers', { authed: true })
+        .then((r) => {
+          if (cancelled) return;
+          setVoucherCounts({
+            land: r.counts.land,
+            building: r.counts.building,
+            buildingByType: r.buildings_by_type ?? {},
+          });
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const i = setInterval(refresh, 8000);
+    return () => { cancelled = true; clearInterval(i); };
+  }, []);
+
   const parcel = selectedParcelData;
 
   useEscapeKey(() => selectParcel(null), !!parcel);
@@ -322,6 +354,31 @@ export const ParcelPanel: React.FC = () => {
               Unclaimed parcel
             </span>
           </div>
+          {(voucherCounts.land > 0 || voucherCounts.building > 0) && (
+            <div style={{
+              marginBottom: 10,
+              padding: '6px 10px',
+              background: 'rgba(216,148,56,0.10)',
+              borderLeftWidth: 3,
+              borderLeftStyle: 'solid' as const,
+              borderLeftColor: '#D89438',
+              borderRadius: 4,
+              fontSize: 11,
+              color: COLORS.text,
+              lineHeight: 1.45,
+              fontWeight: 600,
+            }}>
+              🎫 You have{' '}
+              {voucherCounts.land > 0 && (
+                <><b>{voucherCounts.land}</b> land voucher{voucherCounts.land > 1 ? 's' : ''}</>
+              )}
+              {voucherCounts.land > 0 && voucherCounts.building > 0 && ' and '}
+              {voucherCounts.building > 0 && (
+                <><b>{voucherCounts.building}</b> building voucher{voucherCounts.building > 1 ? 's' : ''}</>
+              )}
+              . They&apos;ll be spent automatically when you claim and build.
+            </div>
+          )}
           <div
             role="radiogroup"
             aria-label="Building type"
@@ -333,19 +390,34 @@ export const ParcelPanel: React.FC = () => {
             }}
           >
             {BUILDING_LIST.map((b) => {
-              const total = b.cost + CLAIM_COST;
+              const buildingVoucherCount = voucherCounts.buildingByType[b.type] ?? 0;
+              const landVoucherCount = voucherCounts.land;
+              const hasBuildingVoucher = buildingVoucherCount > 0;
+              const hasLandVoucher = landVoucherCount > 0;
+              // Effective costs after vouchers — both kinds independent.
+              const effLand = hasLandVoucher ? 0 : CLAIM_COST;
+              const effCost = hasBuildingVoucher ? 0 : b.cost;
+              const effMaterials = hasBuildingVoucher ? 0 : b.materialCost;
+              const total = effLand + effCost;
               const enoughCredits = credits >= total;
-              const enoughMaterials = b.materialCost === 0 || resources.materials >= b.materialCost;
-              const rankOk = TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
+              const enoughMaterials = effMaterials === 0 || resources.materials >= effMaterials;
+              // Building voucher waives the rank gate (it represents a
+              // building the player already had pre-wipe). Land voucher
+              // doesn't change rank rules.
+              const rankOk = hasBuildingVoucher || TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
               const canBuild = enoughCredits && enoughMaterials && rankOk;
               const selected = pickedBuilding === b.type;
               // Tooltip lists every blocker so the player knows what to fix.
               const blockers: string[] = [];
               if (!rankOk) blockers.push(`Requires ${TIER_LABEL[b.minRank]} rank`);
               if (!enoughCredits) blockers.push(`Need ${(total - credits).toLocaleString()} more $${CURRENCY_NAME}`);
-              if (!enoughMaterials) blockers.push(`Need ${(b.materialCost - resources.materials).toLocaleString()} more materials`);
+              if (!enoughMaterials) blockers.push(`Need ${(effMaterials - resources.materials).toLocaleString()} more materials`);
+              const voucherTagsTitle = [
+                hasLandVoucher ? `land voucher × ${landVoucherCount}` : null,
+                hasBuildingVoucher ? `${b.type} voucher × ${buildingVoucherCount}` : null,
+              ].filter(Boolean).join(', ');
               const title = canBuild
-                ? `${b.label} · Tier ${b.tier} · ${total.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`
+                ? `${b.label} · Tier ${b.tier} · ${total.toLocaleString()} $${CURRENCY_NAME}${effMaterials > 0 ? ` + ${effMaterials.toLocaleString()} materials` : ''}${voucherTagsTitle ? ` · 🎫 ${voucherTagsTitle}` : ''}`
                 : `${b.label} — ${blockers.join(' · ')}`;
               const tint = CATEGORY_TINT[b.category] ?? COLORS.textMuted;
               return (
@@ -392,18 +464,20 @@ export const ParcelPanel: React.FC = () => {
                   </div>
                   <div style={{
                     fontSize: 11,
-                    color: COLORS.gold,
+                    color: hasBuildingVoucher ? '#2F7A3F' : COLORS.gold,
                     fontWeight: 700,
                     marginTop: 4,
                     fontVariantNumeric: 'tabular-nums' as const,
                   }}>
-                    {b.cost.toLocaleString()}
+                    {hasBuildingVoucher ? `🎫 free × ${buildingVoucherCount}` : b.cost.toLocaleString()}
                   </div>
                   {b.materialCost > 0 && (
                     <div style={{
                       fontSize: 9,
                       fontWeight: 600,
-                      color: enoughMaterials ? COLORS.materials : '#C04331',
+                      color: hasBuildingVoucher ? '#A89378'
+                        : enoughMaterials ? COLORS.materials : '#C04331',
+                      textDecoration: hasBuildingVoucher ? 'line-through' : 'none',
                     }}>
                       +{b.materialCost.toLocaleString()} ⛏️
                     </div>

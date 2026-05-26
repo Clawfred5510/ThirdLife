@@ -46,6 +46,8 @@ import {
   updatePlayerCredits,
   seedParcels,
   claimAndBuild,
+  claimAndBuildWithVouchers,
+  pickActiveVoucher,
   updateBusiness as updateBusinessInDb,
   getAllParcels,
   savePlayerAppearance,
@@ -291,8 +293,17 @@ export class GameRoom extends Room<GameState> {
       }
 
       const ownerId = this.pid(client.sessionId);
-      // Phase 4: enforce minRank gate before charging anything.
-      if (TIER_INDEX[rankFor(ownerId)] < TIER_INDEX[spec.minRank]) {
+
+      // Voucher pre-check. The wipe-and-voucherize migration may have
+      // issued LAND / BUILDING vouchers to this wallet — if so, they're
+      // consumed atomically with the claim and waive the corresponding
+      // costs. A BUILDING voucher also bypasses the minRank gate (it
+      // represents a building the player already had before the wipe).
+      const landVoucher = pickActiveVoucher(ownerId, 'land');
+      const buildingVoucher = pickActiveVoucher(ownerId, 'building', { buildingType: data.building_type });
+
+      // Phase 4 rank gate — only enforced when no BUILDING voucher waives it.
+      if (!buildingVoucher && TIER_INDEX[rankFor(ownerId)] < TIER_INDEX[spec.minRank]) {
         client.send(MessageType.CLAIM_PARCEL, {
           error: 'rank_required',
           required_rank: spec.minRank,
@@ -300,8 +311,9 @@ export class GameRoom extends Room<GameState> {
         });
         return;
       }
-      const result = claimAndBuild(
+      const result = claimAndBuildWithVouchers(
         ownerId, data.parcelId, data.building_type, spec.cost, spec.label, spec.materialCost,
+        { land: landVoucher?.id, building: buildingVoucher?.id },
       );
       if (!result.ok) {
         client.send(MessageType.CLAIM_PARCEL, {
@@ -323,12 +335,22 @@ export class GameRoom extends Room<GameState> {
         business_name: spec.label,
         business_type: data.building_type,
       });
-      // Sub-unit generation removed 2026-05-20 with Phase C retirement.
+      const usedLand = result.usedLandVoucher ?? false;
+      const usedBuild = result.usedBuildingVoucher ?? false;
       addEvent('claim_and_build', ownerId, {
         parcel: data.parcelId, building: data.building_type,
-        cost_ameta: spec.cost + LAND_COST, cost_materials: spec.materialCost,
+        cost_ameta: (usedLand ? 0 : LAND_COST) + (usedBuild ? 0 : spec.cost),
+        cost_materials: usedBuild ? 0 : spec.materialCost,
+        voucher_land: usedLand, voucher_building: usedBuild,
       }, 'major');
-      console.log(`${player.name} claimed parcel #${data.parcelId} + built ${spec.label} (-${spec.cost + LAND_COST} $AMETA, -${spec.materialCost} materials)`);
+      const tags = [
+        usedLand ? '🎫 land voucher' : null,
+        usedBuild ? '🎫 building voucher' : null,
+      ].filter(Boolean).join(' + ');
+      console.log(
+        `${player.name} claimed parcel #${data.parcelId} + built ${spec.label}` +
+        (tags ? ` (${tags})` : ` (-${spec.cost + LAND_COST} $AMETA, -${spec.materialCost} materials)`),
+      );
     });
 
     this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {

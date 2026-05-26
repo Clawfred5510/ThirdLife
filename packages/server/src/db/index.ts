@@ -209,6 +209,16 @@ interface DBBackend {
     target: { parcel_id?: number; agent_id?: string } | null,
   ): { ok: boolean; reason?: string };
   countActiveVouchersByKind(playerId: string): Record<VoucherKind, number>;
+  /** Group active BUILDING vouchers by payload.building_type so the build
+   *  menu can show per-type counts. */
+  countActiveBuildingVouchersByType(playerId: string): Record<string, number>;
+  /** Pick the oldest active voucher of the given kind (optionally also
+   *  matching a payload.building_type for BUILDING vouchers). Returns null
+   *  if none. Caller is responsible for marking it redeemed inside a
+   *  transaction. */
+  pickActiveVoucher(
+    playerId: string, kind: VoucherKind, opts?: { buildingType?: string },
+  ): VoucherRow | null;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   /** Three-way atomic transfer: debit sender (amount+fee), credit recipient
@@ -234,6 +244,22 @@ interface DBBackend {
     buildingLabel: string,
     materialCost?: number,
   ): { ok: boolean; reason?: string; credits?: number };
+  /** Voucher-aware claim+build. If `vouchers.land` is provided, consumes
+   *  that LAND voucher inside the transaction and waives LAND_COST. If
+   *  `vouchers.building` is provided, consumes that BUILDING voucher and
+   *  waives buildingCost + materialCost (rank gate is the caller's
+   *  responsibility — typically bypassed when a building voucher is
+   *  present). Voucher consumption + parcel write happen atomically; any
+   *  failure rolls back both. */
+  claimAndBuildWithVouchers(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+    materialCost: number,
+    vouchers: { land?: string; building?: string },
+  ): { ok: boolean; reason?: string; credits?: number; usedLandVoucher?: boolean; usedBuildingVoucher?: boolean };
   /** All owned parcels with a building set — single scan for the income tick. */
   getOwnedBuiltParcels(): Array<{ id: number; owner_id: string; building_type: string }>;
   // Wallet auth
@@ -854,38 +880,69 @@ class SQLiteDatabase implements DBBackend {
     buildingLabel: string,
     materialCost = 0,
   ): { ok: boolean; reason?: string; credits?: number } {
+    return this.claimAndBuildWithVouchers(id, parcelId, buildingType, buildingCost, buildingLabel, materialCost, {});
+  }
+
+  claimAndBuildWithVouchers(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+    materialCost: number,
+    vouchers: { land?: string; building?: string },
+  ): { ok: boolean; reason?: string; credits?: number; usedLandVoucher?: boolean; usedBuildingVoucher?: boolean } {
     if (RESERVED_SET.has(parcelId)) return { ok: false, reason: 'reserved_landmark' };
     const txn = this.db.transaction(() => {
       const parcel = this.stmtGetParcel.get(parcelId) as ParcelRow | undefined;
       if (!parcel) return { ok: false, reason: 'parcel_not_found' };
       if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
-      // Phase 4 (2026-05-20): 1% property fee on top of gross. Goes
-      // straight to the treasury (one wallet for property + agent fees
-      // per owner spec).
-      const gross = LAND_COST + buildingCost;
+
+      // Consume vouchers up front — atomic with the claim, so a failed
+      // claim doesn't burn the voucher.
+      let usedLandVoucher = false;
+      let usedBuildingVoucher = false;
+      if (vouchers.land) {
+        const r = this.markVoucherRedeemed(vouchers.land, { parcel_id: parcelId });
+        if (!r.ok) return { ok: false, reason: `land_voucher_${r.reason ?? 'failed'}` };
+        usedLandVoucher = true;
+      }
+      if (vouchers.building) {
+        const r = this.markVoucherRedeemed(vouchers.building, { parcel_id: parcelId });
+        if (!r.ok) return { ok: false, reason: `building_voucher_${r.reason ?? 'failed'}` };
+        usedBuildingVoucher = true;
+      }
+
+      // Effective costs: voucher waives the corresponding charge.
+      const landCharge = usedLandVoucher ? 0 : LAND_COST;
+      const buildCharge = usedBuildingVoucher ? 0 : buildingCost;
+      const materialCharge = usedBuildingVoucher ? 0 : materialCost;
+
+      // Phase 4: 1% property fee on top of gross. Voucher-funded portions
+      // don't pay the fee (no $AMETA flow to fee against).
+      const gross = landCharge + buildCharge;
       const fee = propertyFee(gross);
       const total = gross + fee;
       const credits = this.getPlayerCredits(id);
       if (credits < total) return { ok: false, reason: 'insufficient_balance' };
-      // Phase 1 (2026-05-20): materials required for construction. Spec
-      // §9 sets per-tier costs; legacy (tier 0) buildings have 0 materials.
-      if (materialCost > 0) {
+
+      if (materialCharge > 0) {
         const resources = this.getPlayerResources(id);
-        if (resources.materials < materialCost) {
+        if (resources.materials < materialCharge) {
           return { ok: false, reason: 'insufficient_materials' };
         }
-        resources.materials -= materialCost;
+        resources.materials -= materialCharge;
         this.updatePlayerResources(id, resources);
       }
-      this.stmtUpdateCredits.run(credits - total, id);
-      // Treasury credit (synchronous inside the transaction — same DB,
-      // upsert the row if it doesn't exist yet).
-      this.creditTreasurySync(fee);
+      if (total > 0) {
+        this.stmtUpdateCredits.run(credits - total, id);
+        this.creditTreasurySync(fee);
+      }
       const claim = this.stmtClaimParcel.run(id, parcelId);
       if (claim.changes === 0) return { ok: false, reason: 'claim_race' };
       this.db.prepare('UPDATE parcels SET building_type = ? WHERE id = ?').run(buildingType, parcelId);
       this.stmtUpdateBusiness.run(buildingLabel, buildingType, parcel.color, parcel.height, parcelId, id);
-      return { ok: true, credits: credits - total };
+      return { ok: true, credits: credits - total, usedLandVoucher, usedBuildingVoucher };
     });
     return txn();
   }
@@ -1319,6 +1376,42 @@ class SQLiteDatabase implements DBBackend {
     return out;
   }
 
+  countActiveBuildingVouchersByType(playerId: string): Record<string, number> {
+    // payload is a JSON blob. SQLite has json_extract; using it keeps the
+    // grouping in one query without N+1 round-trips.
+    const rows = this.db.prepare(
+      `SELECT json_extract(payload, '$.building_type') AS bt, COUNT(*) AS n
+         FROM vouchers
+        WHERE player_id = ? AND kind = 'building' AND redeemed_at IS NULL
+        GROUP BY bt`,
+    ).all(playerId) as Array<{ bt: string | null; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) if (r.bt) out[r.bt] = r.n;
+    return out;
+  }
+
+  pickActiveVoucher(
+    playerId: string, kind: VoucherKind, opts?: { buildingType?: string },
+  ): VoucherRow | null {
+    let row: (Omit<VoucherRow, 'payload'> & { payload: string }) | undefined;
+    if (kind === 'building' && opts?.buildingType) {
+      row = this.db.prepare(
+        `SELECT * FROM vouchers
+          WHERE player_id = ? AND kind = 'building' AND redeemed_at IS NULL
+            AND json_extract(payload, '$.building_type') = ?
+          ORDER BY issued_at LIMIT 1`,
+      ).get(playerId, opts.buildingType) as typeof row;
+    } else {
+      row = this.db.prepare(
+        `SELECT * FROM vouchers
+          WHERE player_id = ? AND kind = ? AND redeemed_at IS NULL
+          ORDER BY issued_at LIMIT 1`,
+      ).get(playerId, kind) as typeof row;
+    }
+    if (!row) return null;
+    return { ...row, payload: safeJsonObj(row.payload) };
+  }
+
   createAuthNonce(address: string, nonce: string, expiresAt: number): void {
     // Best-effort cleanup of expired nonces — keeps the table from growing
     // unboundedly under sustained challenge spam.
@@ -1512,28 +1605,57 @@ class MemoryDB implements DBBackend {
     buildingLabel: string,
     materialCost = 0,
   ): { ok: boolean; reason?: string; credits?: number } {
+    return this.claimAndBuildWithVouchers(id, parcelId, buildingType, buildingCost, buildingLabel, materialCost, {});
+  }
+
+  claimAndBuildWithVouchers(
+    id: string,
+    parcelId: number,
+    buildingType: string,
+    buildingCost: number,
+    buildingLabel: string,
+    materialCost: number,
+    vouchers: { land?: string; building?: string },
+  ): { ok: boolean; reason?: string; credits?: number; usedLandVoucher?: boolean; usedBuildingVoucher?: boolean } {
     const parcel = this.parcels.get(parcelId);
     if (!parcel) return { ok: false, reason: 'parcel_not_found' };
     if (parcel.owner_id !== null) return { ok: false, reason: 'already_claimed' };
-    const gross = LAND_COST + buildingCost;
+    let usedLandVoucher = false;
+    let usedBuildingVoucher = false;
+    if (vouchers.land) {
+      const r = this.markVoucherRedeemed(vouchers.land, { parcel_id: parcelId });
+      if (!r.ok) return { ok: false, reason: `land_voucher_${r.reason ?? 'failed'}` };
+      usedLandVoucher = true;
+    }
+    if (vouchers.building) {
+      const r = this.markVoucherRedeemed(vouchers.building, { parcel_id: parcelId });
+      if (!r.ok) return { ok: false, reason: `building_voucher_${r.reason ?? 'failed'}` };
+      usedBuildingVoucher = true;
+    }
+    const landCharge = usedLandVoucher ? 0 : LAND_COST;
+    const buildCharge = usedBuildingVoucher ? 0 : buildingCost;
+    const materialCharge = usedBuildingVoucher ? 0 : materialCost;
+    const gross = landCharge + buildCharge;
     const fee = propertyFee(gross);
     const total = gross + fee;
     const credits = this.getPlayerCredits(id);
     if (credits < total) return { ok: false, reason: 'insufficient_balance' };
-    if (materialCost > 0) {
+    if (materialCharge > 0) {
       const r = this.getPlayerResources(id);
-      if (r.materials < materialCost) return { ok: false, reason: 'insufficient_materials' };
-      r.materials -= materialCost;
+      if (r.materials < materialCharge) return { ok: false, reason: 'insufficient_materials' };
+      r.materials -= materialCharge;
       this.updatePlayerResources(id, r);
     }
-    this.updatePlayerCredits(id, credits - total);
-    this.creditTreasurySync(fee);
+    if (total > 0) {
+      this.updatePlayerCredits(id, credits - total);
+      this.creditTreasurySync(fee);
+    }
     parcel.owner_id = id;
     parcel.claimed_at = new Date().toISOString();
     (parcel as any).building_type = buildingType;
     parcel.business_type = buildingType;
     parcel.business_name = buildingLabel;
-    return { ok: true, credits: credits - total };
+    return { ok: true, credits: credits - total, usedLandVoucher, usedBuildingVoucher };
   }
 
   private creditTreasurySync(amount: number): void {
@@ -1913,6 +2035,32 @@ class MemoryDB implements DBBackend {
     return out;
   }
 
+  countActiveBuildingVouchersByType(playerId: string): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const v of this.vouchers.values()) {
+      if (v.player_id !== playerId || v.kind !== 'building' || v.redeemed_at) continue;
+      const bt = (v.payload as { building_type?: string }).building_type;
+      if (bt) out[bt] = (out[bt] ?? 0) + 1;
+    }
+    return out;
+  }
+
+  pickActiveVoucher(
+    playerId: string, kind: VoucherKind, opts?: { buildingType?: string },
+  ): VoucherRow | null {
+    const candidates: VoucherRow[] = [];
+    for (const v of this.vouchers.values()) {
+      if (v.player_id !== playerId || v.kind !== kind || v.redeemed_at) continue;
+      if (kind === 'building' && opts?.buildingType) {
+        const bt = (v.payload as { building_type?: string }).building_type;
+        if (bt !== opts.buildingType) continue;
+      }
+      candidates.push(v);
+    }
+    candidates.sort((a, b) => a.issued_at.localeCompare(b.issued_at));
+    return candidates[0] ?? null;
+  }
+
   // Wallet auth — kept in memory; loses state on restart, fine for fallback.
   private nonces = new Map<string, number>(); // `${address}:${nonce}` -> expiresAt
   private sessions = new Map<string, { playerId: string; expiresAt: number }>();
@@ -2104,6 +2252,17 @@ export function listVouchersForPlayer(playerId: string, opts?: { activeOnly?: bo
 export function getVoucherById(id: string) { return backend.getVoucherById(id); }
 export function markVoucherRedeemed(id: string, target: { parcel_id?: number; agent_id?: string } | null) { return backend.markVoucherRedeemed(id, target); }
 export function countActiveVouchersByKind(playerId: string) { return backend.countActiveVouchersByKind(playerId); }
+export function countActiveBuildingVouchersByType(playerId: string) { return backend.countActiveBuildingVouchersByType(playerId); }
+export function pickActiveVoucher(playerId: string, kind: VoucherKind, opts?: { buildingType?: string }) {
+  return backend.pickActiveVoucher(playerId, kind, opts);
+}
+export function claimAndBuildWithVouchers(
+  id: string, parcelId: number, buildingType: string,
+  buildingCost: number, buildingLabel: string, materialCost: number,
+  vouchers: { land?: string; building?: string },
+) {
+  return backend.claimAndBuildWithVouchers(id, parcelId, buildingType, buildingCost, buildingLabel, materialCost, vouchers);
+}
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function transferWithFee(fromId: string, toId: string, amount: number, fee: number, treasuryId: string) {
@@ -2400,11 +2559,15 @@ export function maybeRunWipeAndVoucherize(): void {
       wipedParcels += 1;
     }
 
-    // Agents → AGENT voucher, then cancel their market orders + delete row.
+    // Agents → AGENT voucher (cost-discount only, no identity carry-over —
+    // player picks a fresh name + role + workplace via /agents/register
+    // and the voucher waives the 200K $AMETA cost). We log the original
+    // name in `previous_name` purely as a UI hint ("this voucher was
+    // issued because you had Don Alpha") — never enforced.
     for (const a of agentRows) {
       insertV.run(
         randomUUID(), a.owner_wallet, 'agent',
-        JSON.stringify({ name: a.name }),
+        JSON.stringify({ previous_name: a.name }),
         SOURCE_TAG, `agent:${a.id}`,
       );
       issuedAgent += 1;

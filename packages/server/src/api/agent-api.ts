@@ -90,6 +90,8 @@ import {
   getVoucherById,
   markVoucherRedeemed,
   countActiveVouchersByKind,
+  countActiveBuildingVouchersByType,
+  pickActiveVoucher,
   getRawDb,
 } from '../db';
 
@@ -469,19 +471,28 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
     });
   }
 
-  // 200K $AMETA agent purchase fee (spec §9). Routed to the world treasury.
-  // The economy().debit fires notifyWalletChanged → GameRoom pushes a
-  // fresh CREDITS_UPDATE to the owner's connected client, so the Wallet
-  // UI reflects the deduction immediately without waiting for a tick.
-  const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
-  if (!purchaseDebit.ok) {
-    return res.status(400).json({
-      error: 'insufficient_balance',
-      cost: IN_GAME_AGENT_COST_AMETA,
-      reason: purchaseDebit.reason,
-    });
+  // 200K $AMETA agent purchase fee (spec §9). Voucher-aware: if the wallet
+  // holds an active AGENT voucher (issued by the wipe-and-voucherize
+  // migration) it's consumed inline and the $AMETA charge is waived.
+  // The voucher carries no identity — the player picks a fresh name +
+  // role + workplace through this same flow; the voucher just covers cost.
+  let usedAgentVoucher = false;
+  const agentVoucher = pickActiveVoucher(wallet, 'agent');
+  if (agentVoucher) {
+    const mark = markVoucherRedeemed(agentVoucher.id, null);
+    if (mark.ok) usedAgentVoucher = true;
   }
-  await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
+  if (!usedAgentVoucher) {
+    const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
+    if (!purchaseDebit.ok) {
+      return res.status(400).json({
+        error: 'insufficient_balance',
+        cost: IN_GAME_AGENT_COST_AMETA,
+        reason: purchaseDebit.reason,
+      });
+    }
+    await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
+  }
 
   // Workplace resolution.
   //
@@ -659,6 +670,7 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
     },
     initial_fund: initialFunded,
     initial_fund_error: initialFundError,
+    voucher_agent: usedAgentVoucher,
   });
 });
 
@@ -1422,10 +1434,40 @@ router.post('/actions/buy-land', authWalletOrExternal, rateLimit, (req: Request,
   const pid = parcel_id ?? (typeof x === 'number' && typeof y === 'number' ? x * 50 + y : undefined);
   if (pid === undefined) return res.status(400).json({ error: 'parcel_id (or x,y) required' });
 
-  const result = buyLand(buyerId, pid);
+  // Voucher-aware path: if the wallet holds an active LAND voucher, the
+  // claim consumes it inline and skips the LAND_COST + property fee.
+  // Atomic via getRawDb transaction so the voucher isn't burned on a
+  // failed claim (e.g. parcel already taken in the same tick).
+  const landVoucher = pickActiveVoucher(buyerId, 'land');
+  let usedVoucher = false;
+  let result: { ok: boolean; reason?: string; credits?: number };
+  if (landVoucher) {
+    const db = getRawDb();
+    const setClaim = db.prepare(
+      `UPDATE parcels SET owner_id = ?, claimed_at = datetime('now')
+         WHERE id = ? AND owner_id IS NULL`,
+    );
+    const txn = db.transaction((): { ok: boolean; reason?: string } => {
+      const mark = markVoucherRedeemed(landVoucher.id, { parcel_id: pid });
+      if (!mark.ok) return { ok: false, reason: `voucher_${mark.reason ?? 'failed'}` };
+      const r = setClaim.run(buyerId, pid);
+      if (r.changes === 0) return { ok: false, reason: 'already_claimed_or_missing' };
+      return { ok: true };
+    });
+    const txnResult = txn();
+    if (txnResult.ok) {
+      usedVoucher = true;
+      result = { ok: true, reason: undefined, credits: getPlayerCredits(buyerId) };
+    } else {
+      result = txnResult;
+    }
+  } else {
+    result = buyLand(buyerId, pid);
+  }
+
   if (!result.ok) {
     const status = result.reason === 'parcel_not_found' ? 404
-      : result.reason === 'already_claimed' ? 409
+      : (result.reason === 'already_claimed' || result.reason === 'already_claimed_or_missing') ? 409
       : 400;
     return res.status(status).json({ error: result.reason, cost: LAND_COST });
   }
@@ -1443,12 +1485,19 @@ router.post('/actions/buy-land', authWalletOrExternal, rateLimit, (req: Request,
     buyerId,
     {
       parcel: pid,
-      cost: LAND_COST,
+      cost: usedVoucher ? 0 : LAND_COST,
+      voucher_land: usedVoucher,
       ...(externalAgentName ? { via_external_agent: placingAgentId, agent_name: externalAgentName } : {}),
     },
     'normal',
   );
-  res.json({ ok: true, parcel_id: pid, cost: LAND_COST, balance: result.credits });
+  res.json({
+    ok: true,
+    parcel_id: pid,
+    cost: usedVoucher ? 0 : LAND_COST,
+    voucher_land: usedVoucher,
+    balance: result.credits,
+  });
 });
 
 router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
@@ -1762,174 +1811,53 @@ router.get('/vouchers', authWallet, (req: Request, res: Response) => {
   const recentlyRedeemed = all.filter((v) => v.redeemed_at).slice(-20);
   res.json({
     counts: countActiveVouchersByKind(playerId),
+    buildings_by_type: countActiveBuildingVouchersByType(playerId),
     active,
     recently_redeemed: recentlyRedeemed,
   });
 });
 
-/** Common pre-flight: load the voucher and verify it belongs to the caller,
- *  matches the expected kind, and isn't already spent. Returns the voucher
- *  on success, or writes the error response and returns null. */
-function loadOwnedVoucher(
-  req: Request, res: Response, expectedKind: 'land' | 'building' | 'agent' | 'resource',
-): import('../db').VoucherRow | null {
+// Redeem ALL active RESOURCE vouchers for the wallet at once. Resources
+// don't have an in-world buy/build/register flow to attach to like LAND /
+// BUILDING / AGENT do — they're pure stockpile credits — so this single
+// button (Phone → Inventory → Vouchers tab) is the redemption surface.
+// All-or-nothing inside one transaction so a partial crash doesn't leave
+// half the vouchers redeemed.
+router.post('/vouchers/redeem-resources', authWallet, rateLimit, (req: Request, res: Response) => {
   const playerId = (req as AuthedRequest).walletId!;
-  const v = getVoucherById(String(req.params.id));
-  if (!v || v.player_id !== playerId) {
-    res.status(404).json({ error: 'voucher_not_found' });
-    return null;
-  }
-  if (v.kind !== expectedKind) {
-    res.status(400).json({ error: 'wrong_kind', expected: expectedKind, got: v.kind });
-    return null;
-  }
-  if (v.redeemed_at) {
-    res.status(409).json({ error: 'already_redeemed' });
-    return null;
-  }
-  return v;
-}
-
-router.post('/vouchers/:id/redeem-land', authWallet, rateLimit, (req: Request, res: Response) => {
-  const v = loadOwnedVoucher(req, res, 'land');
-  if (!v) return;
-  const { parcel_id } = req.body ?? {};
-  if (typeof parcel_id !== 'number') {
-    return res.status(400).json({ error: 'parcel_id (number) required' });
-  }
-
-  const parcel = getAllParcels().find((p) => p.id === parcel_id);
-  if (!parcel) return res.status(404).json({ error: 'parcel_not_found' });
-  if (parcel.owner_id) return res.status(409).json({ error: 'parcel_already_claimed' });
-
-  const db = getRawDb();
-  const claim = db.prepare(
-    `UPDATE parcels SET owner_id = ?, claimed_at = datetime('now') WHERE id = ? AND owner_id IS NULL`,
-  );
-  const txn = db.transaction(() => {
-    const r = claim.run(v.player_id, parcel_id);
-    if (r.changes === 0) throw new Error('race_lost_parcel_claimed_concurrently');
-    const mark = markVoucherRedeemed(v.id, { parcel_id });
-    if (!mark.ok) throw new Error(mark.reason ?? 'voucher_mark_failed');
-  });
-  try {
-    txn();
-  } catch (e) {
-    return res.status(409).json({ error: (e as Error).message });
-  }
-
-  addEvent('voucher_redeem_land', v.player_id, { voucher_id: v.id, parcel_id }, 'normal');
-  res.json({ ok: true, parcel_id, voucher_id: v.id });
-});
-
-router.post('/vouchers/:id/redeem-build', authWallet, rateLimit, (req: Request, res: Response) => {
-  const v = loadOwnedVoucher(req, res, 'building');
-  if (!v) return;
-  const { parcel_id } = req.body ?? {};
-  if (typeof parcel_id !== 'number') {
-    return res.status(400).json({ error: 'parcel_id (number) required' });
-  }
-
-  const buildingType = (v.payload as { building_type?: string }).building_type;
-  if (!buildingType || !(buildingType in BUILDINGS)) {
-    return res.status(500).json({ error: 'voucher_payload_invalid', payload: v.payload });
-  }
-  const spec = BUILDINGS[buildingType as BuildingType];
-
-  const parcel = getAllParcels().find((p) => p.id === parcel_id);
-  if (!parcel) return res.status(404).json({ error: 'parcel_not_found' });
-  if (parcel.owner_id !== v.player_id) return res.status(403).json({ error: 'parcel_not_yours' });
-  if ((parcel as { building_type?: string }).building_type && (parcel as { building_type?: string }).building_type !== 'none') {
-    return res.status(409).json({ error: 'parcel_already_built' });
+  const all = listVouchersForPlayer(playerId, { activeOnly: true });
+  const resourceVouchers = all.filter((v) => v.kind === 'resource');
+  if (resourceVouchers.length === 0) {
+    return res.status(404).json({ error: 'no_active_resource_vouchers' });
   }
 
   const db = getRawDb();
-  const setType = db.prepare(`UPDATE parcels SET building_type = ?, business_type = ?, business_name = ? WHERE id = ?`);
-  const txn = db.transaction(() => {
-    setType.run(buildingType, buildingType, spec.label, parcel_id);
-    const mark = markVoucherRedeemed(v.id, { parcel_id });
-    if (!mark.ok) throw new Error(mark.reason ?? 'voucher_mark_failed');
+  const txn = db.transaction((): { credited: Partial<Record<ResourceType, number>>; redeemed: string[] } => {
+    const credited: Partial<Record<ResourceType, number>> = {};
+    const redeemed: string[] = [];
+    const cur = getPlayerResources(playerId);
+    for (const v of resourceVouchers) {
+      const payload = v.payload as { resource?: string; amount?: number };
+      if (!payload.resource || typeof payload.amount !== 'number' || payload.amount <= 0) continue;
+      if (!RESOURCE_TYPES.includes(payload.resource as ResourceType)) continue;
+      const k = payload.resource as ResourceType;
+      cur[k] += payload.amount;
+      credited[k] = (credited[k] ?? 0) + payload.amount;
+      const mark = markVoucherRedeemed(v.id, null);
+      if (!mark.ok) throw new Error(`voucher_${v.id}_${mark.reason ?? 'failed'}`);
+      redeemed.push(v.id);
+    }
+    updatePlayerResources(playerId, cur);
+    return { credited, redeemed };
   });
+
   try {
-    txn();
+    const { credited, redeemed } = txn();
+    addEvent('voucher_redeem_resources', playerId, { redeemed_count: redeemed.length, credited }, 'normal');
+    return res.json({ ok: true, redeemed: redeemed.length, credited });
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
-
-  addEvent('voucher_redeem_build', v.player_id, { voucher_id: v.id, parcel_id, building_type: buildingType }, 'normal');
-  res.json({ ok: true, parcel_id, building_type: buildingType, label: spec.label, voucher_id: v.id });
-});
-
-router.post('/vouchers/:id/redeem-resource', authWallet, rateLimit, (req: Request, res: Response) => {
-  const v = loadOwnedVoucher(req, res, 'resource');
-  if (!v) return;
-  const payload = v.payload as { resource?: string; amount?: number };
-  const resource = payload.resource;
-  const amount = payload.amount;
-  if (!resource || !RESOURCE_TYPES.includes(resource as ResourceType) || typeof amount !== 'number' || amount <= 0) {
-    return res.status(500).json({ error: 'voucher_payload_invalid', payload });
-  }
-
-  const db = getRawDb();
-  const txn = db.transaction(() => {
-    const cur = getPlayerResources(v.player_id);
-    cur[resource as ResourceType] += amount;
-    updatePlayerResources(v.player_id, cur);
-    const mark = markVoucherRedeemed(v.id, null);
-    if (!mark.ok) throw new Error(mark.reason ?? 'voucher_mark_failed');
-  });
-  try {
-    txn();
-  } catch (e) {
-    return res.status(500).json({ error: (e as Error).message });
-  }
-
-  addEvent('voucher_redeem_resource', v.player_id, { voucher_id: v.id, resource, amount }, 'normal');
-  res.json({ ok: true, resource, amount, voucher_id: v.id });
-});
-
-router.post('/vouchers/:id/redeem-agent', authWallet, rateLimit, (req: Request, res: Response) => {
-  const v = loadOwnedVoucher(req, res, 'agent');
-  if (!v) return;
-  const payload = v.payload as { name?: string };
-  const baseName = payload.name && typeof payload.name === 'string' ? payload.name : 'Agent';
-
-  // Spawn a default in-game agent with the preserved name. Player can
-  // reassign role/workplace via /agents/:id/role and /agents/:id/reassign.
-  // Name collision (UNIQUE on agents.name): append a 4-char suffix.
-  const newAgentId = crypto.randomUUID();
-  const apiKey = `tl_sk_${crypto.randomBytes(24).toString('hex')}`;
-  const db = getRawDb();
-  const insertAgent = db.prepare(
-    `INSERT INTO agents
-       (id, name, personality, strategy, api_key, owner_wallet,
-        job, workplace_parcel_id, appearance, role, is_external, autopilot_enabled)
-     VALUES (?, ?, 'worker', 'balanced', ?, ?, 'farmer', NULL, NULL, 'work', 0, 1)`,
-  );
-  const nameUsed = db.prepare(`SELECT 1 FROM agents WHERE name = ? LIMIT 1`);
-
-  let finalName = baseName;
-  for (let i = 0; i < 5; i += 1) {
-    if (!nameUsed.get(finalName)) break;
-    finalName = `${baseName}-${crypto.randomBytes(2).toString('hex')}`;
-  }
-  if (nameUsed.get(finalName)) {
-    return res.status(409).json({ error: 'agent_name_collision', tried: finalName });
-  }
-
-  const txn = db.transaction(() => {
-    insertAgent.run(newAgentId, finalName, apiKey, v.player_id);
-    const mark = markVoucherRedeemed(v.id, { agent_id: newAgentId });
-    if (!mark.ok) throw new Error(mark.reason ?? 'voucher_mark_failed');
-  });
-  try {
-    txn();
-  } catch (e) {
-    return res.status(500).json({ error: (e as Error).message });
-  }
-
-  addEvent('voucher_redeem_agent', v.player_id, { voucher_id: v.id, agent_id: newAgentId, name: finalName }, 'normal');
-  res.json({ ok: true, agent_id: newAgentId, name: finalName, voucher_id: v.id });
 });
 
 export default router;

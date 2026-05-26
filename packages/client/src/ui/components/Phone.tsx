@@ -1869,40 +1869,26 @@ const ItemsTab: React.FC = () => {
 // migration. Server contract: see packages/server/src/api/agent-api.ts
 // (/vouchers, /vouchers/:id/redeem-{land,build,resource,agent}).
 
-interface VoucherPayloadBuilding { building_type: string; tier?: number; category?: string; legacy_source?: string }
-interface VoucherPayloadAgent    { name: string; avatar_url?: string; x_handle?: string }
-interface VoucherPayloadResource { resource: 'food' | 'materials' | 'energy' | 'luxury'; amount: number }
-
-interface Voucher {
-  id: string;
-  player_id: string;
-  kind: 'land' | 'building' | 'agent' | 'resource';
-  /** Server-parsed JSON. Typed as `unknown` here so per-kind narrowing is
-   *  explicit at each call site (see VoucherPayloadX interfaces above). */
-  payload: unknown;
-  source: string;
-  issued_at: string;
-  redeemed_at: string | null;
-  redeemed_target_parcel_id: number | null;
-}
-
 interface VouchersResp {
   counts: { land: number; building: number; agent: number; resource: number };
-  active: Voucher[];
-  recently_redeemed: Voucher[];
+  buildings_by_type: Record<string, number>;
+  active: Array<{
+    id: string; kind: 'land' | 'building' | 'agent' | 'resource';
+    payload: unknown; issued_at: string;
+  }>;
+  recently_redeemed: Array<{ id: string; kind: string; payload: unknown; redeemed_at: string | null }>;
 }
 
-const KIND_ICON: Record<Voucher['kind'], string> = {
-  land: '🟩',
-  building: '🏛️',
-  agent: '👤',
-  resource: '📦',
-};
-
+/** Vouchers tab — pure viewing surface plus a single "claim all resource
+ *  vouchers" action. Land / Building / Agent vouchers are NOT redeemed
+ *  here: they're consumed automatically by the normal in-world flows
+ *  (claim/build → CLAIM_PARCEL handler; agent registration → /agents/
+ *  register endpoint). The buy / build / register UIs surface how many
+ *  vouchers the player has so they know which actions are free. */
 const VouchersTab: React.FC = () => {
   const [data, setData] = useState<VouchersResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState(false);
 
   const refresh = useCallback(() => {
     apiGet<VouchersResp>('/vouchers', { authed: true })
@@ -1916,75 +1902,70 @@ const VouchersTab: React.FC = () => {
     return () => clearInterval(i);
   }, [refresh]);
 
-  const redeem = useCallback(
-    async (v: Voucher) => {
-      setBusy(v.id);
-      try {
-        if (v.kind === 'land') {
-          const raw = window.prompt(
-            'Enter the parcel ID you want to claim (any unclaimed parcel).\n' +
-            'Tip: click a parcel on the world map to see its ID.',
-          );
-          if (!raw) return;
-          const parcel_id = parseInt(raw, 10);
-          if (!Number.isFinite(parcel_id)) { setErr('Invalid parcel ID'); return; }
-          await apiPost(`/vouchers/${v.id}/redeem-land`, { parcel_id }, { authed: true });
-        } else if (v.kind === 'building') {
-          const raw = window.prompt(
-            `Build a ${(v.payload as VoucherPayloadBuilding).building_type} on which parcel?\n` +
-            'Enter the parcel ID of one you own that has no building.',
-          );
-          if (!raw) return;
-          const parcel_id = parseInt(raw, 10);
-          if (!Number.isFinite(parcel_id)) { setErr('Invalid parcel ID'); return; }
-          await apiPost(`/vouchers/${v.id}/redeem-build`, { parcel_id }, { authed: true });
-        } else if (v.kind === 'resource') {
-          await apiPost(`/vouchers/${v.id}/redeem-resource`, {}, { authed: true });
-        } else if (v.kind === 'agent') {
-          await apiPost(`/vouchers/${v.id}/redeem-agent`, {}, { authed: true });
-        }
-        refresh();
-        setErr(null);
-      } catch (e) {
-        setErr((e as Error).message);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [refresh],
-  );
+  const claimResources = useCallback(async () => {
+    setClaiming(true);
+    try {
+      await apiPost('/vouchers/redeem-resources', {}, { authed: true });
+      refresh();
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setClaiming(false);
+    }
+  }, [refresh]);
 
-  if (!data) {
-    return <div style={S.emptyPad}>{err ?? 'Loading vouchers…'}</div>;
-  }
-  const total = data.counts.land + data.counts.building + data.counts.agent + data.counts.resource;
+  if (!data) return <div style={S.emptyPad}>{err ?? 'Loading vouchers…'}</div>;
+  const { counts, buildings_by_type } = data;
+  const total = counts.land + counts.building + counts.agent + counts.resource;
   if (total === 0 && data.recently_redeemed.length === 0) {
     return (
       <div style={S.emptyPad}>
         No vouchers in your inventory.<br/>
-        Vouchers are granted by world migrations or in-game events.
+        Vouchers are granted by world migrations or in-game events. They&apos;re
+        consumed automatically when you buy land, build a building, or
+        register a new agent.
       </div>
     );
   }
 
+  const buildingTypes = Object.entries(buildings_by_type).sort((a, b) => b[1] - a[1]);
+
   return (
     <>
       <div style={S.invHeader}>
-        <span style={S.invHeaderLabel}>Active vouchers</span>
+        <span style={S.invHeaderLabel}>Vouchers in inventory</span>
         <span style={S.invHeaderValue}>{total}</span>
       </div>
       {err && <div style={S.errMsg}>{err}</div>}
-      <div style={S.vchSummary}>
-        <span>🟩 Land × {data.counts.land}</span>
-        <span>🏛️ Building × {data.counts.building}</span>
-        <span>👤 Agent × {data.counts.agent}</span>
-        <span>📦 Resource × {data.counts.resource}</span>
+
+      <div style={S.vchHint}>
+        Vouchers are spent automatically when you buy land, build, or
+        register a new agent — no clicks here. The counts below show what
+        you have available.
       </div>
+
       <div style={S.vchList}>
-        {data.active.map((v) => (
-          <VoucherRow key={v.id} voucher={v} busy={busy === v.id} onRedeem={() => redeem(v)} />
-        ))}
+        <VoucherSummaryRow icon="🟩" label="Land claims (free)" count={counts.land} />
+        <VoucherSummaryRow icon="🏛️" label="Building constructions (free)" count={counts.building}>
+          {buildingTypes.length > 0 && (
+            <div style={S.vchBreakdown}>
+              {buildingTypes.map(([t, n]) => (
+                <span key={t} style={S.vchBreakdownTag}>{t} × {n}</span>
+              ))}
+            </div>
+          )}
+        </VoucherSummaryRow>
+        <VoucherSummaryRow icon="👤" label="Agent registrations (free)" count={counts.agent} />
+        <VoucherSummaryRow
+          icon="📦"
+          label="Resource stockpiles"
+          count={counts.resource}
+          actionLabel={counts.resource > 0 ? (claiming ? 'Claiming…' : 'Claim all') : undefined}
+          onAction={counts.resource > 0 && !claiming ? claimResources : undefined}
+        />
       </div>
+
       {data.recently_redeemed.length > 0 && (
         <>
           <div style={{ ...S.invHeader, marginTop: 12 }}>
@@ -1994,8 +1975,8 @@ const VouchersTab: React.FC = () => {
           <div style={S.vchList}>
             {data.recently_redeemed.slice(-10).reverse().map((v) => (
               <div key={v.id} style={{ ...S.vchRow, opacity: 0.5 }}>
-                <span style={S.vchIcon}>{KIND_ICON[v.kind]}</span>
-                <span style={S.vchLabel}>{describeVoucher(v)}</span>
+                <span style={S.vchIcon}>{KIND_ICON[v.kind as keyof typeof KIND_ICON] ?? '✓'}</span>
+                <span style={S.vchLabel}>{v.kind}</span>
                 <span style={S.vchMeta}>redeemed</span>
               </div>
             ))}
@@ -2006,30 +1987,28 @@ const VouchersTab: React.FC = () => {
   );
 };
 
-function describeVoucher(v: Voucher): string {
-  if (v.kind === 'land') return 'Free land claim';
-  if (v.kind === 'building') {
-    const p = v.payload as VoucherPayloadBuilding;
-    return `Build ${p.building_type}${p.tier ? ` (Tier ${p.tier})` : ''}`;
-  }
-  if (v.kind === 'agent') {
-    const p = v.payload as VoucherPayloadAgent;
-    return `Spawn agent: ${p.name}`;
-  }
-  if (v.kind === 'resource') {
-    const p = v.payload as VoucherPayloadResource;
-    return `${p.amount.toLocaleString()} ${p.resource}`;
-  }
-  return v.kind;
-}
+const KIND_ICON: Record<'land' | 'building' | 'agent' | 'resource', string> = {
+  land: '🟩',
+  building: '🏛️',
+  agent: '👤',
+  resource: '📦',
+};
 
-const VoucherRow: React.FC<{ voucher: Voucher; busy: boolean; onRedeem: () => void }> = ({ voucher, busy, onRedeem }) => (
-  <div style={S.vchRow}>
-    <span style={S.vchIcon}>{KIND_ICON[voucher.kind]}</span>
-    <span style={S.vchLabel}>{describeVoucher(voucher)}</span>
-    <button style={S.vchRedeemBtn} onClick={onRedeem} disabled={busy}>
-      {busy ? '…' : 'Redeem'}
-    </button>
+const VoucherSummaryRow: React.FC<{
+  icon: string; label: string; count: number;
+  actionLabel?: string; onAction?: () => void;
+  children?: React.ReactNode;
+}> = ({ icon, label, count, actionLabel, onAction, children }) => (
+  <div style={S.vchSummaryRow}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={S.vchIcon}>{icon}</span>
+      <span style={S.vchLabel}>{label}</span>
+      <span style={S.vchCountBadge}>{count}</span>
+      {actionLabel && onAction && (
+        <button style={S.vchRedeemBtn} onClick={onAction}>{actionLabel}</button>
+      )}
+    </div>
+    {children}
   </div>
 );
 
@@ -2862,12 +2841,21 @@ const S: Record<string, React.CSSProperties> = {
   },
 
   // ── Vouchers tab ──────────────────────────────────────────────────
-  vchSummary: {
-    display: 'flex', flexWrap: 'wrap' as const, gap: 8,
-    fontSize: 11, color: '#A89378',
-    padding: '6px 4px', marginBottom: 8,
+  vchHint: {
+    fontSize: 10, lineHeight: 1.4, color: '#A89378',
+    padding: '6px 8px', marginBottom: 8,
+    background: 'rgba(245,230,208,0.04)',
+    borderLeftWidth: 2, borderLeftStyle: 'solid' as const, borderLeftColor: '#D89438',
+    borderRadius: 3,
   },
   vchList: { display: 'flex', flexDirection: 'column', gap: 4 },
+  vchSummaryRow: {
+    display: 'flex', flexDirection: 'column', gap: 4,
+    padding: '6px 8px',
+    background: 'rgba(245,230,208,0.06)',
+    borderWidth: 1, borderStyle: 'solid' as const, borderColor: 'rgba(245,230,208,0.10)',
+    borderRadius: 5, fontSize: 11,
+  },
   vchRow: {
     display: 'flex', alignItems: 'center', gap: 8,
     padding: '6px 8px',
@@ -2877,11 +2865,28 @@ const S: Record<string, React.CSSProperties> = {
   },
   vchIcon: { fontSize: 16 },
   vchLabel: { flex: 1, color: '#F5E6D0' },
+  vchCountBadge: {
+    minWidth: 22, padding: '2px 6px', textAlign: 'center' as const,
+    fontSize: 11, fontWeight: 700, color: '#D89438',
+    background: 'rgba(216,148,56,0.12)',
+    borderRadius: 8, fontVariantNumeric: 'tabular-nums' as const,
+  },
   vchMeta: { fontSize: 10, color: '#7A6850', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
   vchRedeemBtn: {
     padding: '3px 10px', fontSize: 11, fontWeight: 600,
     background: '#D89438', color: '#1F1812',
     borderWidth: 0, borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  vchBreakdown: {
+    display: 'flex', flexWrap: 'wrap' as const, gap: 4,
+    paddingLeft: 24, fontSize: 10,
+  },
+  vchBreakdownTag: {
+    padding: '1px 6px',
+    background: 'rgba(245,230,208,0.05)',
+    color: '#A89378',
+    borderRadius: 3,
+    fontVariantNumeric: 'tabular-nums' as const,
   },
 
   // ── Burn confirmation dialog ──────────────────────────────────────
