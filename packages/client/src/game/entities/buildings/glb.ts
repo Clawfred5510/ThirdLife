@@ -33,17 +33,62 @@ import { BuildingSpec, BuildingOutput } from './shared';
  * separate future pass driven by the visual reference.
  */
 
-// GLB asset mapping — buildings listed here render from a baked Meshy
+// GLB asset mapping — buildings listed here render from a baked asset
 // export. Buildings NOT in the map fall through to the procedural
-// builders in proceduralBuilding.ts (which still handles farm, house,
-// bank, factory, hall, mine, market, shop, office, apartment via code).
+// builders in proceduralBuilding.ts.
 //
 // Add a new asset by dropping <name>.glb into
 // packages/client/public/assets/models/buildings/ and adding a row
 // here keyed by the BuildingType (matches packages/shared constants).
+//
+// Synty kitbash drop 2026-05-26: 24 of 25 v1 tier types. `apartment`
+// (T1 luxury-housing) intentionally unmapped — pending a better asset
+// from the owner; renders procedurally until then.
 const ASSET_BY_TYPE: Record<string, string> = {
-  // Tier 4 energy. Owner-added 2026-05-21.
-  nuclear_plant: 'nuclear-reactor.glb',
+  // Food chain
+  farm:                  'farm.glb',
+  ranch:                 'ranch.glb',
+  hydroponic_tower:      'hydroponic-tower.glb',
+  vertical_farm_complex: 'vertical-farm-complex.glb',
+  synthetic_protein_lab: 'synthetic-protein-lab.glb',
+  // Materials chain (T2 served by blacksmith asset — same slot)
+  mine:                  'mine.glb',
+  iron_works:            'blacksmith.glb',
+  refinery:              'refinery.glb',
+  composite_plant:       'composite-plant.glb',
+  chip_manufacturing:    'chip-manufacturing-plant.glb',
+  // Energy chain (factory slug = "Coal Power Plant" per constants.ts label)
+  factory:               'coal-power-plant.glb',
+  wind_farm:             'wind-farm.glb',
+  solar_farm:            'solar-farm.glb',
+  nuclear_plant:         'nuclear-plant.glb',
+  cold_fusion_facility:  'cold-fusion-facility.glb',
+  // Luxury-housing chain (apartment intentionally not mapped)
+  house:                 'house.glb',
+  penthouse:             'penthouse.glb',
+  villa:                 'villa.glb',
+  mansion:               'mansion.glb',
+  // Luxury-civic chain
+  office:                'office.glb',
+  market:                'market.glb',
+  bank:                  'bank.glb',
+  town_hall:             'town-hall.glb',
+  gala_hall:             'gala-hall.glb',
+  // Legacy types → closest-tier v1 visual equivalent. Existing parcels
+  // built under the old catalog (Phase D Meshy era) render with the
+  // matching synty asset rather than falling through to procedural.
+  // Mapping mirrors the voucher equivalence map in
+  // docs/voucher-viability-top10-2026-05-23.md.
+  shop:       'office.glb',     // legacy → T1 luxury-civic
+  hall:       'market.glb',     // legacy → T2 luxury-civic
+  club:       'bank.glb',       // legacy → T3 luxury-civic
+  hospital:   'bank.glb',       // legacy → T3 luxury-civic
+  library:    'market.glb',     // legacy → T2 luxury-civic
+  station:    'market.glb',     // legacy → T2 luxury-civic
+  skyscraper: 'town-hall.glb',  // legacy → T4 luxury-civic
+  mall:       'town-hall.glb',  // legacy → T4 luxury-civic
+  stadium:    'town-hall.glb',  // legacy → T4 luxury-civic
+  luxury_apt: 'penthouse.glb',  // legacy → T3 luxury-housing
 };
 
 interface PaintRecipe {
@@ -60,27 +105,12 @@ interface PaintRecipe {
   yawOffset?: number;
 }
 
-// Colours read directly off the gamedesigns/<type>.png references.
-const PAINT_BY_TYPE: Record<string, PaintRecipe> = {
-  // Two-storey brick apartment: terra-cotta walls, dark slate parapet.
-  apartment:  { wall: '#A6543A', roof: '#2D3138', split: 0.78 },
-  // Neoclassical bank: cream sandstone with charcoal roof + pediment.
-  bank:       { wall: '#D7C4A2', roof: '#26201A', split: 0.74 },
-  // Brick factory with sawtooth roof + chimneys.
-  factory:    { wall: '#B5563A', roof: '#2C2520', split: 0.62 },
-  // Red barn with green gambrel roof — the gambrel is huge so split low.
-  farm:       { wall: '#9C3C28', roof: '#3D7C3F', split: 0.45 },
-  // City hall: cream sandstone with brick accents, dark roof.
-  hall:       { wall: '#D7C4A2', roof: '#26201A', split: 0.74 },
-  // Yellow clapboard suburban house with steep slate gable.
-  house:      { wall: '#E2A130', roof: '#384357', split: 0.55 },
-  // Wood + stone mine pithead with teal-green roof.
-  mine:       { wall: '#6F4626', roof: '#3F7A6B', split: 0.55 },
-  // Beige stone office with dark parapet.
-  office:     { wall: '#A8A498', roof: '#26201A', split: 0.78 },
-  // Yellow shop walls with dark trim band at the top.
-  shop:       { wall: '#E2A130', roof: '#2C2520', split: 0.80 },
-};
+// Synty kitbash assets ship with embedded PBR materials + textures, so
+// no two-tone paint recipe is needed — without a recipe the loader
+// preserves the GLB's own materials (see render path below). Keep the
+// map empty; add a per-type entry only when an asset arrives without
+// materials and we need to fake a wall/roof split.
+const PAINT_BY_TYPE: Record<string, PaintRecipe> = {};
 
 const PARCEL_FOOTPRINT = 32;
 const COLLIDER_HEIGHT = 8;
