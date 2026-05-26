@@ -20,7 +20,6 @@ import {
   ENERGY_PER_PRODUCING_BUILDING_PER_TICK,
   consumesEnergy,
   emitsPassiveLuxury,
-  TICK_PRODUCTION,
 } from '@gamestu/shared';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-prod-'));
@@ -81,13 +80,12 @@ function settleOneTick(
   interface OwnerBucket {
     producers: Producer[];
     passiveLuxury: number;
-    legacyAdd: { food: number; materials: number; energy: number; luxury: number };
   }
   const byOwner = new Map<string, OwnerBucket>();
   const getBucket = (id: string): OwnerBucket => {
     let b = byOwner.get(id);
     if (!b) {
-      b = { producers: [], passiveLuxury: 0, legacyAdd: { food: 0, materials: 0, energy: 0, luxury: 0 } };
+      b = { producers: [], passiveLuxury: 0 };
       byOwner.set(id, b);
     }
     return b;
@@ -107,9 +105,6 @@ function settleOneTick(
     } else if (emitsPassiveLuxury(bt)) {
       const idx = Math.max(0, spec.tier - 1);
       b.passiveLuxury += LUXURY_PASSIVE_PER_TICK_BY_TIER[idx] ?? 0;
-    } else if (spec.category === 'legacy') {
-      const tick = TICK_PRODUCTION[bt];
-      if (tick) b.legacyAdd[tick.resource] += tick.rate;
     }
   }
 
@@ -133,10 +128,6 @@ function settleOneTick(
         else if (p.category === 'energy')    resources.energy    += out;
       }
       resources.luxury += bucket.passiveLuxury;
-      resources.food      += bucket.legacyAdd.food;
-      resources.materials += bucket.legacyAdd.materials;
-      resources.energy    += bucket.legacyAdd.energy;
-      resources.luxury    += bucket.legacyAdd.luxury;
     }
     resources.food = Math.max(0, resources.food - FOOD_PER_AGENT_PER_TICK);
     updatePlayerResources(pid, resources);
@@ -153,7 +144,6 @@ check('Tier V Synthetic Protein Lab cost = 10M', BUILDINGS.synthetic_protein_lab
 check('Tier V Mansion (luxury) cost = 12M', BUILDINGS.mansion.cost === 12_000_000);
 check('Tier I Office category = luxury-civic', BUILDINGS.office.category === 'luxury-civic');
 check('factory category = energy + tier 1', BUILDINGS.factory.category === 'energy' && BUILDINGS.factory.tier === 1);
-check('shop is legacy', BUILDINGS.shop.category === 'legacy' && BUILDINGS.shop.tier === 0);
 
 // ── Tier I farm: base + agents formula ─────────────────────────────────
 section('Tier I farm: base + agents × tier_multiplier');

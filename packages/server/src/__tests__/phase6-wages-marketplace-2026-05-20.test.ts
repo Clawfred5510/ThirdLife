@@ -25,7 +25,6 @@ import {
   consumesEnergy,
   emitsPassiveLuxury,
   LUXURY_PASSIVE_PER_TICK_BY_TIER,
-  TICK_PRODUCTION,
 } from '@gamestu/shared';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-p6-'));
@@ -158,9 +157,6 @@ function runOneTick(connectedPlayer: string): void {
       }
     } else if (emitsPassiveLuxury(bt)) {
       r.luxury += LUXURY_PASSIVE_PER_TICK_BY_TIER[Math.max(0, spec.tier - 1)] ?? 0;
-    } else if (spec.category === 'legacy') {
-      const t = TICK_PRODUCTION[bt];
-      if (t) (r as any)[t.resource] += t.rate;
     }
   }
 

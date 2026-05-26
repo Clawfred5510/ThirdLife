@@ -17,7 +17,6 @@ import {
   BuildingCategory,
   INCOME_TICK_MS,
   ResourceType,
-  TICK_PRODUCTION,
   FOOD_PER_AGENT_PER_TICK,
   ENERGY_PER_PRODUCING_BUILDING_PER_TICK,
   TIER_MULTIPLIER,
@@ -58,7 +57,6 @@ import {
   addEvent,
   getEvents,
   getAuthSessionPlayerId,
-  tickReputation,
   getRawDb,
   getAllAgents,
   setAgentStarvation,
@@ -527,9 +525,6 @@ export class GameRoom extends Room<GameState> {
           const key = spec.produces as keyof typeof resources;
           resources[key] = (resources[key] || 0) + spec.amount;
           produced[key] = (produced[key] || 0) + spec.amount;
-        }
-        if (spec.income > 0) {
-          creditsEarned += spec.income;
         }
       }
 
@@ -1299,11 +1294,6 @@ export class GameRoom extends Room<GameState> {
         a.targetX = m.x; a.targetY = m.y; a.targetZ = m.z;
       }
 
-      // Phase B.2 reputation: each owned shop consumes 1 luxury; owner
-      // gains +1 reputation per consumed unit. Done after autopilot so
-      // freshly-bought luxury counts.
-      tickReputation();
-
       // Phase C sub-unit income removed 2026-05-20 with the module retirement.
 
       // Phase E.3: resolve any decree whose voting window has elapsed.
@@ -1324,8 +1314,6 @@ export class GameRoom extends Room<GameState> {
       //     external, and not dormant count toward the agent term.
       //   • Luxury Housing + Civic emit LUXURY_PASSIVE_PER_TICK_BY_TIER
       //     for free (no energy consumed).
-      //   • Legacy types (shop/hall/etc.) still produce via the deprecated
-      //     TICK_PRODUCTION shim so existing players don't lose value.
       //   • $AMETA wages for role='work' agents and rank production
       //     bonuses are wired in Phase 4.
       //
@@ -1426,7 +1414,6 @@ export class GameRoom extends Room<GameState> {
       interface OwnerBucket {
         producers: Producer[];                 // need 1 energy each
         passiveLuxury: number;                 // sum of housing/civic
-        legacyAdd: { food: number; materials: number; energy: number; luxury: number };
       }
       const byOwner = new Map<string, OwnerBucket>();
       const getBucket = (id: string): OwnerBucket => {
@@ -1435,7 +1422,6 @@ export class GameRoom extends Room<GameState> {
           b = {
             producers: [],
             passiveLuxury: 0,
-            legacyAdd: { food: 0, materials: 0, energy: 0, luxury: 0 },
           };
           byOwner.set(id, b);
         }
@@ -1460,11 +1446,6 @@ export class GameRoom extends Room<GameState> {
         } else if (emitsPassiveLuxury(bt)) {
           const idx = Math.max(0, spec.tier - 1);
           b.passiveLuxury += LUXURY_PASSIVE_PER_TICK_BY_TIER[idx] ?? 0;
-        } else if (spec.category === 'legacy') {
-          // Legacy bridge — TICK_PRODUCTION shim keeps shop/skyscraper/etc.
-          // earning until the player demolishes and rebuilds.
-          const tick = TICK_PRODUCTION[bt];
-          if (tick) b.legacyAdd[tick.resource] += tick.rate;
         }
       }
 
@@ -1639,13 +1620,6 @@ export class GameRoom extends Room<GameState> {
 
           // Passive luxury (housing + civic) — no energy gating.
           resources.luxury += bucket.passiveLuxury;
-
-          // Legacy types contribute their old flat rates (no energy gate,
-          // since we don't want to break ownership economics mid-migration).
-          resources.food      += bucket.legacyAdd.food;
-          resources.materials += bucket.legacyAdd.materials;
-          resources.energy    += bucket.legacyAdd.energy;
-          resources.luxury    += bucket.legacyAdd.luxury;
 
           // UI Overhaul (rank model change 2026-05-20):
           // Rank progress now tracks lifetime luxury *earned*, not only

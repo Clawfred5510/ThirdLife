@@ -8,10 +8,8 @@
  *   - work    : Stand at workplace (NPC building or player-owned). Will
  *               earn a flat WORK_WAGE_AMETA_PER_TICK in Phase 4. Today no
  *               economic effect — only positioning.
- *   - produce : Stand at workplace, produce that building's resource.
- *               Phase 0 keeps the legacy `doWork` bridge so existing
- *               production keeps flowing; Phase 1 replaces with the
- *               tier × (base + agents) formula.
+ *   - produce : Stand at workplace, produce that building's resource
+ *               based on spec.produces/amount.
  *   - craft   : Stand at workplace. Crafting logic ships in Phase 3.
  *
  * Strategy presets (aggressive/balanced/conservative) are gone — they
@@ -37,11 +35,10 @@ import {
   BUILDINGS,
   BuildingType,
   ResourceType,
-  TICK_PRODUCTION,
   AgentRole,
   parcelWorldPos,
 } from '@gamestu/shared';
-import { recordGdp, getWorldTick } from '../world';
+import { getWorldTick } from '../world';
 
 interface AgentRow {
   id: string;
@@ -144,10 +141,8 @@ function runWork(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: 
   return workplace ? parcelDoor(workplace) : spawnSpreadFor(agent.id);
 }
 
-/** Produce role: stand at the workplace and generate the building's resource.
- *  Phase 0 bridge: routes through the legacy `doWork` helper so production
- *  keeps flowing for existing agents. Phase 1 replaces this with the new
- *  tier × (base + agents) × energy formula in the GameRoom tick. */
+/** Produce role: stand at the workplace and generate the building's
+ *  resource according to spec.produces / spec.amount. */
 function runProduce(agent: AgentRow, workplace: ParcelRow | null): { x: number; y: number; z: number } | null {
   const produced = doWork(agent.id, workplace);
   if (produced.creditsEarned > 0 || produced.anyProduced) {
@@ -168,12 +163,12 @@ function runCraft(agent: AgentRow, workplace: ParcelRow | null): { x: number; y:
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Phase 0 bridge: legacy production helper
+// Production helper for role=produce agents
 // ──────────────────────────────────────────────────────────────────────
 
-/** Legacy production path. Kept for one phase as a bridge so role=produce
- *  agents keep producing under the old per-building flat rate while the
- *  tier-based formula is being built. Phase 1 will delete this entirely. */
+/** Per-tick production: agent stationed at workplace (or each of their
+ *  own parcels if free-roaming) credits resources based on the building
+ *  spec's produces/amount fields. */
 function doWork(agentId: string, workplace: ParcelRow | null): {
   creditsEarned: number;
   produced: Partial<Record<ResourceType, number>>;
@@ -183,7 +178,7 @@ function doWork(agentId: string, workplace: ParcelRow | null): {
   const targets: ParcelRow[] = workplace
     ? [workplace]
     : (getPlayerParcels(agentId) as ParcelRow[]);
-  let creditsEarned = 0;
+  const creditsEarned = 0;
   const produced: Partial<Record<ResourceType, number>> = {};
   const resources = getPlayerResources(agentId);
 
@@ -196,17 +191,11 @@ function doWork(agentId: string, workplace: ParcelRow | null): {
       resources[spec.produces] += spec.amount;
       produced[spec.produces] = (produced[spec.produces] ?? 0) + spec.amount;
     }
-    // Income only applies to owned parcels — a freelancer at someone
-    // else's parcel produces resources but doesn't collect the building's
-    // passive income (that belongs to the parcel owner).
-    if (!workplace && spec.income > 0) creditsEarned += spec.income;
   }
 
-  if (creditsEarned > 0 || Object.keys(produced).length > 0) {
+  if (Object.keys(produced).length > 0) {
     workProduce(agentId, creditsEarned, resources);
-    if (creditsEarned > 0) recordGdp(creditsEarned);
   }
-  void TICK_PRODUCTION; // legacy constant kept until Phase 1 finishes
 
   return {
     creditsEarned,

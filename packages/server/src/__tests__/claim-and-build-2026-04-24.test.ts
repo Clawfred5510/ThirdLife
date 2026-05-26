@@ -47,7 +47,7 @@ check(`charged LAND_COST + cost + 1% fee (${LAND_COST + spec.cost + apFee})`,
 check('parcel registered as owned+built', getOwnedBuiltParcels().some(p => p.owner_id === 'alice' && p.building_type === 'apartment'));
 
 section('Rejects already-claimed parcel');
-const r2 = claimAndBuild('alice', parcels[0].id, 'shop', BUILDINGS.shop.cost, BUILDINGS.shop.label);
+const r2 = claimAndBuild('alice', parcels[0].id, 'office', BUILDINGS.office.cost, BUILDINGS.office.label);
 check('second claim fails', r2.ok === false && r2.reason === 'already_claimed');
 
 section('Rejects insufficient balance');

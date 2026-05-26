@@ -133,35 +133,6 @@ export function buildFurniture(
       parent(hearth);
       break;
     }
-    case 'shop': {
-      // Checkout counter
-      const counter = MeshBuilder.CreateBox(`counter_${id}`, { width: inner * 0.55, height: 1.1, depth: 0.8 }, scene);
-      counter.position.set(0, 0.55, halfI * 0.6);
-      counter.material = lightWood;
-      parent(counter);
-      // Register on counter
-      const reg = MeshBuilder.CreateBox(`register_${id}`, { width: 0.5, height: 0.4, depth: 0.4 }, scene);
-      reg.position.set(-inner * 0.15, 1.3, halfI * 0.6);
-      reg.material = pbr(scene, `regMat_${id}`, new Color3(0.12, 0.12, 0.12));
-      parent(reg);
-      // Shelving units (left + right walls)
-      for (const side of [-1, 1]) {
-        for (let i = 0; i < 3; i++) {
-          const shelf = MeshBuilder.CreateBox(`shelf_${id}_${side}_${i}`, { width: 0.5, height: 0.08, depth: inner * 0.8 }, scene);
-          shelf.position.set(side * (halfI - 0.3), 0.7 + i * 0.9, 0);
-          shelf.material = wood;
-          parent(shelf);
-        }
-      }
-      // Product crates on shelves
-      for (let i = 0; i < 6; i++) {
-        const crate = MeshBuilder.CreateBox(`crate_${id}_${i}`, { width: 0.4, height: 0.3, depth: 0.4 }, scene);
-        crate.position.set((i % 2 ? 1 : -1) * (halfI - 0.3), 0.9 + Math.floor(i / 2) * 0.9, -halfI + 1 + i * 1.2);
-        crate.material = pbr(scene, `crate_${id}_${i}`, new Color3(0.72, 0.52, 0.28));
-        parent(crate);
-      }
-      break;
-    }
     case 'farm': {
       // Hay bales stacked
       const hayMat = pbr(scene, `hay_${id}`, HAY, 0.98);
@@ -533,88 +504,6 @@ export function buildFurniture(
       beam.position.set(0, wallHeight - 0.4, halfI - 0.4);
       beam.material = wood;
       parent(beam);
-      break;
-    }
-    case 'hall': {
-      // Council-chamber layout: a wide raised dais along the back wall
-      // with five seats for officials, then ranks of audience chairs
-      // facing the dais in the middle of the room. Per user feedback —
-      // city hall vibe instead of a banquet table.
-      const daisW = inner * 0.8;
-      const daisDepth = 1.5;
-      const daisH = 0.5;
-      const daisZ = halfI - daisDepth / 2 - 0.3;
-      // Raised platform
-      const dais = MeshBuilder.CreateBox(`hallDais_${id}`, {
-        width: daisW, height: daisH, depth: daisDepth,
-      }, scene);
-      dais.position.set(0, daisH / 2, daisZ);
-      dais.material = wood;
-      parent(dais);
-      // Long bench/desk on the dais — extends across most of the dais
-      const benchW = daisW - 0.4;
-      const benchH = 1.1;
-      const dBench = MeshBuilder.CreateBox(`hallBench_${id}`, {
-        width: benchW, height: benchH, depth: 0.7,
-      }, scene);
-      dBench.position.set(0, daisH + benchH / 2, daisZ - 0.2);
-      dBench.material = lightWood;
-      parent(dBench);
-      // Carved front panel on the bench (decorative)
-      const benchFront = MeshBuilder.CreateBox(`hallBenchFront_${id}`, {
-        width: benchW + 0.1, height: benchH * 0.7, depth: 0.05,
-      }, scene);
-      benchFront.position.set(0, daisH + benchH / 2 - 0.1, daisZ - 0.55);
-      benchFront.material = wood;
-      parent(benchFront);
-      // Marble top
-      const benchTop = MeshBuilder.CreateBox(`hallBenchTop_${id}`, {
-        width: benchW + 0.2, height: 0.08, depth: 0.85,
-      }, scene);
-      benchTop.position.set(0, daisH + benchH + 0.04, daisZ - 0.2);
-      benchTop.material = pbr(scene, `hallMarble_${id}`, new Color3(0.88, 0.85, 0.82), 0.3);
-      parent(benchTop);
-      // 5 official seats behind the bench
-      const officialChairMat = pbr(scene, `hallOfficialChair_${id}`, new Color3(0.5, 0.15, 0.15), 0.6);
-      for (let i = -2; i <= 2; i++) {
-        const cx = i * (benchW / 5.5);
-        const seat = MeshBuilder.CreateBox(`hallOfficialSeat_${id}_${i}`, {
-          width: 0.55, height: 0.45, depth: 0.55,
-        }, scene);
-        seat.position.set(cx, daisH + 0.22, daisZ + 0.35);
-        seat.material = officialChairMat;
-        parent(seat);
-        const back = MeshBuilder.CreateBox(`hallOfficialBack_${id}_${i}`, {
-          width: 0.55, height: 1.1, depth: 0.08,
-        }, scene);
-        back.position.set(cx, daisH + 1.0, daisZ + 0.55);
-        back.material = officialChairMat;
-        parent(back);
-      }
-      // Audience chairs — 4 rows × 6 chairs facing the dais
-      const audienceMat = pbr(scene, `hallAudience_${id}`, new Color3(0.32, 0.28, 0.24), 0.7);
-      const rowGap = 1.0;
-      const seatGap = 0.85;
-      const rowsStartZ = -halfI + 2.5;
-      for (let r = 0; r < 4; r++) {
-        const rz = rowsStartZ + r * rowGap;
-        for (let s = -2.5; s <= 2.5; s += 1) {
-          const sx = s * seatGap;
-          const seat = MeshBuilder.CreateBox(`hallAud_${id}_${r}_${s}`, {
-            width: 0.5, height: 0.4, depth: 0.5,
-          }, scene);
-          seat.position.set(sx, 0.2, rz);
-          seat.material = audienceMat;
-          parent(seat);
-          const back = MeshBuilder.CreateBox(`hallAudB_${id}_${r}_${s}`, {
-            width: 0.5, height: 0.7, depth: 0.06,
-          }, scene);
-          back.position.set(sx, 0.55, rz - 0.22);
-          back.material = audienceMat;
-          parent(back);
-        }
-      }
-      // Center aisle is preserved by the gap at sx=0.
       break;
     }
     case 'factory': {

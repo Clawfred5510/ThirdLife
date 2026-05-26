@@ -33,7 +33,7 @@ import { inGameAgentCapFor, externalAgentCapFor, rankFor } from '../ranks';
 import { placeOrder, cancelOrder, getBook, getOwnerOrders } from '../market/orderBook';
 import { notifyAgentChanged } from '../events/agentEvents';
 import { getLeaderboard, getNetWorth, isValidSort } from '../leaderboard';
-import { getWorldTick, getLastTickGdp, recordGdp } from '../world';
+import { getWorldTick, getLastTickGdp } from '../world';
 import { getAllAgents, getRawDb as _rawDb } from '../db';
 import { computeLevel, computeJob } from '../agents-meta';
 // Sub-unit properties module retired 2026-05-20. The file still exists
@@ -1509,11 +1509,9 @@ router.post('/actions/work', authInGameAgentLegacy, rateLimit, (req: Request, re
       resources[key] += spec.amount;
       produced[key] = (produced[key] || 0) + spec.amount;
     }
-    if (spec.income > 0) creditsEarned += spec.income;
   }
 
   const result = workProduce(agentId, creditsEarned, resources);
-  if (creditsEarned > 0) recordGdp(creditsEarned);
   addEvent('work', agentId, { produced, creditsEarned }, 'minor');
   res.json({ ok: true, produced, creditsEarned, resources, balance: result.credits });
 });

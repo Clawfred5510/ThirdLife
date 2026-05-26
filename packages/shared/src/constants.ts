@@ -84,14 +84,12 @@ export const RESERVED_PARCEL_IDS: readonly number[] = LANDMARKS.map((l) => l.par
 
 // ── Building types ──────────────────────────────────────────────────────
 //
-// Phase 1 (2026-05-20): every building has a `category` and a `tier`. The
-// 25 tier-classified types form the 5×5 grid the spec describes (food /
-// materials / energy / luxury-housing / luxury-civic at Bronze..Diamond).
-// The 9 'legacy' types are old Phase D buildings (shop, hall, skyscraper,
-// mall, etc.) that don't fit the new model — they're kept so existing
-// player builds don't break, but they can't be constructed anew under the
-// tier UI. Their tick-time output is handled by the legacy bridge in
-// autopilot/doWork.
+// Every building has a `category` and a `tier`. The 25 tier-classified
+// types form the 5×5 grid the spec describes (food / materials / energy
+// / luxury-housing / luxury-civic at Bronze..Diamond). 'factory' is the
+// canonical Tier-I energy type name retained from the legacy schema
+// because parcels store the slug; the label says "Coal Power Plant"
+// per spec §7.
 
 export type BuildingType =
   // ── Food chain (Bronze → Diamond) ────────────────────────────────
@@ -99,24 +97,17 @@ export type BuildingType =
   // ── Materials chain ──────────────────────────────────────────────
   | 'mine' | 'iron_works' | 'refinery' | 'composite_plant' | 'chip_manufacturing'
   // ── Energy chain ─────────────────────────────────────────────────
-  // 'factory' is the canonical Tier-I energy type name retained from the
-  // legacy schema. Spec calls it "Coal Power Plant" — the label below
-  // reflects that without forcing a building_type DB migration.
   | 'factory' | 'wind_farm' | 'solar_farm' | 'nuclear_plant' | 'cold_fusion_facility'
   // ── Luxury Housing ───────────────────────────────────────────────
   | 'apartment' | 'house' | 'penthouse' | 'villa' | 'mansion'
   // ── Luxury Civic ─────────────────────────────────────────────────
-  | 'office' | 'market' | 'bank' | 'town_hall' | 'gala_hall'
-  // ── Legacy (no tier classification; cannot be newly constructed) ─
-  | 'shop' | 'hall' | 'skyscraper' | 'mall' | 'stadium'
-  | 'hospital' | 'library' | 'station' | 'club';
+  | 'office' | 'market' | 'bank' | 'town_hall' | 'gala_hall';
 
 export type ResourceType = 'food' | 'materials' | 'energy' | 'luxury';
 
 export type BuildingCategory =
   | 'food' | 'materials' | 'energy'
-  | 'luxury-housing' | 'luxury-civic'
-  | 'legacy';
+  | 'luxury-housing' | 'luxury-civic';
 
 import {
   PRODUCTION_BUILDING_AMETA_COST,
@@ -129,18 +120,18 @@ import {
 export interface BuildingSpec {
   type: BuildingType;
   category: BuildingCategory;
-  /** 1..5 (Bronze..Diamond) for tier-classified buildings; 0 for legacy. */
-  tier: 0 | 1 | 2 | 3 | 4 | 5;
+  /** 1..5 (Bronze..Diamond). */
+  tier: 1 | 2 | 3 | 4 | 5;
   /** Minimum player rank required to construct. 'bronze' for Tier I. */
   minRank: Tier;
   cost: number;
   /** Materials required at construction time, in addition to cost. */
   materialCost: number;
-  /** Legacy field — passive $AMETA per tick (only used by legacy bridge). */
-  income: number;
-  /** Legacy field — bound resource (only used by legacy bridge). */
+  /** Resource produced by this building (food/materials/energy chain
+   *  buildings only). Luxury housing/civic emit passive luxury via
+   *  LUXURY_PASSIVE_PER_TICK_BY_TIER instead. */
   produces?: ResourceType;
-  /** Legacy field — produced units per work action (legacy bridge). */
+  /** Units of `produces` minted per produce-role agent tick. */
   amount?: number;
   label: string;
 }
@@ -167,63 +158,49 @@ const TIER_MIN_RANK: Record<1 | 2 | 3 | 4 | 5, Tier> = {
 
 export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
   // ── Food chain ───────────────────────────────────────────────────
-  farm:                  { type: 'farm',                  category: 'food', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), income: 0, produces: 'food', amount: 1, label: 'Farm' },
-  ranch:                 { type: 'ranch',                 category: 'food', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), income: 0, produces: 'food', amount: 2, label: 'Ranch' },
-  hydroponic_tower:      { type: 'hydroponic_tower',      category: 'food', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), income: 0, produces: 'food', amount: 3, label: 'Hydroponic Tower' },
-  vertical_farm_complex: { type: 'vertical_farm_complex', category: 'food', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), income: 0, produces: 'food', amount: 5, label: 'Vertical Farm Complex' },
-  synthetic_protein_lab: { type: 'synthetic_protein_lab', category: 'food', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), income: 0, produces: 'food', amount: 10, label: 'Synthetic Protein Lab' },
+  farm:                  { type: 'farm',                  category: 'food', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), produces: 'food', amount: 1, label: 'Farm' },
+  ranch:                 { type: 'ranch',                 category: 'food', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), produces: 'food', amount: 2, label: 'Ranch' },
+  hydroponic_tower:      { type: 'hydroponic_tower',      category: 'food', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), produces: 'food', amount: 3, label: 'Hydroponic Tower' },
+  vertical_farm_complex: { type: 'vertical_farm_complex', category: 'food', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), produces: 'food', amount: 5, label: 'Vertical Farm Complex' },
+  synthetic_protein_lab: { type: 'synthetic_protein_lab', category: 'food', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), produces: 'food', amount: 10, label: 'Synthetic Protein Lab' },
 
   // ── Materials chain ──────────────────────────────────────────────
-  mine:               { type: 'mine',               category: 'materials', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), income: 0, produces: 'materials', amount: 1, label: 'Mine' },
-  iron_works:         { type: 'iron_works',         category: 'materials', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), income: 0, produces: 'materials', amount: 2, label: 'Iron Works' },
-  refinery:           { type: 'refinery',           category: 'materials', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), income: 0, produces: 'materials', amount: 3, label: 'Refinery' },
-  composite_plant:    { type: 'composite_plant',    category: 'materials', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), income: 0, produces: 'materials', amount: 5, label: 'Composite Plant' },
-  chip_manufacturing: { type: 'chip_manufacturing', category: 'materials', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), income: 0, produces: 'materials', amount: 10, label: 'Chip Manufacturing Plant' },
+  mine:               { type: 'mine',               category: 'materials', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), produces: 'materials', amount: 1, label: 'Mine' },
+  iron_works:         { type: 'iron_works',         category: 'materials', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), produces: 'materials', amount: 2, label: 'Iron Works' },
+  refinery:           { type: 'refinery',           category: 'materials', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), produces: 'materials', amount: 3, label: 'Refinery' },
+  composite_plant:    { type: 'composite_plant',    category: 'materials', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), produces: 'materials', amount: 5, label: 'Composite Plant' },
+  chip_manufacturing: { type: 'chip_manufacturing', category: 'materials', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), produces: 'materials', amount: 10, label: 'Chip Manufacturing Plant' },
 
   // ── Energy chain ─────────────────────────────────────────────────
   // `factory` is retained as the canonical Tier-I energy type name to
   // avoid a DB migration of building_type for existing parcels. The label
   // says "Coal Power Plant" per spec §7.
-  factory:              { type: 'factory',              category: 'energy', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), income: 0, produces: 'energy', amount: 1, label: 'Coal Power Plant' },
-  wind_farm:            { type: 'wind_farm',            category: 'energy', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), income: 0, produces: 'energy', amount: 2, label: 'Wind Farm' },
-  solar_farm:           { type: 'solar_farm',           category: 'energy', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), income: 0, produces: 'energy', amount: 3, label: 'Solar Farm' },
-  nuclear_plant:        { type: 'nuclear_plant',        category: 'energy', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), income: 0, produces: 'energy', amount: 5, label: 'Nuclear Plant' },
-  cold_fusion_facility: { type: 'cold_fusion_facility', category: 'energy', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), income: 0, produces: 'energy', amount: 10, label: 'Cold Fusion Facility' },
+  factory:              { type: 'factory',              category: 'energy', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), produces: 'energy', amount: 1, label: 'Coal Power Plant' },
+  wind_farm:            { type: 'wind_farm',            category: 'energy', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), produces: 'energy', amount: 2, label: 'Wind Farm' },
+  solar_farm:           { type: 'solar_farm',           category: 'energy', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), produces: 'energy', amount: 3, label: 'Solar Farm' },
+  nuclear_plant:        { type: 'nuclear_plant',        category: 'energy', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), produces: 'energy', amount: 5, label: 'Nuclear Plant' },
+  cold_fusion_facility: { type: 'cold_fusion_facility', category: 'energy', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), produces: 'energy', amount: 10, label: 'Cold Fusion Facility' },
 
   // ── Luxury Housing ───────────────────────────────────────────────
-  apartment: { type: 'apartment', category: 'luxury-housing', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('lux', 1), income: 0, label: 'Apartment' },
-  house:     { type: 'house',     category: 'luxury-housing', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('lux', 2), income: 0, label: 'House' },
-  penthouse: { type: 'penthouse', category: 'luxury-housing', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), income: 0, label: 'Penthouse' },
-  villa:     { type: 'villa',     category: 'luxury-housing', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('lux', 4), income: 0, label: 'Villa' },
-  mansion:   { type: 'mansion',   category: 'luxury-housing', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('lux', 5), income: 0, label: 'Mansion' },
+  apartment: { type: 'apartment', category: 'luxury-housing', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('lux', 1), label: 'Apartment' },
+  house:     { type: 'house',     category: 'luxury-housing', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('lux', 2), label: 'House' },
+  penthouse: { type: 'penthouse', category: 'luxury-housing', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), label: 'Penthouse' },
+  villa:     { type: 'villa',     category: 'luxury-housing', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('lux', 4), label: 'Villa' },
+  mansion:   { type: 'mansion',   category: 'luxury-housing', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('lux', 5), label: 'Mansion' },
 
   // ── Luxury Civic ─────────────────────────────────────────────────
-  office:    { type: 'office',    category: 'luxury-civic', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('lux', 1), income: 0, label: 'Office' },
-  market:    { type: 'market',    category: 'luxury-civic', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('lux', 2), income: 0, label: 'Market' },
-  bank:      { type: 'bank',      category: 'luxury-civic', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), income: 0, label: 'Bank' },
-  town_hall: { type: 'town_hall', category: 'luxury-civic', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('lux', 4), income: 0, label: 'Town Hall' },
-  gala_hall: { type: 'gala_hall', category: 'luxury-civic', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('lux', 5), income: 0, label: 'Gala Hall' },
-
-  // ── Legacy types (kept for migration safety; not newly constructable) ─
-  // Their economic effects flow through the legacy bridge in autopilot
-  // (doWork uses the `produces`/`amount`/`income` fields). Players who
-  // own these can keep operating them; demolish + rebuild yields a tier
-  // building under the new schema.
-  shop:       { type: 'shop',       category: 'legacy', tier: 0, minRank: 'bronze', cost: 100_000,   materialCost: 0, income: 0, produces: 'luxury',    amount: 0.5,  label: 'Shop (legacy)' },
-  hall:       { type: 'hall',       category: 'legacy', tier: 0, minRank: 'bronze', cost: 400_000,   materialCost: 0, income: 40,  label: 'Hall (legacy)' },
-  skyscraper: { type: 'skyscraper', category: 'legacy', tier: 0, minRank: 'bronze', cost: 5_000_000, materialCost: 0, income: 500, label: 'Skyscraper (legacy)' },
-  mall:       { type: 'mall',       category: 'legacy', tier: 0, minRank: 'bronze', cost: 3_000_000, materialCost: 0, income: 300, label: 'Mall (legacy)' },
-  stadium:    { type: 'stadium',    category: 'legacy', tier: 0, minRank: 'bronze', cost: 4_000_000, materialCost: 0, income: 250, label: 'Stadium (legacy)' },
-  hospital:   { type: 'hospital',   category: 'legacy', tier: 0, minRank: 'bronze', cost: 1_500_000, materialCost: 0, income: 100, label: 'Hospital (legacy)' },
-  library:    { type: 'library',    category: 'legacy', tier: 0, minRank: 'bronze', cost: 800_000,   materialCost: 0, income: 60,  label: 'Library (legacy)' },
-  station:    { type: 'station',    category: 'legacy', tier: 0, minRank: 'bronze', cost: 600_000,   materialCost: 0, income: 50,  label: 'Station (legacy)' },
-  club:       { type: 'club',       category: 'legacy', tier: 0, minRank: 'bronze', cost: 1_000_000, materialCost: 0, income: 80,  label: 'Club (legacy)' },
+  office:    { type: 'office',    category: 'luxury-civic', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('lux', 1), label: 'Office' },
+  market:    { type: 'market',    category: 'luxury-civic', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('lux', 2), label: 'Market' },
+  bank:      { type: 'bank',      category: 'luxury-civic', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), label: 'Bank' },
+  town_hall: { type: 'town_hall', category: 'luxury-civic', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('lux', 4), label: 'Town Hall' },
+  gala_hall: { type: 'gala_hall', category: 'luxury-civic', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('lux', 5), label: 'Gala Hall' },
 };
 
-/** True if the spec represents an active-construction tiered building.
- *  Legacy types return false; players cannot pick them in build UI. */
+/** True if `type` is a player-constructable v1 building. All current
+ *  BuildingType values are tier-classified, so this is always true —
+ *  kept as a stable predicate for callers that still gate on it. */
 export function isTieredBuilding(type: BuildingType): boolean {
-  return BUILDINGS[type].category !== 'legacy';
+  return BUILDINGS[type] != null;
 }
 
 /** True if this building consumes 1 energy/tick to produce its resource.
@@ -343,26 +320,6 @@ export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
   energy: 1500,
   luxury: 2500,
 };
-
-// ── Legacy tick production table (compatibility shim) ────────────────────
-// The tier-based formula in GameRoom.ts replaces this in Phase 1; the
-// shim is kept only for the `autopilot/doWork` legacy bridge that still
-// runs for role=produce agents until the new per-parcel tick fully
-// replaces it. The new code path derives `(resource, rate)` from the
-// BuildingSpec directly (category + tier multiplier), not from this map.
-/** @deprecated derive from BUILDINGS[type].category + tier instead */
-export const TICK_PRODUCTION: Record<BuildingType, { resource: ResourceType; rate: number } | null> = (() => {
-  const result = {} as Record<BuildingType, { resource: ResourceType; rate: number } | null>;
-  for (const t of Object.keys(BUILDINGS) as BuildingType[]) {
-    const spec = BUILDINGS[t];
-    if (spec.category === 'food')      result[t] = { resource: 'food', rate: spec.amount ?? 1 };
-    else if (spec.category === 'materials') result[t] = { resource: 'materials', rate: spec.amount ?? 1 };
-    else if (spec.category === 'energy')    result[t] = { resource: 'energy', rate: spec.amount ?? 1 };
-    else if (spec.type === 'shop')          result[t] = { resource: 'luxury', rate: 0.5 };
-    else                                    result[t] = null;
-  }
-  return result;
-})();
 
 // FOOD_PER_AGENT_PER_TICK lives in pricing.ts (re-exported by index.ts).
 // ENERGY_PER_INCOME_BUILDING_PER_TICK is being retired in Phase 1 in favor

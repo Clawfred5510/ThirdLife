@@ -74,21 +74,6 @@ const ASSET_BY_TYPE: Record<string, string> = {
   bank:                  'bank.glb',
   town_hall:             'town-hall.glb',
   gala_hall:             'gala-hall.glb',
-  // Legacy types → closest-tier v1 visual equivalent. Existing parcels
-  // built under the old catalog (Phase D Meshy era) render with the
-  // matching synty asset rather than falling through to procedural.
-  // Mapping mirrors the voucher equivalence map in
-  // docs/voucher-viability-top10-2026-05-23.md.
-  shop:       'office.glb',     // legacy → T1 luxury-civic
-  hall:       'market.glb',     // legacy → T2 luxury-civic
-  club:       'bank.glb',       // legacy → T3 luxury-civic
-  hospital:   'bank.glb',       // legacy → T3 luxury-civic
-  library:    'market.glb',     // legacy → T2 luxury-civic
-  station:    'market.glb',     // legacy → T2 luxury-civic
-  skyscraper: 'town-hall.glb',  // legacy → T4 luxury-civic
-  mall:       'town-hall.glb',  // legacy → T4 luxury-civic
-  stadium:    'town-hall.glb',  // legacy → T4 luxury-civic
-  luxury_apt: 'penthouse.glb',  // legacy → T3 luxury-housing
 };
 
 interface PaintRecipe {

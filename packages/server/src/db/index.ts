@@ -173,9 +173,6 @@ interface DBBackend {
   };
   /** Reassign the workplace of an agent (owner-only enforcement at the API layer). */
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
-  /** Reputation tick: every owned shop consumes 1 luxury, owner gains
-   *  +1 reputation per consumed unit. Returns a per-owner summary. */
-  tickReputation(): Array<{ owner_id: string; consumed: number }>;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
   workProduce(
@@ -1171,32 +1168,6 @@ class SQLiteDatabase implements DBBackend {
     this.db.prepare('UPDATE agents SET workplace_parcel_id = ? WHERE id = ?').run(parcelId, agentId);
   }
 
-  tickReputation(): Array<{ owner_id: string; consumed: number }> {
-    // Aggregate shop count per owner, then deduct min(luxury, shopCount)
-    // from each owner's luxury and add the same amount to reputation.
-    const owners = this.db.prepare(`
-      SELECT owner_id, COUNT(*) AS shop_count FROM parcels
-      WHERE owner_id IS NOT NULL AND building_type = 'shop'
-      GROUP BY owner_id
-    `).all() as Array<{ owner_id: string; shop_count: number }>;
-    if (owners.length === 0) return [];
-
-    const summary: Array<{ owner_id: string; consumed: number }> = [];
-    const tx = this.db.transaction((rows: typeof owners) => {
-      for (const row of rows) {
-        const player = this.db.prepare('SELECT luxury, reputation FROM players WHERE id = ?').get(row.owner_id) as { luxury: number; reputation: number } | undefined;
-        if (!player) continue;
-        const consumed = Math.min(Math.floor(player.luxury), row.shop_count);
-        if (consumed <= 0) continue;
-        this.db.prepare('UPDATE players SET luxury = luxury - ?, reputation = reputation + ? WHERE id = ?')
-          .run(consumed, consumed, row.owner_id);
-        summary.push({ owner_id: row.owner_id, consumed });
-      }
-    });
-    tx(owners);
-    return summary;
-  }
-
   createAuthNonce(address: string, nonce: string, expiresAt: number): void {
     // Best-effort cleanup of expired nonces — keeps the table from growing
     // unboundedly under sustained challenge spam.
@@ -1709,26 +1680,6 @@ class MemoryDB implements DBBackend {
     }
   }
 
-  tickReputation(): Array<{ owner_id: string; consumed: number }> {
-    const shopCounts = new Map<string, number>();
-    for (const p of this.parcels.values()) {
-      if (!p.owner_id || (p as { building_type?: string }).building_type !== 'shop') continue;
-      shopCounts.set(p.owner_id, (shopCounts.get(p.owner_id) ?? 0) + 1);
-    }
-    const summary: Array<{ owner_id: string; consumed: number }> = [];
-    for (const [ownerId, shopCount] of shopCounts) {
-      const player = this.players.get(ownerId) as (PlayerRow & { luxury?: number }) | undefined;
-      if (!player) continue;
-      const luxury = player.luxury ?? 0;
-      const consumed = Math.min(Math.floor(luxury), shopCount);
-      if (consumed <= 0) continue;
-      player.luxury = luxury - consumed;
-      player.reputation += consumed;
-      summary.push({ owner_id: ownerId, consumed });
-    }
-    return summary;
-  }
-
   // Wallet auth — kept in memory; loses state on restart, fine for fallback.
   private nonces = new Map<string, number>(); // `${address}:${nonce}` -> expiresAt
   private sessions = new Map<string, { playerId: string; expiresAt: number }>();
@@ -1915,7 +1866,6 @@ export function getAgentLifetimeStats(agentId: string) {
   return backend.getAgentLifetimeStats(agentId);
 }
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
-export function tickReputation() { return backend.tickReputation(); }
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
 export function workProduce(

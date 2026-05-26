@@ -332,7 +332,7 @@ export const ParcelPanel: React.FC = () => {
               marginBottom: 10,
             }}
           >
-            {BUILDING_LIST.filter((b) => b.category !== 'legacy').map((b) => {
+            {BUILDING_LIST.map((b) => {
               const total = b.cost + CLAIM_COST;
               const enoughCredits = credits >= total;
               const enoughMaterials = b.materialCost === 0 || resources.materials >= b.materialCost;

@@ -14,10 +14,8 @@ import { buildFarm } from './buildings/farm';
 import { buildHouse } from './buildings/house';
 import { buildBank } from './buildings/bank';
 import { buildFactory } from './buildings/factory';
-import { buildHall } from './buildings/hall';
 import { buildMine } from './buildings/mine';
 import { buildMarket } from './buildings/market';
-import { buildShop } from './buildings/shop';
 import { buildOffice } from './buildings/office';
 import { buildApartment } from './buildings/apartment';
 // GLB asset path: any building type listed in ASSET_BY_TYPE inside
@@ -122,7 +120,6 @@ export function buildProceduralBuilding(
   position: Vector3,
   spec: BuildingSpec,
   buildingType: string = 'apartment',
-  businessName?: string,
 ): BuildingOutput {
   // GLB-first: any building type with a baked Meshy export wins.
   // Falls through to the per-type procedural builders for the rest.
@@ -136,10 +133,8 @@ export function buildProceduralBuilding(
   if (buildingType === 'house')     return buildHouse(scene, id, position, spec);
   if (buildingType === 'bank')      return buildBank(scene, id, position, spec);
   if (buildingType === 'factory')   return buildFactory(scene, id, position, spec);
-  if (buildingType === 'hall')      return buildHall(scene, id, position, spec);
   if (buildingType === 'mine')      return buildMine(scene, id, position, spec);
   if (buildingType === 'market')    return buildMarket(scene, id, position, spec);
-  if (buildingType === 'shop')      return buildShop(scene, id, position, spec, businessName);
   if (buildingType === 'office')    return buildOffice(scene, id, position, spec);
   if (buildingType === 'apartment') return buildApartment(scene, id, position, spec);
 
@@ -237,9 +232,9 @@ export function buildProceduralBuilding(
   // Ceiling also fades (it's part of what blocks the top-down view).
   roofMeshes.push(ceiling);
 
-  // ── Per-face windows (skip front for shop/farm/market — their facades
-  // ── are dominated by display windows / barn door / open canopy)
-  if (!['shop', 'farm', 'market'].includes(buildingType)) {
+  // ── Per-face windows (skip front for farm/market — their facades are
+  // ── dominated by the barn door / open canopy).
+  if (!['farm', 'market'].includes(buildingType)) {
     addStandardWindows(scene, id, root, spec, halfW, halfD, wallH, doorW, sideWidth, glassMat, winFrameMat);
   }
 
@@ -287,12 +282,10 @@ function buildExteriorForType(
   switch (type) {
     case 'apartment': addApartment(scene, id, root, spec, casters, ctx); return;
     case 'house':     addHouse(scene, id, root, spec, casters, ctx); return;
-    case 'shop':      addShop(scene, id, root, spec, casters, ctx); return;
     case 'farm':      addFarm(scene, id, root, spec, casters, ctx); return;
     case 'market':    addMarket(scene, id, root, spec, casters, ctx); return;
     case 'office':    addOffice(scene, id, root, spec, casters, ctx); return;
     case 'mine':      addMine(scene, id, root, spec, casters, ctx); return;
-    case 'hall':      addHall(scene, id, root, spec, casters, ctx); return;
     case 'factory':   addFactory(scene, id, root, spec, casters, ctx); return;
     case 'bank':      addBank(scene, id, root, spec, casters, ctx); return;
     default: {
@@ -459,47 +452,6 @@ function addHouse(scene: Scene, id: string | number, root: TransformNode, spec: 
   addChimney(scene, id, root, -halfW * 0.5, halfD * 0.5, wallH + spec.roofPeak * 0.4, 1.6, trimMat, casters);
 }
 
-function addShop(scene: Scene, id: string | number, root: TransformNode, spec: BuildingSpec, casters: AbstractMesh[], ctx: ExtCtx) {
-  const { halfW, halfD, wallH, w, d, roofMat, trimMat, glassMat, winFrameMat } = ctx;
-  // Flat roof
-  addFlatRoof(scene, id, root, w, d, wallH, roofMat, casters, 0.2);
-
-  // Blade sign — vertical box projecting above the roofline
-  const sign = MeshBuilder.CreateBox(`bladeSign_${id}`, { width: w * 0.9, height: 2.5, depth: 0.4 }, scene);
-  sign.parent = root;
-  sign.position.set(0, wallH + 1.65, -halfD - 0.3);
-  sign.material = sharedMat(scene, 'sign', spec.roofColor, 0.6, { emissive: hexToColor(spec.roofColor).scale(0.18) });
-  sign.receiveShadows = true;
-  casters.push(sign);
-
-  // Broad front awning, striped (3 box stripes alternating wall/trim color)
-  const awningDepth = 2.4;
-  for (let i = 0; i < 3; i++) {
-    const stripe = MeshBuilder.CreateBox(`awningStripe_${id}_${i}`, { width: w * 0.9, height: 0.18, depth: awningDepth / 3 }, scene);
-    stripe.parent = root;
-    stripe.position.set(0, spec.doorHeight + 0.6, -halfD - awningDepth / 2 + i * (awningDepth / 3) + (awningDepth / 6));
-    stripe.material = i % 2 === 0 ? sharedMat(scene, 'awning-a', '#F5C842', 0.5) : sharedMat(scene, 'awning-b', spec.roofColor, 0.5);
-    stripe.receiveShadows = true;
-    casters.push(stripe);
-  }
-
-  // Big front display windows (one per side of door)
-  const frontWinH = wallH * 0.55;
-  const frontWinY = spec.doorHeight * 0.55;
-  for (const xSign of [-1, 1]) {
-    const xCenter = xSign * (spec.doorWidth / 2 + (w - spec.doorWidth) / 4);
-    const winW = (w - spec.doorWidth - spec.wallThickness * 2) / 2 - 0.8;
-    const frame = MeshBuilder.CreateBox(`shopWinFr_${id}_${xSign}`, { width: winW + 0.3, height: frontWinH + 0.3, depth: spec.wallThickness * 1.05 }, scene);
-    frame.parent = root;
-    frame.position.set(xCenter, frontWinY, -halfD + spec.wallThickness / 2);
-    frame.material = winFrameMat;
-    casters.push(frame);
-    const glass = MeshBuilder.CreateBox(`shopWin_${id}_${xSign}`, { width: winW, height: frontWinH, depth: spec.wallThickness * 0.5 }, scene);
-    glass.parent = frame;
-    glass.material = glassMat;
-  }
-}
-
 function addFarm(scene: Scene, id: string | number, root: TransformNode, spec: BuildingSpec, casters: AbstractMesh[], ctx: ExtCtx) {
   const { halfW, halfD, wallH, w, d, roofMat, trimMat } = ctx;
   // Gable roof on the main barn body
@@ -647,55 +599,6 @@ function addMine(scene: Scene, id: string | number, root: TransformNode, spec: B
   pipe.position.set(-halfW + 0.6, wallH / 2, -halfD - 0.15);
   pipe.material = sharedMat(scene, 'metal-rust', '#9A7858', 0.7);
   casters.push(pipe);
-}
-
-function addHall(scene: Scene, id: string | number, root: TransformNode, spec: BuildingSpec, casters: AbstractMesh[], ctx: ExtCtx) {
-  const { halfW, halfD, wallH, w, d, roofMat, trimMat } = ctx;
-  // Pyramid roof
-  addPyramidRoof(scene, id, root, w, d, wallH, spec.roofPeak, roofMat, casters);
-
-  // Four classical columns across the front, projecting forward
-  const colDiam = 1.2;
-  const colH = wallH;
-  const projection = 1.0;
-  for (let i = 0; i < 4; i++) {
-    const cx = -w * 0.4 + (w * 0.8 / 3) * i;
-    const col = MeshBuilder.CreateCylinder(`hallCol_${id}_${i}`, { diameter: colDiam, height: colH, tessellation: 18 }, scene);
-    col.parent = root;
-    col.position.set(cx, colH / 2, -halfD - projection);
-    col.material = sharedMat(scene, 'pillar-white', '#EDE9DE', 0.7);
-    col.receiveShadows = true;
-    casters.push(col);
-    // Capital
-    const cap = MeshBuilder.CreateCylinder(`hallCap_${id}_${i}`, { diameter: colDiam * 1.4, height: 0.35, tessellation: 18 }, scene);
-    cap.parent = root;
-    cap.position.set(cx, colH - 0.18, -halfD - projection);
-    cap.material = sharedMat(scene, 'pillar-white', '#EDE9DE', 0.7);
-    casters.push(cap);
-  }
-  // Triangular pediment above columns (3-sided cylinder for the prism)
-  const ped = MeshBuilder.CreateCylinder(`pediment_${id}`, { diameterTop: 0, diameterBottom: 2.0, height: w * 0.85, tessellation: 3 }, scene);
-  ped.parent = root;
-  ped.rotation.z = Math.PI / 2;
-  ped.rotation.x = Math.PI / 6;
-  ped.position.set(0, wallH + 0.6, -halfD - projection - 0.05);
-  ped.scaling.set(1, 0.5, 1);
-  ped.material = sharedMat(scene, 'pillar-white', '#EDE9DE', 0.7);
-  casters.push(ped);
-  // Wide entry steps
-  for (let s = 0; s < 3; s++) {
-    const step = MeshBuilder.CreateBox(`hallStep_${id}_${s}`, { width: w + 1, height: 0.3, depth: 1.4 - s * 0.3 }, scene);
-    step.parent = root;
-    step.position.set(0, 0.15 + s * 0.3, -halfD - projection - 1.5 + s * 0.3);
-    step.material = sharedMat(scene, 'concrete', '#B0AA8E', 0.85);
-    casters.push(step);
-  }
-  // Flagpole on peak
-  const pole = MeshBuilder.CreateCylinder(`flagpole_${id}`, { diameter: 0.2, height: 4, tessellation: 8 }, scene);
-  pole.parent = root;
-  pole.position.set(0, wallH + spec.roofPeak + 2, 0);
-  pole.material = sharedMat(scene, 'metal-cool', '#7A8090', 0.4, { metallic: 0.6 });
-  casters.push(pole);
 }
 
 function addFactory(scene: Scene, id: string | number, root: TransformNode, spec: BuildingSpec, casters: AbstractMesh[], ctx: ExtCtx) {
