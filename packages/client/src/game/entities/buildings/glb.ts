@@ -41,9 +41,8 @@ import { BuildingSpec, BuildingOutput } from './shared';
 // packages/client/public/assets/models/buildings/ and adding a row
 // here keyed by the BuildingType (matches packages/shared constants).
 //
-// Synty kitbash drop 2026-05-26: 24 of 25 v1 tier types. `apartment`
-// (T1 luxury-housing) intentionally unmapped — pending a better asset
-// from the owner; renders procedurally until then.
+// Synty kitbash drop 2026-05-26: 25 v1 tier types covered. `apartment`
+// asset added 2026-05-26 to complete the T1 luxury-housing slot.
 const ASSET_BY_TYPE: Record<string, string> = {
   // Food chain
   farm:                  'farm.glb',
@@ -63,7 +62,8 @@ const ASSET_BY_TYPE: Record<string, string> = {
   solar_farm:            'solar-farm.glb',
   nuclear_plant:         'nuclear-plant.glb',
   cold_fusion_facility:  'cold-fusion-facility.glb',
-  // Luxury-housing chain (apartment intentionally not mapped)
+  // Luxury-housing chain
+  apartment:             'apartment.glb',
   house:                 'house.glb',
   penthouse:             'penthouse.glb',
   villa:                 'villa.glb',
