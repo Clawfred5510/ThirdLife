@@ -5,6 +5,7 @@ import {
   playerExists,
   addEvent,
   getAgentById,
+  transferWithFee,
 } from '../db';
 import { TRANSFER_FEE_BPS, BPS_DENOMINATOR } from '@gamestu/shared';
 import { IEconomy, WORLD_TREASURY_ID } from './IEconomy';
@@ -59,27 +60,12 @@ export class InMemoryEconomy implements IEconomy {
     reason: string,
   ): Promise<{ ok: boolean; reason?: string; fee?: number }> {
     this.ensureTreasury();
-    if (amount <= 0 || !Number.isFinite(amount)) {
-      return { ok: false, reason: 'invalid_amount' };
-    }
-    if (fromId === toId) return { ok: false, reason: 'self_transfer' };
-    if (!playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+    const fee = amount > 0 && Number.isFinite(amount)
+      ? Math.floor((amount * TRANSFER_FEE_BPS) / BPS_DENOMINATOR)
+      : 0;
+    const result = transferWithFee(fromId, toId, amount, fee, WORLD_TREASURY_ID);
+    if (!result.ok) return { ok: false, reason: result.reason };
 
-    const fee = Math.floor((amount * TRANSFER_FEE_BPS) / BPS_DENOMINATOR);
-    const total = amount + fee;
-    const fromBal = getPlayerCredits(fromId);
-    if (fromBal < total) return { ok: false, reason: 'insufficient_balance' };
-
-    // Settle: deduct (amount + fee) from sender, credit recipient with
-    // amount, credit treasury with fee. All three writes in sequence;
-    // SQLite WAL means partial-failure recovery is on the next read.
-    updatePlayerCredits(fromId, fromBal - total);
-    const toBal = getPlayerCredits(toId);
-    updatePlayerCredits(toId, toBal + amount);
-    if (fee > 0) {
-      const treasury = getPlayerCredits(WORLD_TREASURY_ID);
-      updatePlayerCredits(WORLD_TREASURY_ID, treasury + fee);
-    }
     addEvent('transfer', fromId, { to: toId, amount, fee, reason });
     notifyWalletChanged(fromId);
     notifyWalletChanged(toId);

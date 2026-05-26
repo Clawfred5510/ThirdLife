@@ -322,22 +322,15 @@ export const BASE_MARKET_PRICES: Record<ResourceType, number> = {
 };
 
 // FOOD_PER_AGENT_PER_TICK lives in pricing.ts (re-exported by index.ts).
-// ENERGY_PER_INCOME_BUILDING_PER_TICK is being retired in Phase 1 in favor
-// of the binary per-producing-building energy check.
-/** @deprecated retiring in Phase 1; use ENERGY_PER_PRODUCING_BUILDING_PER_TICK */
-export const ENERGY_PER_INCOME_BUILDING_PER_TICK = 1;
 
 // ── Legacy agent personality/strategy enums ──────────────────────────────
-// These are being replaced by the AgentRole enum (work/produce/craft) in
-// pricing.ts. Kept here so the autopilot still compiles during the Phase 0
-// refactor; will be deleted once the autopilot is on the role model.
-/** @deprecated use AgentRole from pricing.ts */
+// AgentRole (work/produce/craft) in pricing.ts is the canonical model. The
+// personality/strategy types below exist only to keep legacy REST callers
+// alive — /api/v1/agents/register still accepts and stores these fields
+// for back-compat, but no code branches on them anymore.
 export type AgentPersonality = 'trader' | 'builder' | 'ambitious' | 'social' | 'accumulator' | 'worker';
-/** @deprecated removed in Phase 0 — strategies no longer affect behaviour */
 export type AgentStrategy = 'aggressive' | 'balanced' | 'conservative';
-/** @deprecated use AGENT_ROLES from pricing.ts */
 export const AGENT_PERSONALITIES: AgentPersonality[] = ['trader', 'builder', 'ambitious', 'social', 'accumulator', 'worker'];
-/** @deprecated removed in Phase 0 */
 export const AGENT_STRATEGIES: AgentStrategy[] = ['aggressive', 'balanced', 'conservative'];
 
 // ── Jobs (player-facing) ────────────────────────────────────────────────
@@ -439,20 +432,6 @@ export function applyJobLook(owner: Appearance, job: JobId): Appearance {
     if (spec.accessory_color) next.accessory_color = spec.accessory_color;
   }
   return next;
-}
-
-/** Infer a Job from a legacy (pre-jobs) personality. Used for migrating
- *  agents that pre-date the JOBS table. */
-export function inferJobFromPersonality(p: AgentPersonality): JobId {
-  switch (p) {
-    case 'trader':      return 'trader';
-    case 'builder':     return 'builder';
-    case 'accumulator': return 'banker';
-    case 'social':      return 'greeter';
-    case 'ambitious':   return 'trader';
-    case 'worker':
-    default:            return 'farmer';
-  }
 }
 
 /** Re-exported from pricing.ts (TICK_LENGTH_MS = 10 minutes locked).

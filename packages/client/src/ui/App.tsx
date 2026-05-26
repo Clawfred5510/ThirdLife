@@ -16,6 +16,7 @@ import { features } from '@gamestu/shared';
 import { FastTravel } from './components/FastTravel';
 import { AgentInfoPanel } from './components/AgentInfoPanel';
 import { RankUpModal } from './components/RankUpModal';
+import { OnboardingModal } from './components/OnboardingModal';
 
 /** Lazy-loaded components gated by feature flags. */
 const JobBoard = React.lazy(() =>
@@ -43,6 +44,7 @@ export const App: React.FC = () => {
       <CharacterCreator />
       <AgentInfoPanel />
       <RankUpModal />
+      <OnboardingModal />
       {features.JOBS && (
         <React.Suspense fallback={null}>
           <JobBoard />

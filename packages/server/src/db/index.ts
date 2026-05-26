@@ -175,6 +175,12 @@ interface DBBackend {
   setAgentWorkplace(agentId: string, parcelId: number | null): void;
   playerExists(id: string): boolean;
   transferCredits(fromId: string, toId: string, amount: number): { ok: boolean; reason?: string };
+  /** Three-way atomic transfer: debit sender (amount+fee), credit recipient
+   *  (amount), credit treasury (fee). All three writes in a single
+   *  transaction so a mid-call crash can't lose funds. */
+  transferWithFee(
+    fromId: string, toId: string, amount: number, fee: number, treasuryId: string,
+  ): { ok: boolean; reason?: string };
   workProduce(
     id: string,
     creditsEarned: number,
@@ -374,8 +380,8 @@ class SQLiteDatabase implements DBBackend {
 
     // Jobs (2026-05-16): each agent has a player-facing job id, an optional
     // workplace parcel (can belong to anyone), and a cloned appearance with
-    // a job-specific hat. Legacy agents have NULL job — see
-    // inferJobFromPersonality in shared/.
+    // a job-specific hat. Legacy agents have NULL job; the create-agent flow
+    // now requires a job up-front so new rows are always populated.
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN job TEXT`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN workplace_parcel_id INTEGER`); } catch (_) { /* exists */ }
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN appearance TEXT`); } catch (_) { /* exists */ }
@@ -516,9 +522,10 @@ class SQLiteDatabase implements DBBackend {
       );
     `);
 
-    // Phase E.2 — X (Twitter) verification scaffolding on agents.
-    try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_verified INTEGER DEFAULT 0`); } catch (_) { /* exists */ }
-    try { this.db.exec(`ALTER TABLE agents ADD COLUMN x_handle TEXT`); } catch (_) { /* exists */ }
+    // Twitter verification was retired in Phase 0 (spec §12). The
+    // x_verified / x_handle columns may still exist on long-running prod
+    // DBs — nothing reads or writes them; they will be removed in a
+    // future DROP-column migration coordinated with a release window.
 
     // One-shot migration (2026-05-16): legacy `wallet_bots` table is being
     // collapsed into `agents`. Each row becomes an agent with default
@@ -719,6 +726,29 @@ class SQLiteDatabase implements DBBackend {
       const toCredits = this.getPlayerCredits(toId);
       this.stmtUpdateCredits.run(fromCredits - amount, fromId);
       this.stmtUpdateCredits.run(toCredits + amount, toId);
+      return { ok: true };
+    });
+    return txn();
+  }
+
+  transferWithFee(
+    fromId: string, toId: string, amount: number, fee: number, treasuryId: string,
+  ): { ok: boolean; reason?: string } {
+    const txn = this.db.transaction(() => {
+      if (amount <= 0 || !Number.isFinite(amount)) return { ok: false, reason: 'invalid_amount' };
+      if (fee < 0 || !Number.isFinite(fee)) return { ok: false, reason: 'invalid_fee' };
+      if (fromId === toId) return { ok: false, reason: 'self_transfer' };
+      if (!this.playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+      const total = amount + fee;
+      const fromCredits = this.getPlayerCredits(fromId);
+      if (fromCredits < total) return { ok: false, reason: 'insufficient_balance' };
+      this.stmtUpdateCredits.run(fromCredits - total, fromId);
+      const toCredits = this.getPlayerCredits(toId);
+      this.stmtUpdateCredits.run(toCredits + amount, toId);
+      if (fee > 0) {
+        const treasuryCredits = this.getPlayerCredits(treasuryId);
+        this.stmtUpdateCredits.run(treasuryCredits + fee, treasuryId);
+      }
       return { ok: true };
     });
     return txn();
@@ -1309,6 +1339,24 @@ class MemoryDB implements DBBackend {
     return { ok: true };
   }
 
+  transferWithFee(
+    fromId: string, toId: string, amount: number, fee: number, treasuryId: string,
+  ): { ok: boolean; reason?: string } {
+    if (amount <= 0 || !Number.isFinite(amount)) return { ok: false, reason: 'invalid_amount' };
+    if (fee < 0 || !Number.isFinite(fee)) return { ok: false, reason: 'invalid_fee' };
+    if (fromId === toId) return { ok: false, reason: 'self_transfer' };
+    if (!this.playerExists(toId)) return { ok: false, reason: 'target_not_found' };
+    const total = amount + fee;
+    const fromCredits = this.getPlayerCredits(fromId);
+    if (fromCredits < total) return { ok: false, reason: 'insufficient_balance' };
+    this.updatePlayerCredits(fromId, fromCredits - total);
+    this.updatePlayerCredits(toId, this.getPlayerCredits(toId) + amount);
+    if (fee > 0) {
+      this.updatePlayerCredits(treasuryId, this.getPlayerCredits(treasuryId) + fee);
+    }
+    return { ok: true };
+  }
+
   workProduce(
     id: string,
     creditsEarned: number,
@@ -1868,6 +1916,9 @@ export function getAgentLifetimeStats(agentId: string) {
 export function setAgentWorkplace(agentId: string, parcelId: number | null) { backend.setAgentWorkplace(agentId, parcelId); }
 export function playerExists(id: string) { return backend.playerExists(id); }
 export function transferCredits(fromId: string, toId: string, amount: number) { return backend.transferCredits(fromId, toId, amount); }
+export function transferWithFee(fromId: string, toId: string, amount: number, fee: number, treasuryId: string) {
+  return backend.transferWithFee(fromId, toId, amount, fee, treasuryId);
+}
 export function workProduce(
   id: string,
   creditsEarned: number,

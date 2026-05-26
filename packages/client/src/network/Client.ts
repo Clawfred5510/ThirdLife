@@ -384,10 +384,6 @@ export function sendWork(): void {
   room?.send(MessageType.WORK, {});
 }
 
-export function sendExplore(): void {
-  room?.send(MessageType.EXPLORE, {});
-}
-
 export function requestEvents(): void {
   room?.send(MessageType.EVENTS, {});
 }

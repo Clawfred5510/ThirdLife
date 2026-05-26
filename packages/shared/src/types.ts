@@ -110,7 +110,6 @@ export enum MessageType {
   // TRADE / TRADE_RESULT / MARKET_PRICES removed 2026-05-16 — all market
   // operations now go through the REST order book (/api/v1/market/*).
   RESOURCE_UPDATE = 'resource_update',
-  EXPLORE = 'explore',
   EVENTS = 'events',
   EVENT = 'event',
   LEADERBOARD = 'leaderboard',

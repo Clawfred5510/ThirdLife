@@ -544,11 +544,6 @@ export class GameRoom extends Room<GameState> {
     //  POST /api/v1/market/order. Humans use their wallet session token,
     //  agents use their tl_sk_ API key; same endpoint, one ledger.)
 
-    // EXPLORE action removed in Phase 0 (spec §12 deprecation):
-    // the paid "teleport to a random parcel" mechanic served no design
-    // purpose in the new tier+rank loop. Players move with WASD; parcel
-    // discovery happens via the World Map UI.
-
     // ---- BURN_LUXURY: spec §6 — commit luxury items for rank points ----
     this.onMessage(MessageType.BURN_LUXURY, (client: Client, data: { item_kind: string; quantity: number }) => {
       const player = this.players.get(client.sessionId);

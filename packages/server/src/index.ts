@@ -13,6 +13,17 @@ import { getAllParcels, getAllPlayers } from './db';
 
 initFeatures(config.features);
 
+// Process-wide error capture. Without these, an unhandled rejection in any
+// async tick handler crashes the worker with a vague "Promise rejection"
+// stack and no per-incident tag — making post-mortem in Railway logs hard.
+// These keep the process alive but ensure the failure is loud + greppable.
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err.stack ?? err.message);
+});
+
 console.log(
   `[features] JOBS=${features.JOBS} NPCS=${features.NPCS} TUTORIAL=${features.TUTORIAL} DAY_NIGHT=${features.DAY_NIGHT}`
 );
