@@ -99,7 +99,7 @@ export type BuildingType =
   // ── Energy chain ─────────────────────────────────────────────────
   | 'factory' | 'wind_farm' | 'solar_farm' | 'nuclear_plant' | 'cold_fusion_facility'
   // ── Luxury Housing ───────────────────────────────────────────────
-  | 'apartment' | 'house' | 'penthouse' | 'villa' | 'mansion'
+  | 'apartment' | 'house' | 'duplex' | 'villa' | 'mansion'
   // ── Luxury Civic ─────────────────────────────────────────────────
   | 'office' | 'market' | 'bank' | 'town_hall' | 'gala_hall';
 
@@ -184,7 +184,7 @@ export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
   // ── Luxury Housing ───────────────────────────────────────────────
   apartment: { type: 'apartment', category: 'luxury-housing', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('lux', 1), label: 'Apartment' },
   house:     { type: 'house',     category: 'luxury-housing', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('lux', 2), label: 'House' },
-  penthouse: { type: 'penthouse', category: 'luxury-housing', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), label: 'Penthouse' },
+  duplex:    { type: 'duplex',    category: 'luxury-housing', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('lux', 3), label: 'Duplex' },
   villa:     { type: 'villa',     category: 'luxury-housing', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('lux', 4), label: 'Villa' },
   mansion:   { type: 'mansion',   category: 'luxury-housing', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('lux', 5), label: 'Mansion' },
 

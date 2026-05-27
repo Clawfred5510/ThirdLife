@@ -35,7 +35,7 @@ const JOB_LABELS: Partial<Record<BuildingType, string>> = {
   cold_fusion_facility: 'Fusion Scientist',
   apartment: 'Landlord',
   house: 'Landlord',
-  penthouse: 'Landlord',
+  duplex: 'Landlord',
   villa: 'Landlord',
   mansion: 'Landlord',
   office: 'Executive',

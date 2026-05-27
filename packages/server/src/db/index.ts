@@ -677,7 +677,7 @@ class SQLiteDatabase implements DBBackend {
            WHEN 'skyscraper' THEN 'town_hall'
            WHEN 'mall'       THEN 'town_hall'
            WHEN 'stadium'    THEN 'town_hall'
-           WHEN 'luxury_apt' THEN 'penthouse'
+           WHEN 'luxury_apt' THEN 'duplex'
          END
          WHERE building_type IN (
            'shop', 'hall', 'club', 'hospital', 'library', 'station',
@@ -689,6 +689,32 @@ class SQLiteDatabase implements DBBackend {
       }
     } catch (e) {
       console.warn('[db] legacy parcel migration failed:', (e as Error).message);
+    }
+
+    // One-shot rename (2026-05-27): T3 luxury-housing was renamed from
+    // `penthouse` to `duplex` per owner direction. Covers two data
+    // surfaces: any existing parcel still holding the old slug, and the
+    // wipe-and-voucherize-issued BUILDING vouchers whose payload carried
+    // `{building_type: "penthouse"}`. Both updates are no-ops on a fresh
+    // DB or on re-runs (no rows match after the first pass).
+    try {
+      const parcelRenames = this.db.prepare(
+        `UPDATE parcels SET building_type = 'duplex' WHERE building_type = 'penthouse'`,
+      ).run();
+      const voucherRenames = this.db.prepare(
+        `UPDATE vouchers
+           SET payload = json_set(payload, '$.building_type', 'duplex')
+         WHERE kind = 'building'
+           AND json_extract(payload, '$.building_type') = 'penthouse'`,
+      ).run();
+      if (parcelRenames.changes > 0 || voucherRenames.changes > 0) {
+        console.log(
+          `[db] penthouse→duplex rename: ${parcelRenames.changes} parcel(s), ` +
+          `${voucherRenames.changes} voucher payload(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn('[db] penthouse→duplex rename failed:', (e as Error).message);
     }
   }
 
@@ -2380,7 +2406,8 @@ function v1EquivalentBuildingType(t: string): string {
     case 'skyscraper': return 'town_hall';
     case 'mall':       return 'town_hall';
     case 'stadium':    return 'town_hall';
-    case 'luxury_apt': return 'penthouse';
+    case 'luxury_apt': return 'duplex';
+    case 'penthouse':  return 'duplex';  // pre-rename voucher payload safety
     default:           return t;
   }
 }

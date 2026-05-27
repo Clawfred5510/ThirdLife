@@ -65,7 +65,7 @@ const ASSET_BY_TYPE: Record<string, string> = {
   // Luxury-housing chain
   apartment:             'apartment.glb',
   house:                 'house.glb',
-  penthouse:             'penthouse.glb',
+  duplex:                'duplex.glb',
   villa:                 'villa.glb',
   mansion:               'mansion.glb',
   // Luxury-civic chain
