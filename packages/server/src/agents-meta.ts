@@ -19,15 +19,30 @@ export function computeLevel(netWorth: number): number {
  */
 const JOB_LABELS: Partial<Record<BuildingType, string>> = {
   farm: 'Farmer',
+  ranch: 'Rancher',
+  hydroponic_tower: 'Hydroponic Engineer',
+  vertical_farm_complex: 'Vertical-Farm Operator',
+  synthetic_protein_lab: 'Protein Scientist',
   mine: 'Miner',
+  iron_works: 'Forgeman',
+  refinery: 'Refiner',
+  composite_plant: 'Composite Engineer',
+  chip_manufacturing: 'Chip Fabricator',
   factory: 'Industrialist',
-  shop: 'Shopkeeper',
+  wind_farm: 'Wind Technician',
+  solar_farm: 'Solar Technician',
+  nuclear_plant: 'Nuclear Engineer',
+  cold_fusion_facility: 'Fusion Scientist',
   apartment: 'Landlord',
   house: 'Landlord',
-  market: 'Merchant',
+  penthouse: 'Landlord',
+  villa: 'Landlord',
+  mansion: 'Landlord',
   office: 'Executive',
-  hall: 'Civic Leader',
+  market: 'Merchant',
   bank: 'Banker',
+  town_hall: 'Civic Leader',
+  gala_hall: 'Civic Leader',
 };
 
 export function computeJob(parcels: ParcelRow[]): string {
