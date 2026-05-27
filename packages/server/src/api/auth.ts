@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { verifyMessage, isAddress } from 'viem';
+import { verifyMessage, isAddress, getAddress } from 'viem';
 import * as crypto from 'crypto';
 import {
   createAuthNonce,
@@ -31,10 +31,16 @@ function buildSiweMessage(address: string, nonce: string, domain: string, uri: s
 
 router.post('/challenge', (req: Request, res: Response) => {
   const { address } = req.body ?? {};
-  if (typeof address !== 'string' || !isAddress(address)) {
+  if (typeof address !== 'string' || !isAddress(address, { strict: false })) {
     return res.status(400).json({ error: 'Invalid address' });
   }
-  const lc = address.toLowerCase();
+  // EIP-4361 requires the address embedded in the SIWE message to be EIP-55
+  // checksummed. Recent MetaMask versions reject the sign with "address does
+  // not match the provided address for verification" when the message has a
+  // lowercase address. getAddress() throws on invalid checksum; isAddress
+  // above ran with strict:false so we accept any-case input then normalize.
+  const checksummed = getAddress(address);
+  const lc = checksummed.toLowerCase();
   const nonce = crypto.randomBytes(16).toString('hex');
   const expiresAt = Date.now() + NONCE_TTL_MS;
   createAuthNonce(lc, nonce, expiresAt);
@@ -45,8 +51,11 @@ router.post('/challenge', (req: Request, res: Response) => {
   const domain = url?.host ?? 'thirdlife.vercel.app';
   const uri = url?.origin ?? 'https://thirdlife.vercel.app';
 
-  const message = buildSiweMessage(address, nonce, domain, uri);
-  return res.json({ message, nonce, expiresAt });
+  const message = buildSiweMessage(checksummed, nonce, domain, uri);
+  // Return the checksummed address so the client uses the same case for
+  // personal_sign's `from` param — MetaMask compares the two case-sensitively
+  // when the message is in EIP-4361 format.
+  return res.json({ message, address: checksummed, nonce, expiresAt });
 });
 
 router.post('/verify', async (req: Request, res: Response) => {
@@ -54,15 +63,16 @@ router.post('/verify', async (req: Request, res: Response) => {
   if (typeof address !== 'string' || typeof message !== 'string' || typeof signature !== 'string') {
     return res.status(400).json({ error: 'Missing fields' });
   }
-  if (!isAddress(address)) {
+  if (!isAddress(address, { strict: false })) {
     return res.status(400).json({ error: 'Invalid address' });
   }
-  const lc = address.toLowerCase();
+  const checksummed = getAddress(address);
+  const lc = checksummed.toLowerCase();
 
   const m = message.match(/Nonce: ([a-f0-9]+)/);
   if (!m) return res.status(400).json({ error: 'Malformed message: no nonce' });
   const nonce = m[1];
-  const messageContainsAddress = message.includes(address) || message.includes(lc);
+  const messageContainsAddress = message.includes(checksummed) || message.includes(lc);
   if (!messageContainsAddress) {
     return res.status(400).json({ error: 'Message does not bind to address' });
   }
@@ -74,7 +84,7 @@ router.post('/verify', async (req: Request, res: Response) => {
   let valid = false;
   try {
     valid = await verifyMessage({
-      address: address as `0x${string}`,
+      address: checksummed as `0x${string}`,
       message,
       signature: signature as `0x${string}`,
     });

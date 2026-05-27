@@ -75,19 +75,27 @@ export async function connectWallet(): Promise<ConnectResult> {
   if (!accounts || accounts.length === 0) {
     throw new Error('No accounts returned from wallet.');
   }
-  const address = accounts[0];
+  const rawAddress = accounts[0];
 
   const base = resolveAuthBaseUrl();
   const challengeRes = await fetch(`${base}/api/v1/auth/challenge`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ address: rawAddress }),
   });
   if (!challengeRes.ok) {
     const t = await challengeRes.text();
     throw new Error(`Challenge failed: ${challengeRes.status} ${t}`);
   }
-  const { message } = await challengeRes.json() as { message: string };
+  // Server returns the EIP-55 checksummed address — use it for personal_sign
+  // so MetaMask's EIP-4361 validation matches (address inside the SIWE
+  // message must be checksummed; the `from` param to personal_sign must
+  // match it case-sensitively in recent MetaMask versions).
+  const { message, address: checksummedAddress } = await challengeRes.json() as {
+    message: string;
+    address: string;
+  };
+  const address = checksummedAddress ?? rawAddress;
 
   const signature = await window.ethereum.request<string>({
     method: 'personal_sign',
