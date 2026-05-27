@@ -222,7 +222,16 @@ export function buildGlbBuilding(
 
   return {
     root,
-    exteriorCasters: [],   // shadow casting deferred — would need post-load registration
+    // Collision walls double as the metadata anchor meshes —
+    // MainScene.spawnBuildingsAndSetupParcels writes the parcel's
+    // owner_id / business_name / business_type onto every
+    // exteriorCasters[*].metadata, then ParcelPanel reads them back
+    // when the player clicks the parcel. If this is empty, clicks on
+    // a claimed-and-built parcel see undefined metadata, default to
+    // owner_id='', and the panel re-shows "Pick what to build". Walls
+    // are isPickable=false so they don't intercept the click — the
+    // ground tile still owns the OnPickTrigger.
+    exteriorCasters: collisionWalls,
     collisionWalls,
     roofMeshes: [],        // no interior to fade into
     centerXZ: [position.x, position.z],
