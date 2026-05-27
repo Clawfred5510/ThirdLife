@@ -501,20 +501,26 @@ export const ParcelPanel: React.FC = () => {
           </div>
           {/* Selected-building status line — explains every blocker so
               the player isn't left guessing why the Claim & Build button
-              is disabled. */}
+              is disabled. Voucher-aware: vouchers waive the
+              corresponding charges + the rank gate for buildings. */}
           {(() => {
             const b = BUILDINGS[pickedBuilding];
             if (!b) return null;
-            const total = b.cost + CLAIM_COST;
+            const hasBV = (voucherCounts.buildingByType[b.type] ?? 0) > 0;
+            const hasLV = voucherCounts.land > 0;
+            const effLand = hasLV ? 0 : CLAIM_COST;
+            const effCost = hasBV ? 0 : b.cost;
+            const effMat = hasBV ? 0 : b.materialCost;
+            const total = effLand + effCost;
             const blockers: string[] = [];
-            if (TIER_INDEX[rank] < TIER_INDEX[b.minRank]) {
+            if (!hasBV && TIER_INDEX[rank] < TIER_INDEX[b.minRank]) {
               blockers.push(`Requires ${TIER_LABEL[b.minRank]} rank (you are ${TIER_LABEL[rank]})`);
             }
             if (credits < total) {
               blockers.push(`Need ${(total - credits).toLocaleString()} more $${CURRENCY_NAME}`);
             }
-            if (b.materialCost > 0 && resources.materials < b.materialCost) {
-              blockers.push(`Need ${(b.materialCost - resources.materials).toLocaleString()} more materials (you have ${Math.floor(resources.materials).toLocaleString()})`);
+            if (effMat > 0 && resources.materials < effMat) {
+              blockers.push(`Need ${(effMat - resources.materials).toLocaleString()} more materials (you have ${Math.floor(resources.materials).toLocaleString()})`);
             }
             if (blockers.length === 0) return null;
             return (
@@ -529,33 +535,44 @@ export const ParcelPanel: React.FC = () => {
                 lineHeight: 1.45,
                 fontWeight: 600,
               }}>
-                {blockers.map((b, i) => <div key={i}>⚠️ {b}</div>)}
+                {blockers.map((bl, i) => <div key={i}>⚠️ {bl}</div>)}
               </div>
             );
           })()}
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 12,
-            flexWrap: 'wrap' as const,
-          }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>
-              Total: <strong style={{ color: COLORS.gold, fontSize: 16, fontWeight: 800 }}>
-                {(BUILDINGS[pickedBuilding].cost + CLAIM_COST).toLocaleString()} ${CURRENCY_NAME}
-              </strong>
-              <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 11, display: 'block' }}>
-                land {CLAIM_COST.toLocaleString()} + {BUILDINGS[pickedBuilding].label.toLowerCase()} {BUILDINGS[pickedBuilding].cost.toLocaleString()}
-              </span>
-            </span>
-            {(() => {
-              const b = BUILDINGS[pickedBuilding];
-              const total = b.cost + CLAIM_COST;
-              const canBuild =
-                credits >= total &&
-                (b.materialCost === 0 || resources.materials >= b.materialCost) &&
-                TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
-              return (
+          {(() => {
+            const b = BUILDINGS[pickedBuilding];
+            const hasBV = (voucherCounts.buildingByType[b.type] ?? 0) > 0;
+            const hasLV = voucherCounts.land > 0;
+            const effLand = hasLV ? 0 : CLAIM_COST;
+            const effCost = hasBV ? 0 : b.cost;
+            const effMat = hasBV ? 0 : b.materialCost;
+            const total = effLand + effCost;
+            const canBuild =
+              credits >= total &&
+              (effMat === 0 || resources.materials >= effMat) &&
+              (hasBV || TIER_INDEX[rank] >= TIER_INDEX[b.minRank]);
+            return (
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap' as const,
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>
+                  Total: <strong style={{ color: COLORS.gold, fontSize: 16, fontWeight: 800 }}>
+                    {total === 0
+                      ? <span style={{ color: '#2F7A3F' }}>🎫 FREE</span>
+                      : `${total.toLocaleString()} $${CURRENCY_NAME}`}
+                  </strong>
+                  <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 11, display: 'block' }}>
+                    land {hasLV ? '🎫 free' : CLAIM_COST.toLocaleString()}
+                    {' + '}
+                    {b.label.toLowerCase()} {hasBV ? '🎫 free' : b.cost.toLocaleString()}
+                    {effMat > 0 && ` + ${effMat.toLocaleString()} ⛏️`}
+                    {hasBV && b.materialCost > 0 && ` (materials waived 🎫)`}
+                  </span>
+                </span>
                 <button
                   style={{
                     ...buttonStyle,
@@ -567,9 +584,9 @@ export const ParcelPanel: React.FC = () => {
                 >
                   Claim &amp; Build
                 </button>
-              );
-            })()}
-          </div>
+              </div>
+            );
+          })()}
           <div style={{
             fontSize: 11,
             color: COLORS.textMuted,

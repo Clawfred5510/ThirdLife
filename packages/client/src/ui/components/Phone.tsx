@@ -1931,6 +1931,19 @@ const VouchersTab: React.FC = () => {
 
   const buildingTypes = Object.entries(buildings_by_type).sort((a, b) => b[1] - a[1]);
 
+  // Compute resource-claim breakdown from the active vouchers payload.
+  // Each active resource voucher carries {resource, amount}; sum across
+  // any duplicates per kind so the player sees a single line per resource.
+  const resourceTotals: Record<string, number> = { food: 0, materials: 0, energy: 0, luxury: 0 };
+  for (const v of data.active) {
+    if (v.kind !== 'resource') continue;
+    const p = v.payload as { resource?: string; amount?: number };
+    if (p.resource && typeof p.amount === 'number' && p.amount > 0) {
+      resourceTotals[p.resource] = (resourceTotals[p.resource] ?? 0) + p.amount;
+    }
+  }
+  const resourceLines = Object.entries(resourceTotals).filter(([, n]) => n > 0);
+
   return (
     <>
       <div style={S.invHeader}>
@@ -1959,11 +1972,21 @@ const VouchersTab: React.FC = () => {
         <VoucherSummaryRow icon="👤" label="Agent registrations (free)" count={counts.agent} />
         <VoucherSummaryRow
           icon="📦"
-          label="Resource stockpiles"
+          label="Resources to claim"
           count={counts.resource}
           actionLabel={counts.resource > 0 ? (claiming ? 'Claiming…' : 'Claim all') : undefined}
           onAction={counts.resource > 0 && !claiming ? claimResources : undefined}
-        />
+        >
+          {resourceLines.length > 0 && (
+            <div style={S.vchBreakdown}>
+              {resourceLines.map(([res, n]) => (
+                <span key={res} style={S.vchBreakdownTag}>
+                  {RESOURCE_ICON[res] ?? '📦'} {res} × {n.toLocaleString()}
+                </span>
+              ))}
+            </div>
+          )}
+        </VoucherSummaryRow>
       </div>
 
       {data.recently_redeemed.length > 0 && (
@@ -1992,6 +2015,13 @@ const KIND_ICON: Record<'land' | 'building' | 'agent' | 'resource', string> = {
   building: '🏛️',
   agent: '👤',
   resource: '📦',
+};
+
+const RESOURCE_ICON: Record<string, string> = {
+  food: '🌾',
+  materials: '⛏️',
+  energy: '⚡',
+  luxury: '💎',
 };
 
 const VoucherSummaryRow: React.FC<{
