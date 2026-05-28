@@ -100,6 +100,50 @@ export class GameRoom extends Room<GameState> {
    */
   private pidBySession = new Map<string, string>();
 
+  /**
+   * Sessions whose disconnect was triggered by a wallet-takeover from a
+   * newer session on the same persistentId. Their onLeave must SKIP the
+   * PLAYER_LEAVE broadcast — otherwise other clients see the wallet's
+   * avatar briefly removed before the 10Hz PLAYER_STATE re-adds it,
+   * appearing as a flicker on every wallet reconnect.
+   */
+  private supersededSessions = new Set<string>();
+
+  /**
+   * Per-session token buckets for incoming Colyseus messages. Keys are
+   * `sessionId:messageType`. Without this, a malicious client could
+   * flood CHAT / APPEARANCE / claim messages, each of which fans out to
+   * a broadcast or DB write — that's a trivial bandwidth and CPU DoS
+   * for the whole room. PLAYER_INPUT is deliberately NOT rate-limited:
+   * the server tick already caps how often inputs are consumed (20Hz),
+   * and the client legitimately bursts inputs at the tick boundary.
+   */
+  private rateLimitBuckets = new Map<string, { tokens: number; lastRefill: number }>();
+
+  /**
+   * Token-bucket rate check. Returns true if the request is allowed,
+   * false if it should be dropped. `capacity` is the burst size,
+   * `refillPerSec` is the steady-state rate.
+   */
+  private checkRate(client: Client, type: string, capacity: number, refillPerSec: number): boolean {
+    const key = `${client.sessionId}:${type}`;
+    const now = Date.now();
+    let b = this.rateLimitBuckets.get(key);
+    if (!b) {
+      b = { tokens: capacity, lastRefill: now };
+      this.rateLimitBuckets.set(key, b);
+    } else {
+      const elapsed = (now - b.lastRefill) / 1000;
+      if (elapsed > 0) {
+        b.tokens = Math.min(capacity, b.tokens + elapsed * refillPerSec);
+        b.lastRefill = now;
+      }
+    }
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
   /** Latest input per player, consumed each server tick. */
   private pendingInputs = new Map<string, PlayerInput>();
 
@@ -203,13 +247,17 @@ export class GameRoom extends Room<GameState> {
 
       // Camera yaw travels with every input packet. Store it so the
       // per-tick update() can resolve WASD into world-space motion even
-      // when the client isn't moving this exact tick.
-      if (typeof input.rotation === 'number') {
+      // when the client isn't moving this exact tick. Bounds-check:
+      // a malicious or buggy client sending NaN/Infinity here would
+      // corrupt player.rotation and break the cos/sin math in update(),
+      // permanently NaN'ing the player's x/z position with no recovery.
+      if (typeof input.rotation === 'number' && Number.isFinite(input.rotation)) {
         player.rotation = input.rotation;
       }
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
+      if (!this.checkRate(client, 'chat', 5, 1)) return; // 5 burst, 1/sec sustained
       if (typeof message.text !== 'string') return;
       const text = message.text.trim().slice(0, 200);
       if (text.length === 0) return;
@@ -234,6 +282,7 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.PLAYER_COLOR, (client: Client, data: { color: string }) => {
+      if (!this.checkRate(client, 'color', 3, 0.5)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.color !== 'string') return;
@@ -244,6 +293,7 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.UPDATE_APPEARANCE, (client: Client, data: Partial<Appearance>) => {
+      if (!this.checkRate(client, 'appearance', 5, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
 
@@ -277,6 +327,7 @@ export class GameRoom extends Room<GameState> {
       client: Client,
       data: { parcelId: number; building_type: string },
     ) => {
+      if (!this.checkRate(client, 'claim', 3, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
@@ -354,6 +405,7 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {
+      if (!this.checkRate(client, 'update_business', 3, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
@@ -375,6 +427,7 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.DEMOLISH_BUILDING, (client: Client, data: { parcelId: number }) => {
+      if (!this.checkRate(client, 'demolish', 3, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
@@ -441,6 +494,7 @@ export class GameRoom extends Room<GameState> {
     });
 
     this.onMessage(MessageType.FAST_TRAVEL, (client: Client, data: { stopIndex: number }) => {
+      if (!this.checkRate(client, 'fast_travel', 3, 0.5)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       const stop = BUS_STOPS[data.stopIndex];
@@ -455,6 +509,7 @@ export class GameRoom extends Room<GameState> {
     // client always agree. Position is persisted so a reconnect lands
     // at spawn too.
     this.onMessage(MessageType.RESPAWN, (client: Client) => {
+      if (!this.checkRate(client, 'respawn', 3, 0.5)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       player.x = SPAWN_POINT.x;
@@ -468,6 +523,7 @@ export class GameRoom extends Room<GameState> {
 
     // ---- BUILD_STRUCTURE: place a typed building on an owned parcel ----
     this.onMessage(MessageType.BUILD_STRUCTURE, (client: Client, data: { parcelId: number; buildingType: string }) => {
+      if (!this.checkRate(client, 'build', 3, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || typeof data.buildingType !== 'string') return;
@@ -717,6 +773,11 @@ export class GameRoom extends Room<GameState> {
     for (const [otherSessionId, otherPid] of this.pidBySession) {
       if (otherSessionId === client.sessionId) continue;
       if (otherPid !== persistentId) continue;
+      // Mark the doomed session as superseded so its imminent onLeave skips
+      // the PLAYER_LEAVE broadcast — otherwise every other client briefly
+      // removes the wallet's avatar (the new session's PLAYER_JOIN already
+      // fired, but its id == the leaving session's id, so the LEAVE wins).
+      this.supersededSessions.add(otherSessionId);
       const otherClient = this.clients.find((c) => c.sessionId === otherSessionId);
       if (otherClient) {
         try { otherClient.leave(4002, 'wallet_taken_over_elsewhere'); } catch { /* best effort */ }
@@ -804,24 +865,61 @@ export class GameRoom extends Room<GameState> {
     console.log(`${player.name} joined (sid=${client.sessionId}, pid=${persistentId}) — credits: ${player.credits}`);
   }
 
-  onLeave(client: Client) {
-    const player = this.players.get(client.sessionId);
+  async onLeave(client: Client, consented?: boolean): Promise<void> {
     const persistentId = this.pid(client.sessionId);
+    const superseded = this.supersededSessions.delete(client.sessionId);
+
+    // Stop processing movement for this session immediately on disconnect.
+    // The player record stays in this.players so other clients keep seeing
+    // them at their last position during the reconnect window — but they
+    // don't keep gliding based on stale input. If the player reconnects,
+    // they'll send fresh input naturally.
+    this.pendingInputs.delete(client.sessionId);
+
+    // Non-consented leaves (network blip, browser sleep, mobile background)
+    // get a 60s reconnection window. The session, player record, parcels,
+    // and credits all stay intact; the client just rejoins with the same
+    // sessionId and resumes. Without this, every flaky packet drop = full
+    // PLAYER_LEAVE flood to every other client + position save + accrual
+    // settle + the next reconnect creates a fresh PLAYER_JOIN (visible as
+    // a flicker for everyone watching).
+    if (!consented && !superseded) {
+      try {
+        await this.allowReconnection(client, 60);
+        console.log(`[reconnect] sid=${client.sessionId} pid=${persistentId} reconnected within window`);
+        return; // they came back; player record was never torn down
+      } catch {
+        // Timed out — fall through to full cleanup
+      }
+    }
+
+    const player = this.players.get(client.sessionId);
     if (player) {
       savePlayerPosition(persistentId, player.x, player.y, player.z);
       // Phase 6: stamp the accrual baseline so the next login starts
       // counting from now, not from the last rank/burn write.
       this.settleOnLeave(persistentId);
-      console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}) — position saved`);
+      console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}, superseded=${superseded}) — position saved`);
     }
     this.players.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
     this.pidBySession.delete(client.sessionId);
+    // Drop the session's rate-limit buckets so the map doesn't leak.
+    for (const key of Array.from(this.rateLimitBuckets.keys())) {
+      if (key.startsWith(`${client.sessionId}:`)) this.rateLimitBuckets.delete(key);
+    }
     cancelJob(client.sessionId);
     if (features.TUTORIAL) {
       cancelTutorial(client.sessionId);
     }
-    this.broadcast(MessageType.PLAYER_LEAVE, { id: persistentId });
+    // Skip the LEAVE broadcast when the disconnect was caused by a
+    // wallet-takeover — the new session already broadcast PLAYER_JOIN
+    // for the same persistentId. Sending LEAVE here would remove the
+    // freshly-joined avatar from every other client until the next
+    // 10Hz PLAYER_STATE re-adds it (visible as a flicker).
+    if (!superseded) {
+      this.broadcast(MessageType.PLAYER_LEAVE, { id: persistentId });
+    }
   }
 
   /**
@@ -1264,6 +1362,16 @@ export class GameRoom extends Room<GameState> {
       player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
       player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
+
+    // Each input represents the player's CURRENT key state at send time. The
+    // client re-sends every 50ms while moving (matching TICK_RATE), so any
+    // continued movement always gets a fresh input before the next tick. By
+    // clearing here we prevent the previous tick's input from "carrying over"
+    // if a key was released between sends — that carry-over caused server-side
+    // overshoot vs. the client's per-frame prediction, visible to other
+    // players as drift (the A/D-spam bug). Stop signals already delete the
+    // entry on arrival, but this catches the gap-between-send-and-release case.
+    this.pendingInputs.clear();
 
     // ---- Broadcast player positions at fixed rate ----
     // Includes agents so the client's PLAYER_STATE handler (which removes

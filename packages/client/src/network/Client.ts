@@ -226,15 +226,75 @@ export async function connect(playerName: string): Promise<Room> {
   mySessionId = playerId;
   knownPlayers.clear();
 
-  // Bulk player snapshot (sent on join, and periodic broadcasts)
-  room.onMessage(MessageType.PLAYER_STATE, (msg: { self?: string; players: PlayerSnapshot[] }) => {
+  // Bind every message handler. Pulled into a helper so the post-reconnect
+  // path (attachReconnectHandler → rewireRoomListeners) can re-bind the
+  // same set without drift.
+  rewireRoomListeners(room);
+
+  // Auto-reconnect on transient WebSocket drops. Without this, a flaky
+  // network silently strands the user: their local prediction keeps
+  // running, but they stop receiving PLAYER_STATE — every other player
+  // appears frozen on their last known position. The server's
+  // allowReconnection(client, 60) window holds their session, parcels,
+  // and credits intact for 60s so a quick reconnect is invisible. We
+  // try up to 5 times with exponential backoff (0.5s, 1s, 2s, 4s, 8s).
+  attachReconnectHandler(room);
+
+  console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);
+  return room;
+}
+
+function attachReconnectHandler(currentRoom: Room): void {
+  currentRoom.onLeave(async (code) => {
+    // Code 1000 = clean close (user logged out, navigated away). Don't retry.
+    // Code 4001/4002/4003 = server-side rejection (auth bad / wallet takeover
+    // / impersonation). Don't retry — let the existing error path handle it.
+    if (code === 1000 || (code >= 4001 && code <= 4003)) {
+      console.log(`[reconnect] room.onLeave code=${code} — not retrying`);
+      return;
+    }
+    const token = currentRoom.reconnectionToken;
+    if (!token || !client) {
+      console.warn('[reconnect] no reconnection token; cannot retry');
+      return;
+    }
+    const delays = [500, 1000, 2000, 4000, 8000];
+    for (let i = 0; i < delays.length; i++) {
+      await new Promise((r) => setTimeout(r, delays[i]));
+      try {
+        const newRoom = await client.reconnect(token);
+        room = newRoom;
+        // Re-attach every onMessage handler the original room had — they
+        // were bound to the old room instance and don't carry over.
+        rewireRoomListeners(newRoom);
+        attachReconnectHandler(newRoom);
+        console.log(`[reconnect] reattached on attempt ${i + 1}`);
+        window.dispatchEvent(new CustomEvent('tl-reconnected'));
+        return;
+      } catch (err) {
+        console.warn(`[reconnect] attempt ${i + 1} failed:`, (err as Error)?.message ?? err);
+      }
+    }
+    // Out of attempts. Surface to the UI so it can show a "disconnected"
+    // banner instead of silently leaving the player in a dead session.
+    console.error('[reconnect] giving up after 5 attempts');
+    window.dispatchEvent(new CustomEvent('tl-disconnected'));
+  });
+}
+
+/**
+ * Re-bind every onMessage handler to a freshly-reconnected room. The
+ * handlers themselves are pure functions that read module-scope listener
+ * arrays, so the bindings are stable across reconnects.
+ */
+function rewireRoomListeners(r: Room): void {
+  r.onMessage(MessageType.PLAYER_STATE, (msg: { self?: string; players: PlayerSnapshot[] }) => {
     if (msg.self) mySessionId = msg.self;
     const seen = new Set<string>();
     for (const p of msg.players) {
       seen.add(p.id);
-      applyPlayer(p, /*emitEventsForSelf*/ true);
+      applyPlayer(p, true);
     }
-    // Remove stale players not in latest snapshot
     for (const id of Array.from(knownPlayers.keys())) {
       if (!seen.has(id)) {
         knownPlayers.delete(id);
@@ -242,73 +302,45 @@ export async function connect(playerName: string): Promise<Room> {
       }
     }
   });
-
-  room.onMessage(MessageType.PLAYER_JOIN, (msg: PlayerSnapshot) => {
-    applyPlayer(msg, true);
-  });
-
-  room.onMessage(MessageType.PLAYER_UPDATE, (msg: PlayerSnapshot) => {
-    applyPlayer(msg, true);
-  });
-
-  room.onMessage(MessageType.PLAYER_LEAVE, (msg: { id: string }) => {
+  r.onMessage(MessageType.PLAYER_JOIN, (msg: PlayerSnapshot) => applyPlayer(msg, true));
+  r.onMessage(MessageType.PLAYER_UPDATE, (msg: PlayerSnapshot) => applyPlayer(msg, true));
+  r.onMessage(MessageType.PLAYER_LEAVE, (msg: { id: string }) => {
     if (knownPlayers.delete(msg.id)) {
       for (const cb of onPlayerRemoveListeners) cb(msg.id);
     }
   });
-
-  room.onMessage(MessageType.CHAT, (msg: ChatMessage) => {
-    for (const cb of onChatListeners) cb(msg);
-  });
-
-  room.onMessage(MessageType.CREDITS_UPDATE, (msg: { credits: number }) => {
+  r.onMessage(MessageType.CHAT, (msg: ChatMessage) => { for (const cb of onChatListeners) cb(msg); });
+  r.onMessage(MessageType.CREDITS_UPDATE, (msg: { credits: number }) => {
     for (const cb of onCreditsUpdateListeners) cb(msg.credits);
   });
-
-  room.onMessage(MessageType.JOB_UPDATE, (msg: { jobType: string; objective: string; timeRemaining: number; progress: string }) => {
+  r.onMessage(MessageType.JOB_UPDATE, (msg: { jobType: string; objective: string; timeRemaining: number; progress: string }) => {
     for (const cb of onJobUpdateListeners) cb(msg);
   });
-
-  room.onMessage(MessageType.JOB_COMPLETE, (msg: { jobType: string; reward: number }) => {
+  r.onMessage(MessageType.JOB_COMPLETE, (msg: { jobType: string; reward: number }) => {
     for (const cb of onJobCompleteListeners) cb(msg);
   });
-
-  room.onMessage(MessageType.TUTORIAL, (msg: { message: string }) => {
+  r.onMessage(MessageType.TUTORIAL, (msg: { message: string }) => {
     for (const cb of onTutorialListeners) cb(msg.message);
   });
-
-  room.onMessage(MessageType.PARCEL_STATE, (msg: { parcels: ParcelData[] }) => {
+  r.onMessage(MessageType.PARCEL_STATE, (msg: { parcels: ParcelData[] }) => {
     for (const cb of onParcelStateListeners) cb(msg.parcels);
   });
-
-  room.onMessage(MessageType.PARCEL_UPDATE, (msg: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
+  r.onMessage(MessageType.PARCEL_UPDATE, (msg: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
     for (const cb of onParcelUpdateListeners) cb(msg);
   });
-
-  // Resource updates — dispatch via CustomEvent so any UI component can listen
-  room.onMessage(MessageType.RESOURCE_UPDATE, (msg: unknown) => {
+  r.onMessage(MessageType.RESOURCE_UPDATE, (msg: unknown) => {
     window.dispatchEvent(new CustomEvent('resource-update', { detail: msg }));
   });
-
-  room.onMessage(MessageType.WORK_RESULT, (msg: unknown) => {
+  r.onMessage(MessageType.WORK_RESULT, (msg: unknown) => {
     window.dispatchEvent(new CustomEvent('work-result', { detail: msg }));
   });
-
-  // UI Overhaul: rank-up confetti modal listens for these. Filter to
-  // the local player here so the modal only fires for the connected
-  // wallet, not for someone else on the same map.
-  room.onMessage(MessageType.RANK_UP, (msg: RankUpEvent) => {
+  r.onMessage(MessageType.RANK_UP, (msg: RankUpEvent) => {
     if (msg.player_id !== mySessionId) return;
     for (const cb of onRankUpListeners) cb(msg);
   });
-
-  // ITEM_UPDATE for live Inventory refresh on craft / burn.
-  room.onMessage(MessageType.ITEM_UPDATE, (msg: unknown) => {
+  r.onMessage(MessageType.ITEM_UPDATE, (msg: unknown) => {
     window.dispatchEvent(new CustomEvent('item-update', { detail: msg }));
   });
-
-  console.log(`Connected to room: ${room.roomId} as ${room.sessionId}`);
-  return room;
 }
 
 export function getRoom(): Room | null {
