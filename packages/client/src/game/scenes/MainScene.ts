@@ -1042,27 +1042,43 @@ export class MainScene {
     }
     remote.root.rotation.y = yaw;
 
-    // Server reconciliation: local player is authoritative for X/Z.
+    // Server reconciliation: gentle continuous pull toward the server's
+    // authoritative position.
     //
-    // The 60-unit hard-snap was causing visible teleport-back-by-a-parcel
-    // any time the server's tick body stalled (income tick, /skip burst)
-    // or the client's main thread briefly froze (GLB load, GC pause).
-    // The server has no collision detection or anti-cheat for movement
-    // anyway — local prediction is effectively authoritative, and the
-    // server's PLAYER_STATE broadcast lags by ~100ms + RTT, so a
-    // strict catch-up snap can only ever pull the player to a stale
-    // position. Instead, just log catastrophic desyncs for telemetry
-    // and let local prediction stand. Future authoritative corrections
-    // (admin teleport, fast-travel, etc.) go through dedicated messages
-    // (FAST_TRAVEL, CREDITS_UPDATE-style) — not through this passive
-    // reconciliation.
+    // Why this exists: local prediction integrates movement per render
+    // frame using frame_dt. Each rapid press/release accumulates a
+    // fraction of a frame of overshoot vs. the server (which now applies
+    // movement for actual time-since-input-arrival, not full tick dt).
+    // Without this pull, the walker sees themselves drift ahead of where
+    // observers see them — the "position appears different on other
+    // screens" bug. The pull rate is small enough to be invisible
+    // during normal play (≈12% of walk speed at 1u offset) but converges
+    // typical 1-3u drifts within a second or so.
+    //
+    // Catastrophic threshold (>200u) keeps the legacy "no hard snap on
+    // tick stalls" behaviour — pathological desyncs only get logged.
     if (getSessionId()) {
       const tx = remote.targetX, tz = remote.targetZ;
       const dxRec = tx - remote.root.position.x;
       const dzRec = tz - remote.root.position.z;
       const distSq = dxRec * dxRec + dzRec * dzRec;
+
+      // Continuous gentle pull. Time-based so it behaves the same at
+      // 30/60/144 fps. The rate corresponds to ≈63% convergence in 1s.
+      const RECONCILE_RATE_PER_SEC = 1.0;
+      const pull = 1 - Math.exp(-RECONCILE_RATE_PER_SEC * dt);
+      remote.root.position.x += dxRec * pull;
+      remote.root.position.z += dzRec * pull;
+      // Keep the collider in sync so the next moveWithCollisions starts
+      // from the corrected position.
+      const collider = this.localPlayerCollider;
+      if (collider) {
+        collider.position.x = remote.root.position.x;
+        collider.position.z = remote.root.position.z;
+      }
+
       if (distSq > 200 * 200) {
-        // Catastrophic — log only; no snap. Useful for spotting
+        // Catastrophic — log only; no hard snap. Useful for spotting
         // pathological server stalls in prod telemetry.
         const dist = Math.sqrt(distSq);
         console.warn(`[reconcile] desync ${dist.toFixed(1)}u (dx=${dxRec.toFixed(1)}, dz=${dzRec.toFixed(1)}) — NOT snapping; trusting local prediction`);
