@@ -83,12 +83,23 @@ interface RemotePlayer {
   badge: Rectangle | null;
   badgeKind: 'auto' | 'agent' | 'external' | null;
   rank: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
+  /** Newest position reported by the server. */
   targetX: number;
   targetY: number;
   targetZ: number;
   targetRotation: number;
+  /** Previous server-reported position + the wall-clock ms it arrived at.
+   *  Used to derive per-axis velocity for snapshot interpolation so motion
+   *  between broadcasts is constant-velocity instead of exponential decay
+   *  (which read as "stop-and-go" stutter to the viewer). */
+  prevTargetX: number;
+  prevTargetZ: number;
+  prevTargetAt: number;
+  targetAt: number;
   currentColor: string;
   appearanceKey: string;
+  /** Last frame's rendered position — used by animateAvatar to drive the
+   *  walk cycle from instantaneous velocity. */
   prevX: number;
   prevZ: number;
 }
@@ -818,6 +829,7 @@ export class MainScene {
       badge = this.buildBotBadge(sessionId, player.bot_kind, mesh);
     }
 
+    const now = performance.now();
     this.remotePlayers.set(sessionId, {
       mesh,
       root: avatar.root,
@@ -831,6 +843,10 @@ export class MainScene {
       targetY: player.y,
       targetZ: player.z,
       targetRotation: player.rotation ?? 0,
+      prevTargetX: player.x,
+      prevTargetZ: player.z,
+      prevTargetAt: now,
+      targetAt: now,
       currentColor: appearance.shirt_color,
       appearanceKey: JSON.stringify(appearance),
       prevX: player.x,
@@ -929,6 +945,15 @@ export class MainScene {
   private updateRemotePlayerTarget(sessionId: string, player: PlayerSnapshot): void {
     const remote = this.remotePlayers.get(sessionId);
     if (remote) {
+      // Roll the snapshot history. interpolateRemotePlayers uses these
+      // two timestamps + positions to derive per-axis velocity, so motion
+      // BETWEEN broadcasts is constant-velocity instead of exponential
+      // decay toward a fixed target (which was visible as "stop-and-go"
+      // stutter even with regular 10Hz broadcasts).
+      remote.prevTargetX = remote.targetX;
+      remote.prevTargetZ = remote.targetZ;
+      remote.prevTargetAt = remote.targetAt;
+      remote.targetAt = performance.now();
       remote.targetX = player.x;
       remote.targetY = player.y;
       remote.targetZ = player.z;
@@ -1047,19 +1072,43 @@ export class MainScene {
 
   private interpolateRemotePlayers(): void {
     const localId = getSessionId() ?? this.localPlayerId;
+    const now = performance.now();
     this.remotePlayers.forEach((remote, sessionId) => {
       if (sessionId === localId) return;
 
       const pos = remote.root.position;
-      pos.x += (remote.targetX - pos.x) * REMOTE_PLAYER_LERP;
-      pos.y += (remote.targetY - pos.y) * REMOTE_PLAYER_LERP;
-      pos.z += (remote.targetZ - pos.z) * REMOTE_PLAYER_LERP;
 
-      // Yaw interpolation, shortest-arc aware
+      // Velocity-based "snapshot interpolation": we estimate the remote
+      // player's actual current position by extrapolating from the latest
+      // broadcast using velocity derived from the previous broadcast.
+      // Result is constant-velocity motion between updates instead of
+      // the exponential decay that an "ease toward target" lerp produces
+      // (which read as stop-and-go stutter to the viewer even at perfect
+      // 10Hz broadcast cadence).
+      const broadcastDt = Math.max(remote.targetAt - remote.prevTargetAt, 1);
+      const vx = (remote.targetX - remote.prevTargetX) / broadcastDt; // u/ms
+      const vz = (remote.targetZ - remote.prevTargetZ) / broadcastDt;
+      // Time since latest broadcast. Cap at 250ms so a packet loss or
+      // network gap doesn't fling the avatar off across the world.
+      const ageMs = Math.min(now - remote.targetAt, 250);
+      const extrapolatedX = remote.targetX + vx * ageMs;
+      const extrapolatedZ = remote.targetZ + vz * ageMs;
+
+      // Smooth-snap rendered position toward the extrapolated target.
+      // REMOTE_PLAYER_LERP applied as time-based exponential smoothing so
+      // it's frame-rate independent — the value is the per-frame factor
+      // at 60fps (matching the historical feel). dt in seconds.
+      const frameDt = this.engine.getDeltaTime() / 1000;
+      const smoothing = 1 - Math.pow(1 - REMOTE_PLAYER_LERP, frameDt * 60);
+      pos.x += (extrapolatedX - pos.x) * smoothing;
+      pos.y += (remote.targetY - pos.y) * smoothing;
+      pos.z += (extrapolatedZ - pos.z) * smoothing;
+
+      // Yaw interpolation, shortest-arc aware (also time-based)
       let dYaw = remote.targetRotation - remote.root.rotation.y;
       while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
       while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-      remote.root.rotation.y += dYaw * REMOTE_PLAYER_LERP;
+      remote.root.rotation.y += dYaw * smoothing;
 
       // Root is at feet — clamp to ground.
       if (pos.y < 0) pos.y = 0;

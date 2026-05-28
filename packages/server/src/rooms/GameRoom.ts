@@ -147,8 +147,54 @@ export class GameRoom extends Room<GameState> {
   /** Latest input per player, consumed each server tick. */
   private pendingInputs = new Map<string, PlayerInput>();
 
+  /**
+   * Wall-clock timestamp (ms) of when each player's input was last applied
+   * (or arrived, whichever is later). Drives time-elapsed movement: each
+   * tick applies the pending input for the REAL elapsed time since the
+   * last apply, capped to one tick duration. This eliminates both:
+   *   - overshoot: server moving for a full tick when the input was only
+   *     active for part of it (e.g. arrived mid-tick)
+   *   - undershoot: server moving for less than the actual press duration
+   *     (which happened with the naive "clear pending after tick" approach
+   *     when client send timing had >50ms jitter)
+   * The client predicts at 60Hz with real frame dt; this server-side
+   * time-tracking keeps both sides agreeing on total displacement.
+   */
+  private inputAppliedAt = new Map<string, number>();
+
   private pid(sessionId: string): string {
     return this.pidBySession.get(sessionId) ?? sessionId;
+  }
+
+  /**
+   * Advance a player by `elapsedSec` seconds of movement based on the input
+   * (camera-yaw-relative, diagonal normalised, sprint-aware). Same math as
+   * the client's per-frame prediction in MainScene.applyLocalPrediction —
+   * keeping them identical is the reason this is a single helper. Called
+   * both from the per-tick loop (with elapsedSec ≈ tick dt) and from the
+   * input handler when a new input replaces a held one (with elapsedSec =
+   * partial-tick time the old input owned).
+   */
+  private applyMovement(player: PlayerData, input: PlayerInput, elapsedSec: number): void {
+    const sprintActive = input.sprint === true;
+    const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * elapsedSec;
+    const yaw = player.rotation || 0;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    let mx = 0;
+    let mz = 0;
+    if (input.forward) { mx += fx; mz += fz; }
+    if (input.backward) { mx -= fx; mz -= fz; }
+    if (input.right) { mx += rx; mz += rz; }
+    if (input.left) { mx -= rx; mz -= rz; }
+    const len = Math.hypot(mx, mz);
+    if (len === 0) return;
+    mx /= len;
+    mz /= len;
+    player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x + mx * speed));
+    player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z + mz * speed));
   }
 
   /** Accumulated time (ms) since last revenue tick. */
@@ -239,10 +285,31 @@ export class GameRoom extends Room<GameState> {
       }
       if (input.sprint !== undefined && typeof input.sprint !== 'boolean') return;
 
+      const sid = client.sessionId;
+      const now = Date.now();
+
+      // BEFORE replacing pending input, drain any movement the OLD input
+      // is still owed (time between its last apply and now). Without this,
+      // a release that arrives mid-tick would lose the few ms of motion
+      // since the previous tick — visible as undershoot vs the client's
+      // per-frame prediction. Symmetric with the tick-side apply: total
+      // movement always matches actual key-down time, no over-, no under-.
+      const oldInput = this.pendingInputs.get(sid);
+      const oldApplied = this.inputAppliedAt.get(sid);
+      if (oldInput && oldApplied !== undefined) {
+        const elapsedSec = (now - oldApplied) / 1000;
+        if (elapsedSec > 0) {
+          this.applyMovement(player, oldInput, elapsedSec);
+        }
+      }
+
       if (input.forward || input.backward || input.left || input.right) {
-        this.pendingInputs.set(client.sessionId, input);
+        this.pendingInputs.set(sid, input);
+        this.inputAppliedAt.set(sid, now);
       } else {
-        this.pendingInputs.delete(client.sessionId);
+        // STOP — old input fully drained above; clear state.
+        this.pendingInputs.delete(sid);
+        this.inputAppliedAt.delete(sid);
       }
 
       // Camera yaw travels with every input packet. Store it so the
@@ -875,6 +942,7 @@ export class GameRoom extends Room<GameState> {
     // don't keep gliding based on stale input. If the player reconnects,
     // they'll send fresh input naturally.
     this.pendingInputs.delete(client.sessionId);
+    this.inputAppliedAt.delete(client.sessionId);
 
     // Non-consented leaves (network blip, browser sleep, mobile background)
     // get a 60s reconnection window. The session, player record, parcels,
@@ -1324,54 +1392,27 @@ export class GameRoom extends Room<GameState> {
     // the 100ms broadcast interval, so the result is a smooth walk.
     this.stepAgents(dt);
 
+    // For each held input, advance the player by the time since we last
+    // applied (NOT a hard-coded tick dt). This matches the actual real-world
+    // time the input has been "active" between server frames, so a held key
+    // produces smooth continuous motion (even with client send jitter), and
+    // a quick tap that arrives mid-tick only contributes the few ms it was
+    // actually live. Pairs with the symmetric "drain old input" in the
+    // input handler — together they make server displacement equal real key
+    // press duration, matching the client's 60Hz prediction. Cap to a
+    // generous 200ms so a stalled client (browser tab paused) doesn't
+    // suddenly launch the avatar across the world on the next tick.
+    const now = Date.now();
     this.pendingInputs.forEach((input, sessionId) => {
       const player = this.players.get(sessionId);
       if (!player) return;
-
-      const sprintActive = input.sprint === true;
-      const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * dt;
-
-      // Movement is relative to camera yaw (player.rotation, in radians,
-      // set from input.rotation). forward = (sin(yaw), cos(yaw)) in XZ;
-      // right = (cos(yaw), -sin(yaw)). Diagonal input is normalized.
-      const yaw = player.rotation || 0;
-      const fx = Math.sin(yaw);
-      const fz = Math.cos(yaw);
-      const rx = Math.cos(yaw);
-      const rz = -Math.sin(yaw);
-
-      let mx = 0;
-      let mz = 0;
-      if (input.forward) { mx += fx; mz += fz; }
-      if (input.backward) { mx -= fx; mz -= fz; }
-      if (input.right) { mx += rx; mz += rz; }
-      if (input.left) { mx -= rx; mz -= rz; }
-
-      const len = Math.hypot(mx, mz);
-      if (len > 0) {
-        mx /= len;
-        mz /= len;
-        player.x += mx * speed;
-        player.z += mz * speed;
+      const lastApplied = this.inputAppliedAt.get(sessionId) ?? now;
+      const elapsedSec = Math.min((now - lastApplied) / 1000, 0.2);
+      this.inputAppliedAt.set(sessionId, now);
+      if (elapsedSec > 0) {
+        this.applyMovement(player, input, elapsedSec);
       }
-      // NOTE: player.rotation is authoritative camera yaw set from input.rotation.
-      // We deliberately do NOT override it with movement direction — that would
-      // fight the "camera behind player" feel. Strafing with A/D keeps the
-      // character facing the camera's forward, same as a TPS shooter.
-
-      player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x));
-      player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z));
     });
-
-    // Each input represents the player's CURRENT key state at send time. The
-    // client re-sends every 50ms while moving (matching TICK_RATE), so any
-    // continued movement always gets a fresh input before the next tick. By
-    // clearing here we prevent the previous tick's input from "carrying over"
-    // if a key was released between sends — that carry-over caused server-side
-    // overshoot vs. the client's per-frame prediction, visible to other
-    // players as drift (the A/D-spam bug). Stop signals already delete the
-    // entry on arrival, but this catches the gap-between-send-and-release case.
-    this.pendingInputs.clear();
 
     // ---- Broadcast player positions at fixed rate ----
     // Includes agents so the client's PLAYER_STATE handler (which removes
