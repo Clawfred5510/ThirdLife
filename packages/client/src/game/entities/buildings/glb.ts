@@ -50,9 +50,9 @@ const ASSET_BY_TYPE: Record<string, string> = {
   hydroponic_tower:      'hydroponic-tower.glb',
   vertical_farm_complex: 'vertical-farm-complex.glb',
   synthetic_protein_lab: 'synthetic-protein-lab.glb',
-  // Materials chain (T2 served by blacksmith asset — same slot)
+  // Materials chain
   mine:                  'mine.glb',
-  iron_works:            'blacksmith.glb',
+  blacksmith:            'blacksmith.glb',
   refinery:              'refinery.glb',
   composite_plant:       'composite-plant.glb',
   chip_manufacturing:    'chip-manufacturing-plant.glb',

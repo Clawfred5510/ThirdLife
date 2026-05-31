@@ -716,6 +716,31 @@ class SQLiteDatabase implements DBBackend {
     } catch (e) {
       console.warn('[db] penthouse→duplex rename failed:', (e as Error).message);
     }
+
+    // One-shot rename (2026-05-31): T2 materials building renamed from
+    // `iron_works` to `blacksmith` per owner direction (the slot already
+    // rendered the blacksmith asset). Same two data surfaces as the
+    // penthouse→duplex rename above; both updates are idempotent no-ops on a
+    // fresh DB or on re-runs.
+    try {
+      const parcelRenames = this.db.prepare(
+        `UPDATE parcels SET building_type = 'blacksmith' WHERE building_type = 'iron_works'`,
+      ).run();
+      const voucherRenames = this.db.prepare(
+        `UPDATE vouchers
+           SET payload = json_set(payload, '$.building_type', 'blacksmith')
+         WHERE kind = 'building'
+           AND json_extract(payload, '$.building_type') = 'iron_works'`,
+      ).run();
+      if (parcelRenames.changes > 0 || voucherRenames.changes > 0) {
+        console.log(
+          `[db] iron_works→blacksmith rename: ${parcelRenames.changes} parcel(s), ` +
+          `${voucherRenames.changes} voucher payload(s)`,
+        );
+      }
+    } catch (e) {
+      console.warn('[db] iron_works→blacksmith rename failed:', (e as Error).message);
+    }
   }
 
   private get stmtGetPlayer() { return this.db.prepare('SELECT * FROM players WHERE id = ?'); }
@@ -2408,6 +2433,7 @@ function v1EquivalentBuildingType(t: string): string {
     case 'stadium':    return 'town_hall';
     case 'luxury_apt': return 'duplex';
     case 'penthouse':  return 'duplex';  // pre-rename voucher payload safety
+    case 'iron_works': return 'blacksmith';  // pre-rename voucher/parcel payload safety
     default:           return t;
   }
 }

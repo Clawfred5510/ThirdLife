@@ -95,7 +95,7 @@ export type BuildingType =
   // ── Food chain (Bronze → Diamond) ────────────────────────────────
   | 'farm' | 'ranch' | 'hydroponic_tower' | 'vertical_farm_complex' | 'synthetic_protein_lab'
   // ── Materials chain ──────────────────────────────────────────────
-  | 'mine' | 'iron_works' | 'refinery' | 'composite_plant' | 'chip_manufacturing'
+  | 'mine' | 'blacksmith' | 'refinery' | 'composite_plant' | 'chip_manufacturing'
   // ── Energy chain ─────────────────────────────────────────────────
   | 'factory' | 'wind_farm' | 'solar_farm' | 'nuclear_plant' | 'cold_fusion_facility'
   // ── Luxury Housing ───────────────────────────────────────────────
@@ -166,7 +166,7 @@ export const BUILDINGS: Record<BuildingType, BuildingSpec> = {
 
   // ── Materials chain ──────────────────────────────────────────────
   mine:               { type: 'mine',               category: 'materials', tier: 1, minRank: TIER_MIN_RANK[1], ...tCost('prod', 1), produces: 'materials', amount: 1, label: 'Mine' },
-  iron_works:         { type: 'iron_works',         category: 'materials', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), produces: 'materials', amount: 2, label: 'Iron Works' },
+  blacksmith:         { type: 'blacksmith',         category: 'materials', tier: 2, minRank: TIER_MIN_RANK[2], ...tCost('prod', 2), produces: 'materials', amount: 2, label: 'Blacksmith' },
   refinery:           { type: 'refinery',           category: 'materials', tier: 3, minRank: TIER_MIN_RANK[3], ...tCost('prod', 3), produces: 'materials', amount: 3, label: 'Refinery' },
   composite_plant:    { type: 'composite_plant',    category: 'materials', tier: 4, minRank: TIER_MIN_RANK[4], ...tCost('prod', 4), produces: 'materials', amount: 5, label: 'Composite Plant' },
   chip_manufacturing: { type: 'chip_manufacturing', category: 'materials', tier: 5, minRank: TIER_MIN_RANK[5], ...tCost('prod', 5), produces: 'materials', amount: 10, label: 'Chip Manufacturing Plant' },
@@ -272,7 +272,7 @@ export const LUXURY_ITEMS: Record<LuxuryItemKind, LuxuryItemSpec> = {
   designer_wagyu:    { kind: 'designer_wagyu',    building: 'synthetic_protein_lab', chain: 'food',      tier: 5, burnValue: 25, label: 'Designer Wagyu Reserve' },
   // Materials chain
   cut_gemstone:      { kind: 'cut_gemstone',      building: 'mine',                  chain: 'materials', tier: 1, burnValue: 1,  label: 'Cut Gemstone' },
-  forged_sculpture:  { kind: 'forged_sculpture',  building: 'iron_works',            chain: 'materials', tier: 2, burnValue: 3,  label: 'Forged Sculpture' },
+  forged_sculpture:  { kind: 'forged_sculpture',  building: 'blacksmith',            chain: 'materials', tier: 2, burnValue: 3,  label: 'Forged Sculpture' },
   polished_marble:   { kind: 'polished_marble',   building: 'refinery',              chain: 'materials', tier: 3, burnValue: 6,  label: 'Polished Marble Bust' },
   carbon_weave:      { kind: 'carbon_weave',      building: 'composite_plant',       chain: 'materials', tier: 4, burnValue: 12, label: 'Carbon-Weave Art Piece' },
   quantum_display:   { kind: 'quantum_display',   building: 'chip_manufacturing',    chain: 'materials', tier: 5, burnValue: 25, label: 'Quantum-Etched Display' },

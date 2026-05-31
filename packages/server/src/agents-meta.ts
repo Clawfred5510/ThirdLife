@@ -24,7 +24,7 @@ const JOB_LABELS: Partial<Record<BuildingType, string>> = {
   vertical_farm_complex: 'Vertical-Farm Operator',
   synthetic_protein_lab: 'Protein Scientist',
   mine: 'Miner',
-  iron_works: 'Forgeman',
+  blacksmith: 'Forgeman',
   refinery: 'Refiner',
   composite_plant: 'Composite Engineer',
   chip_manufacturing: 'Chip Fabricator',
