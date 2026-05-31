@@ -153,20 +153,26 @@ const apiSrc = fs.readFileSync(path.join(__dirname, '..', 'api', 'agent-api.ts')
 check('agent-api.ts no longer contains the stale `* 48 - 1200` formula',
   !/\*\s*48\s*-\s*1200/.test(apiSrc),
   'found the old 50×50 grid formula — agents would spawn ~124u from their worksite');
-check('agent-api.ts spawns via parcelWorldPos()',
-  /parcelWorldPos\(/.test(apiSrc));
-check('agent-api.ts applies the 12u door offset (z - 12)',
-  /z\s*-\s*12/.test(apiSrc));
+// The agent "door" placement (parcel centre, 12u south) is now the single
+// canonical shared helper parcelDoorPos() instead of an inline `z - 12` at
+// each site (2026-05-31 simplify). Verify every spawn path uses that helper,
+// and that the 12u offset lives once in shared as DOOR_OFFSET_Z.
+check('agent-api.ts places agents via the canonical parcelDoorPos()',
+  /parcelDoorPos\(/.test(apiSrc));
 
 const autoSrc = fs.readFileSync(path.join(__dirname, '..', 'autopilot', 'index.ts'), 'utf8');
-check('autopilot.parcelDoor uses the same z - 12 door offset',
-  /parcelWorldPos\(/.test(autoSrc) && /z\s*-\s*12/.test(autoSrc));
+check('autopilot.parcelDoor delegates to the canonical parcelDoorPos()',
+  /parcelDoorPos\(/.test(autoSrc));
 
 // GameRoom.refreshAgents recomputes canonical placement on load (backfills
 // agents persisted with the old formula, and removes the income-tick wait).
-check('GameRoom.refreshAgents places agents via parcelWorldPos',
-  /parcelWorldPos\(placeParcel\.grid_x,\s*placeParcel\.grid_y\)/.test(grSrc),
+check('GameRoom.refreshAgents places agents via parcelDoorPos',
+  /parcelDoorPos\(placeParcel\.grid_x,\s*placeParcel\.grid_y\)/.test(grSrc),
   'refreshAgents should recompute the worksite door so misplaced agents self-correct on load');
+
+const constSrc = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'shared', 'src', 'constants.ts'), 'utf8');
+check('shared defines the door offset once (DOOR_OFFSET_Z = 12 + parcelDoorPos)',
+  /DOOR_OFFSET_Z\s*=\s*12/.test(constSrc) && /export function parcelDoorPos/.test(constSrc));
 
 // ── Done ──────────────────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed`);
