@@ -1077,20 +1077,27 @@ export class GameRoom extends Room<GameState> {
       // notification already surfaces the gain).
       bumpLifetimeLuxury(walletId, luxuryDelta);
     }
+    let wagePaid = 0;
     if (wageTotal > 0) {
-      const perAgent = WORK_WAGE_AMETA_PER_TICK * missedTicks;
-      for (const id of wageAgentIds) {
-        const cur = getPlayerCreditsFromDb(id);
-        updatePlayerCredits(id, cur + perAgent);
+      // Treasury-funded (owner direction 2026-05-31): pay the wallet from the
+      // World Treasury, capped at what the treasury can afford. NOTE: the
+      // previous code credited each AGENT id (not the owner wallet) — a latent
+      // bug, since an agent id isn't a spendable player balance. Wages now go
+      // to the agent OWNER (walletId), as a treasury→player transfer.
+      const treasury = getPlayerCreditsFromDb(WORLD_TREASURY_ID);
+      wagePaid = Math.min(wageTotal, treasury);
+      if (wagePaid > 0) {
+        updatePlayerCredits(WORLD_TREASURY_ID, treasury - wagePaid);
+        const cur = getPlayerCreditsFromDb(walletId);
+        updatePlayerCredits(walletId, cur + wagePaid);
       }
-      recordGdp(wageTotal);
     }
 
     setLastSettledTick(walletId, currentTick);
     addEvent('offline_accrual', walletId, {
-      missed_ticks: missedTicks, luxury: luxuryDelta, wages: wageTotal,
+      missed_ticks: missedTicks, luxury: luxuryDelta, wages: wagePaid,
     }, 'minor');
-    return { missedTicks, luxury: luxuryDelta, wages: wageTotal };
+    return { missedTicks, luxury: luxuryDelta, wages: wagePaid };
   }
 
   /** Mark the wallet as settled at the current tick on disconnect so
@@ -1903,28 +1910,24 @@ export class GameRoom extends Room<GameState> {
       // OWNER — that's the integral "payment received even if an
       // agent works at another user's properties" rule. If the parcel
       // owner can't afford the wage, no pay this tick (silent fail).
+      // Wage model (owner direction 2026-05-31): EVERY work-role agent
+      // stationed at a building is paid WORK_WAGE_AMETA_PER_TICK by the WORLD
+      // TREASURY (the fee sink) — regardless of who owns the building. The
+      // parcel owner pays nothing; there is no cross-player transfer. Pay only
+      // while the treasury can afford it (stop once dry) so it never goes
+      // negative. Wages move existing treasury $AMETA to players (sink→player),
+      // not freshly-minted supply, so they are NOT recorded as GDP.
       const walletsTouchedByWages = new Set<string>();
-      let totalWageGdp = 0;
+      let treasuryBalance = getPlayerCreditsFromDb(WORLD_TREASURY_ID);
       for (const pair of wagePairs) {
-        if (pair.agentOwner === pair.parcelOwner) {
-          const cur = getPlayerCreditsFromDb(pair.agentOwner);
-          updatePlayerCredits(pair.agentOwner, cur + WORK_WAGE_AMETA_PER_TICK);
-          bumpAgentLifetimeStats(pair.agentId, { wages: WORK_WAGE_AMETA_PER_TICK });
-          walletsTouchedByWages.add(pair.agentOwner);
-          totalWageGdp += WORK_WAGE_AMETA_PER_TICK;
-        } else {
-          const parcelOwnerCredits = getPlayerCreditsFromDb(pair.parcelOwner);
-          if (parcelOwnerCredits < WORK_WAGE_AMETA_PER_TICK) continue;
-          updatePlayerCredits(pair.parcelOwner, parcelOwnerCredits - WORK_WAGE_AMETA_PER_TICK);
-          const agentOwnerCredits = getPlayerCreditsFromDb(pair.agentOwner);
-          updatePlayerCredits(pair.agentOwner, agentOwnerCredits + WORK_WAGE_AMETA_PER_TICK);
-          bumpAgentLifetimeStats(pair.agentId, { wages: WORK_WAGE_AMETA_PER_TICK });
-          walletsTouchedByWages.add(pair.agentOwner);
-          walletsTouchedByWages.add(pair.parcelOwner);
-          // Cross-player wage is a transfer, not new GDP — no recordGdp.
-        }
+        if (treasuryBalance < WORK_WAGE_AMETA_PER_TICK) break; // treasury dry — stop paying this tick
+        treasuryBalance -= WORK_WAGE_AMETA_PER_TICK;
+        updatePlayerCredits(WORLD_TREASURY_ID, treasuryBalance);
+        const cur = getPlayerCreditsFromDb(pair.agentOwner);
+        updatePlayerCredits(pair.agentOwner, cur + WORK_WAGE_AMETA_PER_TICK);
+        bumpAgentLifetimeStats(pair.agentId, { wages: WORK_WAGE_AMETA_PER_TICK });
+        walletsTouchedByWages.add(pair.agentOwner);
       }
-      if (totalWageGdp > 0) recordGdp(totalWageGdp);
 
       // Push CREDITS_UPDATE to any connected player whose wallet just
       // moved (paid or received). Also refreshes the cached PlayerData

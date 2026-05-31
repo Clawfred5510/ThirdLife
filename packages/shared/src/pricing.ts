@@ -79,8 +79,11 @@ export const IN_GAME_AGENT_COST_AMETA = 200_000;
 /** External agents are free to register; they still consume 1 food/tick. */
 export const EXTERNAL_AGENT_COST_AMETA = 0;
 
-/** $AMETA paid per tick to each agent assigned to role=work. Flat. */
-export const WORK_WAGE_AMETA_PER_TICK = 10;
+/** $AMETA paid per tick to each work-role agent stationed at a building.
+ *  Funded entirely by the World Treasury (the fee sink) — never by the parcel
+ *  owner — and only paid while the treasury can afford it. Kept deliberately
+ *  low so agent labor is a gentle trickle, not a runaway faucet. */
+export const WORK_WAGE_AMETA_PER_TICK = 5;
 
 /** Starting balance for new wallets in production. Players must purchase
  *  $AMETA on Uniswap before playing. Owner testing uses `TEST_BALANCE`
