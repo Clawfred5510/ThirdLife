@@ -7,25 +7,41 @@ import {
   createAuthSession,
   getAuthSessionPlayerId,
   revokeAuthSession,
+  revokeAllSessionsForPlayer,
 } from '../db';
 
 const router = Router();
 
 const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Session lifetime: 7 days by default (env-overridable). Shorter than the old
+// 30 days so a leaked Bearer token has a bounded blast radius; combined with
+// revoke-on-login (see /verify) a new sign-in also kills any prior token.
+const SESSION_TTL_MS = (() => {
+  const days = Number(process.env.SESSION_TTL_DAYS);
+  return (Number.isFinite(days) && days > 0 ? days : 7) * 24 * 60 * 60 * 1000;
+})();
 
-function buildSiweMessage(address: string, nonce: string, domain: string, uri: string): string {
+// SIWE binding is server-controlled — NEVER derived from the request's
+// Origin/Referer (attacker-controllable). EIP-4361's domain/URI exist to bind a
+// signature to THIS app; sourcing them from the caller defeats that. Set
+// SIWE_DOMAIN / SIWE_URI in prod env; defaults match the canonical deployment.
+const SIWE_DOMAIN = process.env.SIWE_DOMAIN || 'thirdlife.vercel.app';
+const SIWE_URI = process.env.SIWE_URI || `https://${SIWE_DOMAIN}`;
+const SIWE_CHAIN_ID = process.env.SIWE_CHAIN_ID || '1';
+const SIWE_STATEMENT = 'Sign in to ThirdLife. By signing, you authenticate as the owner of this wallet.';
+
+function buildSiweMessage(address: string, nonce: string, issuedAt: string): string {
   return [
-    `${domain} wants you to sign in with your Ethereum account:`,
+    `${SIWE_DOMAIN} wants you to sign in with your Ethereum account:`,
     address,
     ``,
-    `Sign in to ThirdLife. By signing, you authenticate as the owner of this wallet.`,
+    SIWE_STATEMENT,
     ``,
-    `URI: ${uri}`,
+    `URI: ${SIWE_URI}`,
     `Version: 1`,
-    `Chain ID: 1`,
+    `Chain ID: ${SIWE_CHAIN_ID}`,
     `Nonce: ${nonce}`,
-    `Issued At: ${new Date().toISOString()}`,
+    `Issued At: ${issuedAt}`,
   ].join('\n');
 }
 
@@ -45,13 +61,12 @@ router.post('/challenge', (req: Request, res: Response) => {
   const expiresAt = Date.now() + NONCE_TTL_MS;
   createAuthNonce(lc, nonce, expiresAt);
 
-  // Domain + URI come from the request so dev/prod both get correct binding.
-  const host = req.get('origin') || req.get('referer') || 'thirdlife.vercel.app';
-  const url = (() => { try { return new URL(host); } catch { return null; } })();
-  const domain = url?.host ?? 'thirdlife.vercel.app';
-  const uri = url?.origin ?? 'https://thirdlife.vercel.app';
-
-  const message = buildSiweMessage(checksummed, nonce, domain, uri);
+  // domain/URI/chainId are SERVER-controlled (SIWE_* env), not from the
+  // request header — see the constant block. /verify rebuilds this exact
+  // message and requires a byte-for-byte match, so a signature obtained for
+  // any other domain/chain can't be replayed here.
+  const issuedAt = new Date().toISOString();
+  const message = buildSiweMessage(checksummed, nonce, issuedAt);
   // Return the checksummed address so the client uses the same case for
   // personal_sign's `from` param — MetaMask compares the two case-sensitively
   // when the message is in EIP-4361 format.
@@ -69,12 +84,31 @@ router.post('/verify', async (req: Request, res: Response) => {
   const checksummed = getAddress(address);
   const lc = checksummed.toLowerCase();
 
-  const m = message.match(/Nonce: ([a-f0-9]+)/);
-  if (!m) return res.status(400).json({ error: 'Malformed message: no nonce' });
-  const nonce = m[1];
-  const messageContainsAddress = message.includes(checksummed) || message.includes(lc);
-  if (!messageContainsAddress) {
-    return res.status(400).json({ error: 'Message does not bind to address' });
+  // Pull the nonce + issued-at out of the submitted message.
+  const nonceMatch = message.match(/\nNonce: ([a-f0-9]+)\n/);
+  const issuedMatch = message.match(/\nIssued At: (.+)$/);
+  if (!nonceMatch || !issuedMatch) {
+    return res.status(400).json({ error: 'Malformed SIWE message' });
+  }
+  const nonce = nonceMatch[1];
+  const issuedAt = issuedMatch[1];
+
+  // Issued-At must be a valid timestamp inside the nonce TTL window (with a
+  // small clock-skew allowance) — blocks stale/pre-dated message replay.
+  const issuedMs = Date.parse(issuedAt);
+  const SKEW_MS = 60 * 1000;
+  if (!Number.isFinite(issuedMs) || issuedMs > Date.now() + SKEW_MS || issuedMs < Date.now() - NONCE_TTL_MS - SKEW_MS) {
+    return res.status(400).json({ error: 'SIWE message issued-at is stale or invalid' });
+  }
+
+  // Full EIP-4361 binding check: rebuild the canonical message from the
+  // SERVER's domain/URI/chainId/statement + the submitted address/nonce/
+  // issuedAt and require an exact match. This enforces domain, URI, Chain ID,
+  // Version, and statement all at once — a message signed for any other site
+  // or chain will not match and is rejected.
+  const expected = buildSiweMessage(checksummed, nonce, issuedAt);
+  if (message !== expected) {
+    return res.status(400).json({ error: 'SIWE message does not match expected domain/URI/chain binding' });
   }
 
   if (!consumeAuthNonce(lc, nonce)) {
@@ -92,6 +126,11 @@ router.post('/verify', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid signature format' });
   }
   if (!valid) return res.status(401).json({ error: 'Signature does not match address' });
+
+  // Fresh login revokes every prior session for this wallet, so a leaked older
+  // token can't outlive the new sign-in ("one wallet, one live session" — also
+  // enforced at the Colyseus layer via wallet-takeover).
+  revokeAllSessionsForPlayer(lc);
 
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + SESSION_TTL_MS;

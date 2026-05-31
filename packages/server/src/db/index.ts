@@ -1503,6 +1503,10 @@ class SQLiteDatabase implements DBBackend {
   revokeAuthSession(token: string): void {
     this.db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
   }
+
+  revokeAllSessionsForPlayer(playerId: string): number {
+    return this.db.prepare('DELETE FROM auth_sessions WHERE player_id = ?').run(playerId).changes;
+  }
 }
 
 // ── In-Memory Map-based fallback ───────────────────────────────────────────
@@ -2148,6 +2152,13 @@ class MemoryDB implements DBBackend {
   }
 
   revokeAuthSession(token: string): void { this.sessions.delete(token); }
+  revokeAllSessionsForPlayer(playerId: string): number {
+    let n = 0;
+    for (const [tok, s] of this.sessions) {
+      if (s.playerId === playerId) { this.sessions.delete(tok); n++; }
+    }
+    return n;
+  }
 }
 
 // ── Database initialisation ────────────────────────────────────────────────
@@ -2352,6 +2363,9 @@ export function getAuthSessionPlayerId(token: string) {
 }
 export function revokeAuthSession(token: string) {
   backend.revokeAuthSession(token);
+}
+export function revokeAllSessionsForPlayer(playerId: string) {
+  return backend.revokeAllSessionsForPlayer(playerId);
 }
 
 /**
