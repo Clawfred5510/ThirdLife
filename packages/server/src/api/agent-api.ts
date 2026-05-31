@@ -83,6 +83,7 @@ import {
   EXTERNAL_AGENT_CAP_BY_RANK,
   LAND_CAP_BY_RANK,
   MARKETPLACE_FEE_BPS_BY_RANK,
+  parcelWorldPos,
 } from '@gamestu/shared';
 import { setAgentWorkplace, savePlayerPosition } from '../db';
 import {
@@ -591,15 +592,22 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
   // Position the agent immediately so the body appears in the right
   // place. Without this, every new agent stands at the default spawn
   // (0, 0, -80) — overlapping the local player — for up to 60s until
-  // the next autopilot tick teleports them to their workplace. The
-  // mapping mirrors autopilot.parcelCenter / GameRoom EXPLORE coords.
+  // the next autopilot tick teleports them to their workplace. Use the
+  // canonical parcelWorldPos() + the same 12u "door" offset south of the
+  // building that autopilot.parcelDoor() uses, so the spawn lands EXACTLY
+  // where the first autopilot waypoint will be (no 124u teleport, no walk).
+  // The old formula here used the stale 50×50-grid constants (centring
+  // offset −1200 instead of the canonical −1056; see parcelWorldPos doc in
+  // shared/constants), placing the agent ~124u from its building.
+  // GameRoom.refreshAgents recomputes this on load too.
   let spawnX = 0, spawnZ = -80;
   if (workplaceParcelId !== null) {
     const parcels = getAllParcels();
     const p = parcels.find((x) => x.id === workplaceParcelId);
     if (p) {
-      spawnX = p.grid_x * 48 - 1200 + 20;
-      spawnZ = p.grid_y * 48 - 1200 + 20;
+      const { x, z } = parcelWorldPos(p.grid_x, p.grid_y);
+      spawnX = x;
+      spawnZ = z - 12;
     }
   } else {
     // No workplace — spread around spawn deterministically by id so
@@ -778,8 +786,13 @@ router.post('/agents/register-external', authWallet, async (req: Request, res: R
   const ownerParcels = getPlayerParcels(wallet);
   if (ownerParcels.length > 0) {
     const p = ownerParcels[0];
-    spawnX = p.grid_x * 48 - 1200 + 22;
-    spawnZ = p.grid_y * 48 - 1200 + 22;
+    // Canonical parcel position + 12u door offset (matches in-game agents
+    // and autopilot.parcelDoor). The old formula used the stale 50×50-grid
+    // centring offset → external agents stood ~124u off their plot and,
+    // since externals never get an autopilot pass, stayed there permanently.
+    const { x, z } = parcelWorldPos(p.grid_x, p.grid_y);
+    spawnX = x;
+    spawnZ = z - 12;
   } else {
     // Deterministic offset by agent id so multiple unclaimed externals
     // don't stack at the same point.

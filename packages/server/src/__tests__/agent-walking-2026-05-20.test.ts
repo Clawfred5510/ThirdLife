@@ -129,6 +129,45 @@ check('broadcast includes agents',
   /this\.agentPlayers\.values\(\)/.test(periodicBroadcastBlock),
   'this is the disappearance fix — without it agents render briefly then vanish 100ms later');
 
+// ── 4. Registration spawn path uses the canonical formula (2026-05-31) ────
+// The 2026-05-20 fix corrected parcelWorldPos + autopilot + client, but the
+// REST registration path in agent-api.ts kept the stale `grid * 48 - 1200`
+// formula, so newly-registered agents (and all external agents, which never
+// get an autopilot pass) spawned ~124u from their building. These checks
+// guard that regression at the source level + verify the magnitude.
+section('agent registration: canonical spawn (no stale 50×50 formula)');
+
+// Magnitude: the old centring offset (-1180 at grid 0) vs the canonical one
+// (parcelWorldPos, -1056 at grid 0) differs by exactly 124u on each axis.
+for (const [gx, gy] of [[0, 0], [10, 30], [44, 44]]) {
+  const stale = { x: gx * 48 - 1200 + 20, z: gy * 48 - 1200 + 20 };
+  const good = parcelWorldPos(gx, gy);
+  check(`stale formula was ~124u off the canonical at (${gx},${gy})`,
+    Math.abs((good.x - stale.x) - 124) < 0.001 && Math.abs((good.z - stale.z) - 124) < 0.001,
+    `Δx=${(good.x - stale.x).toFixed(1)} Δz=${(good.z - stale.z).toFixed(1)}`);
+}
+
+// The agent "door" offset (12u south) matches autopilot.parcelDoor so the
+// registration spawn lands exactly on the first autopilot waypoint.
+const apiSrc = fs.readFileSync(path.join(__dirname, '..', 'api', 'agent-api.ts'), 'utf8');
+check('agent-api.ts no longer contains the stale `* 48 - 1200` formula',
+  !/\*\s*48\s*-\s*1200/.test(apiSrc),
+  'found the old 50×50 grid formula — agents would spawn ~124u from their worksite');
+check('agent-api.ts spawns via parcelWorldPos()',
+  /parcelWorldPos\(/.test(apiSrc));
+check('agent-api.ts applies the 12u door offset (z - 12)',
+  /z\s*-\s*12/.test(apiSrc));
+
+const autoSrc = fs.readFileSync(path.join(__dirname, '..', 'autopilot', 'index.ts'), 'utf8');
+check('autopilot.parcelDoor uses the same z - 12 door offset',
+  /parcelWorldPos\(/.test(autoSrc) && /z\s*-\s*12/.test(autoSrc));
+
+// GameRoom.refreshAgents recomputes canonical placement on load (backfills
+// agents persisted with the old formula, and removes the income-tick wait).
+check('GameRoom.refreshAgents places agents via parcelWorldPos',
+  /parcelWorldPos\(placeParcel\.grid_x,\s*placeParcel\.grid_y\)/.test(grSrc),
+  'refreshAgents should recompute the worksite door so misplaced agents self-correct on load');
+
 // ── Done ──────────────────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

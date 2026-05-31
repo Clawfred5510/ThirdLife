@@ -1158,6 +1158,8 @@ export class GameRoom extends Room<GameState> {
    */
   private refreshAgents(initial: boolean): void {
     const fresh = getAllAgents();
+    // Snapshot parcels once for O(1) workplace lookups during body placement.
+    const parcelById = new Map(getAllParcels().map((p) => [p.id, p]));
     const seen = new Set<string>();
     for (const a of fresh) {
       seen.add(a.id);
@@ -1181,10 +1183,33 @@ export class GameRoom extends Room<GameState> {
       if (src) {
         try { appearance = { ...DEFAULT_APPEARANCE, ...JSON.parse(src) }; } catch { /* keep default */ }
       }
+
+      // Canonical body placement — single source of truth for where an agent
+      // stands: the "door" (parcelWorldPos + 12u south, matching
+      // autopilot.parcelDoor) of its workplace for in-game agents, or of the
+      // owner's first parcel for external agents (their on-plot
+      // representation). This corrects agents that were persisted with the
+      // old stale `grid * 48 - 1200` formula (off by ~124u) the moment they
+      // load, and means an agent is at its worksite immediately instead of
+      // waiting up to a full income tick for the first autopilot waypoint.
+      // Unemployed/parcel-less agents keep their spread-around-spawn row.
+      let sx = row.x, sy = row.y, sz = row.z;
+      const placeParcel = a.workplace_parcel_id !== null
+        ? parcelById.get(a.workplace_parcel_id)
+        : (a.is_external === 1 && a.owner_wallet ? getPlayerParcels(a.owner_wallet)[0] : undefined);
+      if (placeParcel) {
+        const { x, z } = parcelWorldPos(placeParcel.grid_x, placeParcel.grid_y);
+        sx = x; sy = 0; sz = z - 12;
+        // Persist the correction so the stored row stops drifting (backfill).
+        if (Math.abs(sx - row.x) > 0.01 || Math.abs(sz - row.z) > 0.01) {
+          savePlayerPosition(a.id, sx, sy, sz);
+        }
+      }
+
       const pd: PlayerData = {
         id: a.id,
         name: a.name,
-        x: row.x, y: row.y, z: row.z,
+        x: sx, y: sy, z: sz,
         rotation: 0,
         credits: row.credits,
         color: appearance.shirt_color,
@@ -1193,9 +1218,9 @@ export class GameRoom extends Room<GameState> {
           a.is_external === 1 ? 'external'
           : a.autopilot_enabled === 1 ? 'auto'
           : 'agent',
-        // Start with no pending target — they stand still until the
-        // first autopilot tick assigns a workplace/spawn waypoint.
-        targetX: row.x, targetY: row.y, targetZ: row.z,
+        // Already standing at its worksite (placement above), so the initial
+        // target equals the position — no teleport, no walk on first load.
+        targetX: sx, targetY: sy, targetZ: sz,
       };
       this.agentPlayers.set(a.id, pd);
       if (!initial) {
