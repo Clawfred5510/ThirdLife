@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus.js';
-import { DEFAULT_SERVER_PORT, MessageType, PlayerInput, ChatMessage, ParcelData, Appearance } from '@gamestu/shared';
+import { DEFAULT_SERVER_PORT, MessageType, InputCommand, ChatMessage, ParcelData, Appearance } from '@gamestu/shared';
 
 // Resolution order: window override (injected pre-script) → Vite env var → same-host fallback
 function resolveServerUrl(): string {
@@ -72,6 +72,12 @@ export interface PlayerSnapshot {
    * Drives the nameplate color in the 3D world.
    */
   rank?: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
+  /**
+   * Movement-redo (2026-05-31): the last input-command seq the server has
+   * processed for this player. Only meaningful for the local player, who uses
+   * it to reconcile (drop acked commands, replay the rest from x/z). Others = 0.
+   */
+  seq?: number;
 }
 
 export type PlayerAddCallback = (sessionId: string, player: PlayerSnapshot) => void;
@@ -351,8 +357,8 @@ export function getSessionId(): string | null {
   return mySessionId;
 }
 
-export function sendInput(input: PlayerInput): void {
-  room?.send(MessageType.PLAYER_INPUT, input);
+export function sendInput(cmd: InputCommand): void {
+  room?.send(MessageType.PLAYER_INPUT, cmd);
 }
 
 export function sendChat(text: string): void {

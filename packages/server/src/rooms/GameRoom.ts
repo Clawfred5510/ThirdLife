@@ -3,8 +3,6 @@ import { GameState, PlayerData } from '../state/GameState';
 import {
   TICK_RATE,
   PLAYER_SPEED,
-  SPRINT_MULTIPLIER,
-  WORLD_HALF,
   MessageType,
   PlayerInput,
   BUS_STOPS,
@@ -38,6 +36,9 @@ import {
   consumesEnergy,
   emitsPassiveLuxury,
   parcelWorldPos,
+  simulateMovement,
+  isInputCommand,
+  InputCommand,
 } from '@gamestu/shared';
 import {
   getOrCreatePlayer,
@@ -144,57 +145,20 @@ export class GameRoom extends Room<GameState> {
     return true;
   }
 
-  /** Latest input per player, consumed each server tick. */
-  private pendingInputs = new Map<string, PlayerInput>();
-
   /**
-   * Wall-clock timestamp (ms) of when each player's input was last applied
-   * (or arrived, whichever is later). Drives time-elapsed movement: each
-   * tick applies the pending input for the REAL elapsed time since the
-   * last apply, capped to one tick duration. This eliminates both:
-   *   - overshoot: server moving for a full tick when the input was only
-   *     active for part of it (e.g. arrived mid-tick)
-   *   - undershoot: server moving for less than the actual press duration
-   *     (which happened with the naive "clear pending after tick" approach
-   *     when client send timing had >50ms jitter)
-   * The client predicts at 60Hz with real frame dt; this server-side
-   * time-tracking keeps both sides agreeing on total displacement.
+   * Last input-command seq the server has PROCESSED for each session. Echoed
+   * back to that client in PLAYER_STATE (snapshotPlayer.seq) so it can drop
+   * acknowledged commands and replay the rest from the authoritative position
+   * — server reconciliation. Movement is applied once per command in the
+   * PLAYER_INPUT handler (NOT integrated over wall-clock time in the tick), so
+   * the server moves the avatar by EXACTLY the commands the client sent and
+   * stops the instant the client stops sending them. That structurally
+   * removes the post-release "ice slide" the time-elapsed model produced.
    */
-  private inputAppliedAt = new Map<string, number>();
+  private lastSeq = new Map<string, number>();
 
   private pid(sessionId: string): string {
     return this.pidBySession.get(sessionId) ?? sessionId;
-  }
-
-  /**
-   * Advance a player by `elapsedSec` seconds of movement based on the input
-   * (camera-yaw-relative, diagonal normalised, sprint-aware). Same math as
-   * the client's per-frame prediction in MainScene.applyLocalPrediction —
-   * keeping them identical is the reason this is a single helper. Called
-   * both from the per-tick loop (with elapsedSec ≈ tick dt) and from the
-   * input handler when a new input replaces a held one (with elapsedSec =
-   * partial-tick time the old input owned).
-   */
-  private applyMovement(player: PlayerData, input: PlayerInput, elapsedSec: number): void {
-    const sprintActive = input.sprint === true;
-    const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * elapsedSec;
-    const yaw = player.rotation || 0;
-    const fx = Math.sin(yaw);
-    const fz = Math.cos(yaw);
-    const rx = Math.cos(yaw);
-    const rz = -Math.sin(yaw);
-    let mx = 0;
-    let mz = 0;
-    if (input.forward) { mx += fx; mz += fz; }
-    if (input.backward) { mx -= fx; mz -= fz; }
-    if (input.right) { mx += rx; mz += rz; }
-    if (input.left) { mx -= rx; mz -= rz; }
-    const len = Math.hypot(mx, mz);
-    if (len === 0) return;
-    mx /= len;
-    mz /= len;
-    player.x = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.x + mx * speed));
-    player.z = Math.max(-WORLD_HALF, Math.min(WORLD_HALF, player.z + mz * speed));
   }
 
   /** Accumulated time (ms) since last revenue tick. */
@@ -270,57 +234,61 @@ export class GameRoom extends Room<GameState> {
 
     // Sub-unit backfill removed 2026-05-20 with Phase C retirement.
 
-    this.onMessage(MessageType.PLAYER_INPUT, (client: Client, input: PlayerInput) => {
+    this.onMessage(MessageType.PLAYER_INPUT, (client: Client, msg: InputCommand | PlayerInput) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
+      const sid = client.sessionId;
 
-      if (
-        typeof input.forward !== 'boolean' ||
-        typeof input.backward !== 'boolean' ||
-        typeof input.left !== 'boolean' ||
-        typeof input.right !== 'boolean' ||
-        typeof input.jump !== 'boolean'
-      ) {
+      // --- Sequenced input command (current clients) ---
+      // Apply the command's motion EXACTLY ONCE via the shared deterministic
+      // simulateMovement (identical to the client's prediction + replay), then
+      // record its seq so PLAYER_STATE can ack it. No per-tick re-integration,
+      // so there is no post-release drift — the server stops the instant the
+      // client stops sending movement commands.
+      if (isInputCommand(msg)) {
+        const cmd = msg;
+        if (
+          typeof cmd.forward !== 'boolean' || typeof cmd.backward !== 'boolean' ||
+          typeof cmd.left !== 'boolean' || typeof cmd.right !== 'boolean'
+        ) return;
+        if (cmd.sprint !== undefined && typeof cmd.sprint !== 'boolean') return;
+        // Bounds-check numerics: a NaN/Infinity seq/dt/yaw from a buggy or
+        // malicious client must never corrupt position or the seq ack.
+        if (!Number.isFinite(cmd.seq) || !Number.isFinite(cmd.dt) || !Number.isFinite(cmd.yaw)) return;
+        // Reject duplicates / out-of-order (WebSocket is ordered, but guard).
+        if (cmd.seq <= (this.lastSeq.get(sid) ?? 0)) return;
+
+        player.rotation = cmd.yaw;
+        const next = simulateMovement({ x: player.x, z: player.z }, cmd);
+        player.x = next.x;
+        player.z = next.z;
+        this.lastSeq.set(sid, cmd.seq);
         return;
       }
-      if (input.sprint !== undefined && typeof input.sprint !== 'boolean') return;
 
-      const sid = client.sessionId;
-      const now = Date.now();
-
-      // BEFORE replacing pending input, drain any movement the OLD input
-      // is still owed (time between its last apply and now). Without this,
-      // a release that arrives mid-tick would lose the few ms of motion
-      // since the previous tick — visible as undershoot vs the client's
-      // per-frame prediction. Symmetric with the tick-side apply: total
-      // movement always matches actual key-down time, no over-, no under-.
-      const oldInput = this.pendingInputs.get(sid);
-      const oldApplied = this.inputAppliedAt.get(sid);
-      if (oldInput && oldApplied !== undefined) {
-        const elapsedSec = (now - oldApplied) / 1000;
-        if (elapsedSec > 0) {
-          this.applyMovement(player, oldInput, elapsedSec);
-        }
-      }
-
-      if (input.forward || input.backward || input.left || input.right) {
-        this.pendingInputs.set(sid, input);
-        this.inputAppliedAt.set(sid, now);
-      } else {
-        // STOP — old input fully drained above; clear state.
-        this.pendingInputs.delete(sid);
-        this.inputAppliedAt.delete(sid);
-      }
-
-      // Camera yaw travels with every input packet. Store it so the
-      // per-tick update() can resolve WASD into world-space motion even
-      // when the client isn't moving this exact tick. Bounds-check:
-      // a malicious or buggy client sending NaN/Infinity here would
-      // corrupt player.rotation and break the cos/sin math in update(),
-      // permanently NaN'ing the player's x/z position with no recovery.
-      if (typeof input.rotation === 'number' && Number.isFinite(input.rotation)) {
-        player.rotation = input.rotation;
-      }
+      // --- Legacy boolean-state fallback (old client during deploy window) ---
+      // No seq / reconciliation; synthesize one fixed-dt command per message so
+      // pre-redo clients keep moving until the new bundle deploys. Safe to
+      // delete once all clients are on the command protocol.
+      const legacy = msg as PlayerInput;
+      if (
+        typeof legacy.forward !== 'boolean' || typeof legacy.backward !== 'boolean' ||
+        typeof legacy.left !== 'boolean' || typeof legacy.right !== 'boolean'
+      ) return;
+      const yaw = Number.isFinite(legacy.rotation) ? (legacy.rotation as number) : player.rotation;
+      player.rotation = yaw;
+      const lnext = simulateMovement({ x: player.x, z: player.z }, {
+        seq: 0,
+        dt: 1 / TICK_RATE,
+        forward: legacy.forward,
+        backward: legacy.backward,
+        left: legacy.left,
+        right: legacy.right,
+        sprint: legacy.sprint === true,
+        yaw,
+      });
+      player.x = lnext.x;
+      player.z = lnext.z;
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
@@ -583,7 +551,7 @@ export class GameRoom extends Room<GameState> {
       player.y = SPAWN_POINT.y;
       player.z = SPAWN_POINT.z;
       player.rotation = 0;
-      this.pendingInputs.delete(client.sessionId);
+      this.lastSeq.delete(client.sessionId);
       savePlayerPosition(this.pid(client.sessionId), player.x, player.y, player.z);
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
@@ -936,13 +904,11 @@ export class GameRoom extends Room<GameState> {
     const persistentId = this.pid(client.sessionId);
     const superseded = this.supersededSessions.delete(client.sessionId);
 
-    // Stop processing movement for this session immediately on disconnect.
-    // The player record stays in this.players so other clients keep seeing
-    // them at their last position during the reconnect window — but they
-    // don't keep gliding based on stale input. If the player reconnects,
-    // they'll send fresh input naturally.
-    this.pendingInputs.delete(client.sessionId);
-    this.inputAppliedAt.delete(client.sessionId);
+    // Drop the session's ack-seq immediately on disconnect. The player record
+    // stays in this.players so other clients keep seeing them at their last
+    // position during the reconnect window. On reconnect the client keeps its
+    // own seq counter and the server picks up acking again from there.
+    this.lastSeq.delete(client.sessionId);
 
     // Non-consented leaves (network blip, browser sleep, mobile background)
     // get a 60s reconnection window. The session, player record, parcels,
@@ -970,7 +936,7 @@ export class GameRoom extends Room<GameState> {
       console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}, superseded=${superseded}) — position saved`);
     }
     this.players.delete(client.sessionId);
-    this.pendingInputs.delete(client.sessionId);
+    this.lastSeq.delete(client.sessionId);
     this.pidBySession.delete(client.sessionId);
     // Drop the session's rate-limit buckets so the map doesn't leak.
     for (const key of Array.from(this.rateLimitBuckets.keys())) {
@@ -1145,6 +1111,10 @@ export class GameRoom extends Room<GameState> {
       // Phase 4: nameplate color is driven by rank on the client. Agents
       // inherit their owner wallet's rank automatically (rankFor walks).
       rank: rankFor(p.id),
+      // Last input-command seq processed for this session (0 for agents /
+      // never-input players). The owning client uses it to reconcile:
+      // drop acked commands, replay the rest from this authoritative position.
+      seq: this.lastSeq.get(p.id) ?? 0,
     };
   }
 
@@ -1417,27 +1387,10 @@ export class GameRoom extends Room<GameState> {
     // the 100ms broadcast interval, so the result is a smooth walk.
     this.stepAgents(dt);
 
-    // For each held input, advance the player by the time since we last
-    // applied (NOT a hard-coded tick dt). This matches the actual real-world
-    // time the input has been "active" between server frames, so a held key
-    // produces smooth continuous motion (even with client send jitter), and
-    // a quick tap that arrives mid-tick only contributes the few ms it was
-    // actually live. Pairs with the symmetric "drain old input" in the
-    // input handler — together they make server displacement equal real key
-    // press duration, matching the client's 60Hz prediction. Cap to a
-    // generous 200ms so a stalled client (browser tab paused) doesn't
-    // suddenly launch the avatar across the world on the next tick.
-    const now = Date.now();
-    this.pendingInputs.forEach((input, sessionId) => {
-      const player = this.players.get(sessionId);
-      if (!player) return;
-      const lastApplied = this.inputAppliedAt.get(sessionId) ?? now;
-      const elapsedSec = Math.min((now - lastApplied) / 1000, 0.2);
-      this.inputAppliedAt.set(sessionId, now);
-      if (elapsedSec > 0) {
-        this.applyMovement(player, input, elapsedSec);
-      }
-    });
+    // Player movement is applied per-command in the PLAYER_INPUT handler
+    // (authoritative client-prediction model), NOT integrated here over
+    // wall-clock time. The tick only steps agents, broadcasts, and ticks
+    // the economy.
 
     // ---- Broadcast player positions at fixed rate ----
     // Includes agents so the client's PLAYER_STATE handler (which removes

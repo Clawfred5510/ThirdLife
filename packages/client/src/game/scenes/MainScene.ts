@@ -35,10 +35,10 @@ import {
   onParcelUpdate,
 } from '../../network/Client';
 import {
-  PlayerInput,
-  TICK_RATE,
-  PLAYER_SPEED,
-  SPRINT_MULTIPLIER,
+  InputCommand,
+  simulateMovement,
+  MAX_COMMAND_DT,
+  RECONCILE_SNAP_DISTANCE,
   features,
   ParcelData,
   FOG_DENSITY,
@@ -152,17 +152,26 @@ export class MainScene {
     forward: false, backward: false, left: false, right: false, sprint: false,
   };
 
-  /** Whether we were sending movement input last frame — used to send a stop signal. */
-  private wasMoving = false;
-
   /** Day/night cycle system. */
   private dayNight!: DayNightCycle;
 
-  /** Timestamp of the last input sent to the server (for throttling). */
-  private lastInputTime = 0;
-
-  /** Last yaw sent to the server — used to broadcast pure-rotation updates when idle. */
+  /** Last yaw sent to the server — used to emit a no-move command when the
+   *  player orbits the camera while standing still (so remotes see the turn). */
   private lastSentYaw = 0;
+
+  // ── Client-side prediction + server reconciliation (authoritative-server
+  //    movement). The local avatar predicts input commands locally and
+  //    replays the un-acked ones on each server snapshot — no lerp, no drift. ──
+  /** Monotonic input-command sequence counter for the local player. */
+  private localSeq = 0;
+  /** Sent-but-not-yet-acked commands (oldest first); replayed on reconcile,
+   *  pruned by the server's acked seq. */
+  private pendingCommands: InputCommand[] = [];
+  /** Pure (collision-free) predicted local position — the exact value the
+   *  server also computes, so reconciliation has ~zero error on open ground.
+   *  The rendered avatar follows this through collision. */
+  private localPureX = 0;
+  private localPureZ = 0;
 
   /** Reference to the initial ArcRotateCamera so it can be disposed when follow camera activates. */
   private arcCamera: ArcRotateCamera | null = null;
@@ -314,7 +323,14 @@ export class MainScene {
     });
 
     onPlayerChange((sessionId: string, player: PlayerSnapshot) => {
+      // Appearance / rank / badge updates apply to everyone (incl. self).
       this.updateRemotePlayerTarget(sessionId, player);
+      // The local player additionally reconciles position against the
+      // authoritative snapshot (snap to server + replay un-acked commands).
+      const localId = getSessionId() ?? this.localPlayerId;
+      if (sessionId === localId) {
+        this.reconcileLocal(player.x, player.z, player.seq ?? 0);
+      }
     });
 
     // ---- Parcel state on connect: render every already-claimed parcel ----
@@ -350,8 +366,7 @@ export class MainScene {
 
     scene.onBeforeRenderObservable.add(() => {
       const dt = this.engine.getDeltaTime() / 1000;
-      this.sendPlayerInput();
-      this.applyLocalPrediction();
+      this.predictAndSendLocal();
       this.interpolateRemotePlayers();
       this.animateAllAvatars();
       this.trackPlayerWithCamera();
@@ -482,6 +497,12 @@ export class MainScene {
         remote.root.position.set(view.x, 0, view.z);
         remote.targetX = view.x;
         remote.targetZ = view.z;
+        this.localPureX = view.x;
+        this.localPureZ = view.z;
+        this.pendingCommands = [];
+        if (this.localPlayerCollider) {
+          this.localPlayerCollider.position.set(view.x, 1.0, view.z);
+        }
       }
     }
   }
@@ -503,6 +524,11 @@ export class MainScene {
     remote.targetRotation = 0;
     remote.prevX = SPAWN_POINT.x;
     remote.prevZ = SPAWN_POINT.z;
+    // Re-seed prediction so the next reconciliation doesn't yank the avatar
+    // back from spawn (the in-flight commands targeted the old position).
+    this.localPureX = SPAWN_POINT.x;
+    this.localPureZ = SPAWN_POINT.z;
+    this.pendingCommands = [];
     if (this.localPlayerCollider) {
       this.localPlayerCollider.position.set(SPAWN_POINT.x, 1.0, SPAWN_POINT.z);
     }
@@ -922,6 +948,11 @@ export class MainScene {
       this.arcCamera = cam;
       this.localPlayerRoot = avatar.root;
       this.localPlayerCollider = this.makeLocalCollider(this.sceneRef, player.x, player.z);
+      // Seed the predicted pure position to the spawn position so the first
+      // reconciliation against the server has no error.
+      this.localPureX = player.x;
+      this.localPureZ = player.z;
+      this.pendingCommands = [];
       this.sceneRef.activeCamera = cam;
     }
   }
@@ -998,99 +1029,129 @@ export class MainScene {
   }
 
   /**
-   * Client-side prediction for the local player so movement feels responsive.
-   * MUST match the server's math (camera-yaw-relative, normalised diagonal)
-   * to avoid the mesh snapping every time a server PLAYER_STATE broadcast
-   * arrives.
+   * Client-side prediction + command send (authoritative-server model). Runs
+   * every render frame. When the player has movement input — or has turned the
+   * camera while standing still — build one InputCommand for this frame's dt,
+   * apply it locally via the SHARED simulateMovement (so the server computes
+   * the identical result), buffer it for replay, and send it. The avatar
+   * renders by following the pure predicted position through collision. Idle
+   * and not turning → nothing is sent: the server holds the last position and
+   * reconciliation is a no-op (this is why there's no more post-release slide).
    */
-  private applyLocalPrediction(): void {
+  private predictAndSendLocal(): void {
+    const localId = getSessionId() ?? this.localPlayerId;
+    if (!localId || !this.arcCamera) return;
+    const remote = this.remotePlayers.get(localId);
+    if (!remote) return;
+
+    // Clamp dt to MAX_COMMAND_DT (same clamp the server applies) so a long /
+    // backgrounded frame can't teleport, and a given command moves both sides
+    // identically.
+    const dt = Math.min(this.engine.getDeltaTime() / 1000, MAX_COMMAND_DT);
+
+    // Camera yaw — the single yaw source the avatar faces AND the server
+    // stores, so client prediction and server simulation never diverge.
+    const dir = this.arcCamera.target.subtract(this.arcCamera.position);
+    const yaw = Math.atan2(dir.x, dir.z);
+    remote.root.rotation.y = yaw;
+
+    const forward = !!this.keys['KeyW'] || !!this.keys['ArrowUp'] || this.virtual.forward;
+    const backward = !!this.keys['KeyS'] || !!this.keys['ArrowDown'] || this.virtual.backward;
+    const left = !!this.keys['KeyA'] || !!this.keys['ArrowLeft'] || this.virtual.left;
+    const right = !!this.keys['KeyD'] || !!this.keys['ArrowRight'] || this.virtual.right;
+    const sprint = !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight'] || this.virtual.sprint;
+    const moving = forward || backward || left || right;
+
+    let yawDelta = Math.abs(yaw - this.lastSentYaw);
+    if (yawDelta > Math.PI) yawDelta = 2 * Math.PI - yawDelta;
+    const turned = yawDelta > 0.03; // ~1.7°
+
+    // Nothing to send when idle and not turning — server holds the position.
+    if (!moving && !turned) return;
+
+    const cmd: InputCommand = {
+      seq: ++this.localSeq,
+      dt,
+      forward, backward, left, right, sprint,
+      yaw,
+    };
+    this.lastSentYaw = yaw;
+
+    const before = { x: this.localPureX, z: this.localPureZ };
+    const after = simulateMovement(before, cmd);
+    this.localPureX = after.x;
+    this.localPureZ = after.z;
+
+    this.pendingCommands.push(cmd);
+    // Bound the buffer so dropped acks / a long stall can't grow it forever.
+    if (this.pendingCommands.length > 256) this.pendingCommands.shift();
+    sendInput(cmd);
+
+    this.applyLocalRenderDelta(remote, after.x - before.x, after.z - before.z);
+  }
+
+  /**
+   * Server reconciliation. On each authoritative snapshot for the local
+   * player: snap the pure position to the server's, drop acknowledged
+   * commands, and replay the rest through the SAME simulateMovement. On open
+   * ground with matching math this reproduces the current predicted position
+   * exactly (zero visible correction); after a genuine divergence the avatar
+   * lands where it should with NO lerp drag (that drag was the ice/rubber-band).
+   * A teleport-scale correction (respawn / fast-travel) is hard-snapped.
+   */
+  private reconcileLocal(serverX: number, serverZ: number, ackSeq: number): void {
     const localId = getSessionId() ?? this.localPlayerId;
     if (!localId) return;
     const remote = this.remotePlayers.get(localId);
-    if (!remote || !this.arcCamera) return;
-    if (import.meta.env.DEV) {
-      const dbg = (window as unknown as { __tlDebug?: { predictionTick: number } }).__tlDebug;
-      if (dbg) dbg.predictionTick += 1;
+    if (!remote) return;
+
+    if (ackSeq > 0) {
+      this.pendingCommands = this.pendingCommands.filter((c) => c.seq > ackSeq);
     }
 
-    const dt = this.engine.getDeltaTime() / 1000;
-    const sprintActive = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.virtual.sprint;
-    const speed = PLAYER_SPEED * (sprintActive ? SPRINT_MULTIPLIER : 1) * dt;
-
-    // Camera yaw (same math as sendPlayerInput)
-    const dir = this.arcCamera.target.subtract(this.arcCamera.position);
-    const yaw = Math.atan2(dir.x, dir.z);
-    const fx = Math.sin(yaw), fz = Math.cos(yaw);
-    const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-
-    let mx = 0, mz = 0;
-    if (this.keys['KeyW'] || this.keys['ArrowUp'] || this.virtual.forward) { mx += fx; mz += fz; }
-    if (this.keys['KeyS'] || this.keys['ArrowDown'] || this.virtual.backward) { mx -= fx; mz -= fz; }
-    if (this.keys['KeyD'] || this.keys['ArrowRight'] || this.virtual.right) { mx += rx; mz += rz; }
-    if (this.keys['KeyA'] || this.keys['ArrowLeft'] || this.virtual.left) { mx -= rx; mz -= rz; }
-
-    const len = Math.hypot(mx, mz);
-    if (len > 0) {
-      mx /= len; mz /= len;
-      const dx = mx * speed;
-      const dz = mz * speed;
-      const collider = this.localPlayerCollider;
-      if (collider) {
-        // Sync collider to authoritative root position (in case server snap or
-        // network update moved the avatar), then apply movement with sliding.
-        collider.position.x = remote.root.position.x;
-        collider.position.z = remote.root.position.z;
-        collider.moveWithCollisions(new Vector3(dx, 0, dz));
-        remote.root.position.x = collider.position.x;
-        remote.root.position.z = collider.position.z;
-      } else {
-        remote.root.position.x += dx;
-        remote.root.position.z += dz;
-      }
+    let px = serverX, pz = serverZ;
+    for (const c of this.pendingCommands) {
+      const r = simulateMovement({ x: px, z: pz }, c);
+      px = r.x; pz = r.z;
     }
-    remote.root.rotation.y = yaw;
 
-    // Server reconciliation: gentle continuous pull toward the server's
-    // authoritative position.
-    //
-    // Why this exists: local prediction integrates movement per render
-    // frame using frame_dt. Each rapid press/release accumulates a
-    // fraction of a frame of overshoot vs. the server (which now applies
-    // movement for actual time-since-input-arrival, not full tick dt).
-    // Without this pull, the walker sees themselves drift ahead of where
-    // observers see them — the "position appears different on other
-    // screens" bug. The pull rate is small enough to be invisible
-    // during normal play (≈12% of walk speed at 1u offset) but converges
-    // typical 1-3u drifts within a second or so.
-    //
-    // Catastrophic threshold (>200u) keeps the legacy "no hard snap on
-    // tick stalls" behaviour — pathological desyncs only get logged.
-    if (getSessionId()) {
-      const tx = remote.targetX, tz = remote.targetZ;
-      const dxRec = tx - remote.root.position.x;
-      const dzRec = tz - remote.root.position.z;
-      const distSq = dxRec * dxRec + dzRec * dzRec;
+    const dx = px - this.localPureX;
+    const dz = pz - this.localPureZ;
+    this.localPureX = px;
+    this.localPureZ = pz;
 
-      // Continuous gentle pull. Time-based so it behaves the same at
-      // 30/60/144 fps. The rate corresponds to ≈63% convergence in 1s.
-      const RECONCILE_RATE_PER_SEC = 1.0;
-      const pull = 1 - Math.exp(-RECONCILE_RATE_PER_SEC * dt);
-      remote.root.position.x += dxRec * pull;
-      remote.root.position.z += dzRec * pull;
-      // Keep the collider in sync so the next moveWithCollisions starts
-      // from the corrected position.
-      const collider = this.localPlayerCollider;
-      if (collider) {
-        collider.position.x = remote.root.position.x;
-        collider.position.z = remote.root.position.z;
+    if (Math.hypot(dx, dz) > RECONCILE_SNAP_DISTANCE) {
+      // Teleport-scale correction — snap hard (don't slide through walls).
+      remote.root.position.x = px;
+      remote.root.position.z = pz;
+      if (this.localPlayerCollider) {
+        this.localPlayerCollider.position.x = px;
+        this.localPlayerCollider.position.z = pz;
       }
+      return;
+    }
+    // Small correction (usually ~0) — carry it through collision.
+    this.applyLocalRenderDelta(remote, dx, dz);
+  }
 
-      if (distSq > 200 * 200) {
-        // Catastrophic — log only; no hard snap. Useful for spotting
-        // pathological server stalls in prod telemetry.
-        const dist = Math.sqrt(distSq);
-        console.warn(`[reconcile] desync ${dist.toFixed(1)}u (dx=${dxRec.toFixed(1)}, dz=${dzRec.toFixed(1)}) — NOT snapping; trusting local prediction`);
-      }
+  /**
+   * Move the rendered local avatar by (dx,dz), sliding against building
+   * colliders via moveWithCollisions so it never clips through walls. The pure
+   * predicted position (localPureX/Z) is the collision-free truth the server
+   * agrees on; the rendered collider follows it.
+   */
+  private applyLocalRenderDelta(remote: RemotePlayer, dx: number, dz: number): void {
+    if (dx === 0 && dz === 0) return;
+    const collider = this.localPlayerCollider;
+    if (collider) {
+      collider.position.x = remote.root.position.x;
+      collider.position.z = remote.root.position.z;
+      collider.moveWithCollisions(new Vector3(dx, 0, dz));
+      remote.root.position.x = collider.position.x;
+      remote.root.position.z = collider.position.z;
+    } else {
+      remote.root.position.x += dx;
+      remote.root.position.z += dz;
     }
   }
 
@@ -1351,52 +1412,4 @@ export class MainScene {
     c.x += dx; c.y += dy; c.z += dz;
   }
 
-  private sendPlayerInput(): void {
-    // Camera yaw in radians, measured around world +Y axis.
-    // ArcRotateCamera.alpha: 0 = camera on +X of target; we want a yaw value
-    // where 0 means "facing world -Z" (Babylon's convention). The forward
-    // direction from the player is (sin(yaw), 0, cos(yaw)).
-    let yaw = 0;
-    if (this.arcCamera) {
-      // Direction from camera to target, projected onto XZ plane.
-      const dir = this.arcCamera.target.subtract(this.arcCamera.position);
-      yaw = Math.atan2(dir.x, dir.z);
-    }
-
-    const input: PlayerInput = {
-      forward: !!this.keys['KeyW'] || !!this.keys['ArrowUp'] || this.virtual.forward,
-      backward: !!this.keys['KeyS'] || !!this.keys['ArrowDown'] || this.virtual.backward,
-      left: !!this.keys['KeyA'] || !!this.keys['ArrowLeft'] || this.virtual.left,
-      right: !!this.keys['KeyD'] || !!this.keys['ArrowRight'] || this.virtual.right,
-      jump: !!this.keys['Space'],
-      sprint: !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight'] || this.virtual.sprint,
-      rotation: yaw,
-    };
-
-    const isMoving = input.forward || input.backward || input.left || input.right || input.jump;
-    const now = performance.now();
-    const minInterval = 1000 / TICK_RATE;
-
-    // Also send when only rotation changed (idle but orbiting the camera)
-    // so remote players see the character turn in place.
-    let yawDelta = Math.abs(yaw - this.lastSentYaw);
-    if (yawDelta > Math.PI) yawDelta = 2 * Math.PI - yawDelta;
-    const rotationChanged = yawDelta > 0.03; // ~1.7 degrees
-
-    if (!isMoving && this.wasMoving) {
-      sendInput(input);
-      this.lastInputTime = now;
-      this.lastSentYaw = yaw;
-    } else if (isMoving && now - this.lastInputTime >= minInterval) {
-      sendInput(input);
-      this.lastInputTime = now;
-      this.lastSentYaw = yaw;
-    } else if (!isMoving && rotationChanged && now - this.lastInputTime >= minInterval) {
-      sendInput(input);
-      this.lastInputTime = now;
-      this.lastSentYaw = yaw;
-    }
-
-    this.wasMoving = isMoving;
-  }
 }
