@@ -237,7 +237,11 @@ export class GameRoom extends Room<GameState> {
     this.onMessage(MessageType.PLAYER_INPUT, (client: Client, msg: InputCommand | PlayerInput) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
-      const sid = client.sessionId;
+      // lastSeq is keyed by the PERSISTENT player id (player.id) — the same id
+      // snapshotPlayer() echoes back as `seq` — NOT client.sessionId. (They
+      // differ: players are keyed by sessionId but player.id is the persistent
+      // wallet/guest id.) Keying both sides by player.id is what makes the ack
+      // resolve, so the client can prune its command buffer.
 
       // --- Sequenced input command (current clients) ---
       // Apply the command's motion EXACTLY ONCE via the shared deterministic
@@ -256,13 +260,13 @@ export class GameRoom extends Room<GameState> {
         // malicious client must never corrupt position or the seq ack.
         if (!Number.isFinite(cmd.seq) || !Number.isFinite(cmd.dt) || !Number.isFinite(cmd.yaw)) return;
         // Reject duplicates / out-of-order (WebSocket is ordered, but guard).
-        if (cmd.seq <= (this.lastSeq.get(sid) ?? 0)) return;
+        if (cmd.seq <= (this.lastSeq.get(player.id) ?? 0)) return;
 
         player.rotation = cmd.yaw;
         const next = simulateMovement({ x: player.x, z: player.z }, cmd);
         player.x = next.x;
         player.z = next.z;
-        this.lastSeq.set(sid, cmd.seq);
+        this.lastSeq.set(player.id, cmd.seq);
         return;
       }
 
@@ -551,7 +555,7 @@ export class GameRoom extends Room<GameState> {
       player.y = SPAWN_POINT.y;
       player.z = SPAWN_POINT.z;
       player.rotation = 0;
-      this.lastSeq.delete(client.sessionId);
+      this.lastSeq.delete(this.pid(client.sessionId));
       savePlayerPosition(this.pid(client.sessionId), player.x, player.y, player.z);
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
@@ -904,11 +908,11 @@ export class GameRoom extends Room<GameState> {
     const persistentId = this.pid(client.sessionId);
     const superseded = this.supersededSessions.delete(client.sessionId);
 
-    // Drop the session's ack-seq immediately on disconnect. The player record
-    // stays in this.players so other clients keep seeing them at their last
-    // position during the reconnect window. On reconnect the client keeps its
-    // own seq counter and the server picks up acking again from there.
-    this.lastSeq.delete(client.sessionId);
+    // Drop the player's ack-seq immediately on disconnect (keyed by persistent
+    // id). The player record stays in this.players so other clients keep seeing
+    // them at their last position during the reconnect window. On reconnect the
+    // client keeps its own seq counter and the server picks up acking from 0.
+    this.lastSeq.delete(persistentId);
 
     // Non-consented leaves (network blip, browser sleep, mobile background)
     // get a 60s reconnection window. The session, player record, parcels,
@@ -936,7 +940,7 @@ export class GameRoom extends Room<GameState> {
       console.log(`${player.name} left (sid=${client.sessionId}, pid=${persistentId}, superseded=${superseded}) — position saved`);
     }
     this.players.delete(client.sessionId);
-    this.lastSeq.delete(client.sessionId);
+    this.lastSeq.delete(persistentId);
     this.pidBySession.delete(client.sessionId);
     // Drop the session's rate-limit buckets so the map doesn't leak.
     for (const key of Array.from(this.rateLimitBuckets.keys())) {
