@@ -448,8 +448,12 @@ export const TRADING_FEE_BPS = 100;
 // TRANSFER_FEE_BPS and BPS_DENOMINATOR are re-exported from pricing.ts.
 
 /** Default world spawn point. New players are seeded here in the DB
- *  and the phone's "Spawn" app teleports back to it. */
-export const SPAWN_POINT = { x: 0, y: 0, z: -80 };
+ *  and the phone's "Spawn" app teleports back to it.
+ *  z=-72 is the open road one parcel-row south of the rocket plaza — the
+ *  player faces +Z straight at the rocket with the whole rocket in frame.
+ *  (z=-80 used to land 4u INSIDE the buildable footprint of parcel (22,20),
+ *  so new players appeared half-inside a building once that lot was built.) */
+export const SPAWN_POINT = { x: 0, y: 0, z: -72 };
 
 export const BUS_STOPS = [
   { name: 'Downtown Central', x: 450, z: -250 },

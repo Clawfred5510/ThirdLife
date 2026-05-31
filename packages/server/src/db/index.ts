@@ -5,6 +5,7 @@ import {
   LAND_COST, GRID_COLS, GRID_ROWS, RESERVED_PARCEL_IDS, rankFromLifetimeBurn,
   PROPERTY_FEE_BPS, BPS_DENOMINATOR,
   BUILDINGS, type BuildingType,
+  SPAWN_POINT,
 } from '@gamestu/shared';
 import { randomUUID } from 'crypto';
 import { WORLD_TREASURY_ID } from '../economy/IEconomy';
@@ -291,7 +292,7 @@ class SQLiteDatabase implements DBBackend {
         reputation INTEGER DEFAULT 0,
         x REAL DEFAULT 0,
         y REAL DEFAULT 0,
-        z REAL DEFAULT -80,
+        z REAL DEFAULT ${SPAWN_POINT.z},
         last_login TEXT,
         tutorial_done INTEGER DEFAULT 0
       );
@@ -382,9 +383,16 @@ class SQLiteDatabase implements DBBackend {
     `);
 
     // Pre-launch one-shot: any player still parked at the legacy spawn
-    // (400, 0, -200) gets teleported to the new rocket-facing spawn.
+    // (400, 0, -200) gets teleported to the current rocket-facing spawn.
     // Players who have actually moved keep their position.
-    this.db.exec(`UPDATE players SET x = 0, y = 0, z = -80 WHERE x = 400 AND y = 0 AND z = -200`);
+    this.db.exec(`UPDATE players SET x = ${SPAWN_POINT.x}, y = ${SPAWN_POINT.y}, z = ${SPAWN_POINT.z} WHERE x = 400 AND y = 0 AND z = -200`);
+
+    // Additive one-shot (2026-05-31): re-home anyone still parked at the old
+    // (0, 0, -80) spawn — which landed inside parcel (22,20)'s footprint — to
+    // the new open-road spawn in front of the rocket. Guarded to the exact old
+    // spawn so players who have moved keep their position; idempotent (no rows
+    // match after the first pass).
+    this.db.exec(`UPDATE players SET z = ${SPAWN_POINT.z} WHERE x = 0 AND y = 0 AND z = -80`);
 
     // Reserved-parcel cleanup: clear any owner/business on landmark plots
     // (e.g. the rocket cell at world origin). New claim attempts on these
@@ -752,7 +760,7 @@ class SQLiteDatabase implements DBBackend {
   // schema was first laid down.
   private get stmtInsertPlayer() {
     return this.db.prepare(
-      `INSERT INTO players (id, name, x, y, z, last_login) VALUES (?, ?, 0, 0, -80, datetime('now'))`,
+      `INSERT INTO players (id, name, x, y, z, last_login) VALUES (?, ?, ${SPAWN_POINT.x}, ${SPAWN_POINT.y}, ${SPAWN_POINT.z}, datetime('now'))`,
     );
   }
   private get stmtUpdateLogin() { return this.db.prepare(`UPDATE players SET last_login = datetime('now') WHERE id = ?`); }
@@ -1518,9 +1526,9 @@ class MemoryDB implements DBBackend {
       name,
       credits: 500,
       reputation: 0,
-      x: 0,
-      y: 0,
-      z: -80,
+      x: SPAWN_POINT.x,
+      y: SPAWN_POINT.y,
+      z: SPAWN_POINT.z,
       last_login: new Date().toISOString(),
       tutorial_done: 0,
       appearance: null,
@@ -1856,7 +1864,7 @@ class MemoryDB implements DBBackend {
     // New agents start at 0 — owners fund them via economy().allocate.
     this.players.set(id, {
       id, name, credits: 0, reputation: 0,
-      x: 0, y: 0, z: -80,
+      x: SPAWN_POINT.x, y: SPAWN_POINT.y, z: SPAWN_POINT.z,
       last_login: new Date().toISOString(), tutorial_done: 0,
       appearance: appearanceJson,
     });
