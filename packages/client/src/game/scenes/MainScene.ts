@@ -622,6 +622,20 @@ export class MainScene {
       return;
     }
 
+    // Owned but the building was explicitly cleared (demolish) — strip any
+    // rendered building so the plot is bare, while the parcel STAYS owned
+    // (the server keeps owner_id). The demolish broadcast AND the reconnect
+    // PARCEL_STATE snapshot both carry business_type:''. Require the field to
+    // be PRESENT and empty so partial updates that omit it (rename / recolor)
+    // never wrongly clear a building. Without this, an empty business_type
+    // fell through to updateOrCreateBusinessBox and was coerced to the default
+    // 'apartment' spec — the "shadow building" ghost (and it returned on
+    // reconnect via the same snapshot path).
+    if ('business_type' in data && (data.business_type === '' || data.business_type === 'none')) {
+      this.removeBusinessFromParcel(renderData);
+      return;
+    }
+
     // Update or create the business box
     this.updateOrCreateBusinessBox(renderData, def, data);
   }
