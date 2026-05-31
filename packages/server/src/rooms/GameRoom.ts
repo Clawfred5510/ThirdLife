@@ -39,6 +39,7 @@ import {
   simulateMovement,
   isInputCommand,
   InputCommand,
+  MAX_COMMAND_DT,
 } from '@gamestu/shared';
 import {
   getOrCreatePlayer,
@@ -85,6 +86,14 @@ import { startJob, getActiveJob, cancelJob, checkObjective, tickWaitProgress, ch
 import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
 const PLAYER_BROADCAST_INTERVAL_MS = 100; // 10 Hz
+
+/** True if `id` names a reserved/system account that a client must never be
+ *  able to assume via a guest playerId (the fee-sink treasury, or any
+ *  `__`-prefixed internal account). Wallet players go through token auth and
+ *  guests get a random session id, so this only gates the guest playerId path. */
+function isReservedPlayerId(id: string): boolean {
+  return id === WORLD_TREASURY_ID || id.startsWith('__');
+}
 
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
@@ -156,6 +165,11 @@ export class GameRoom extends Room<GameState> {
    * removes the post-release "ice slide" the time-elapsed model produced.
    */
   private lastSeq = new Map<string, number>();
+
+  /** Wall-clock ms of the last processed input command per player.id. Bounds
+   *  the movement displacement budget so a client that floods commands can't
+   *  speed-hack past real elapsed time (see the PLAYER_INPUT handler). */
+  private lastCmdAt = new Map<string, number>();
 
   private pid(sessionId: string): string {
     return this.pidBySession.get(sessionId) ?? sessionId;
@@ -234,65 +248,56 @@ export class GameRoom extends Room<GameState> {
 
     // Sub-unit backfill removed 2026-05-20 with Phase C retirement.
 
-    this.onMessage(MessageType.PLAYER_INPUT, (client: Client, msg: InputCommand | PlayerInput) => {
+    this.onMessage(MessageType.PLAYER_INPUT, (client: Client, msg: InputCommand) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
-      // lastSeq is keyed by the PERSISTENT player id (player.id) — the same id
-      // snapshotPlayer() echoes back as `seq` — NOT client.sessionId. (They
-      // differ: players are keyed by sessionId but player.id is the persistent
-      // wallet/guest id.) Keying both sides by player.id is what makes the ack
-      // resolve, so the client can prune its command buffer.
 
-      // --- Sequenced input command (current clients) ---
-      // Apply the command's motion EXACTLY ONCE via the shared deterministic
-      // simulateMovement (identical to the client's prediction + replay), then
-      // record its seq so PLAYER_STATE can ack it. No per-tick re-integration,
-      // so there is no post-release drift — the server stops the instant the
-      // client stops sending movement commands.
-      if (isInputCommand(msg)) {
-        const cmd = msg;
-        if (
-          typeof cmd.forward !== 'boolean' || typeof cmd.backward !== 'boolean' ||
-          typeof cmd.left !== 'boolean' || typeof cmd.right !== 'boolean'
-        ) return;
-        if (cmd.sprint !== undefined && typeof cmd.sprint !== 'boolean') return;
-        // Bounds-check numerics: a NaN/Infinity seq/dt/yaw from a buggy or
-        // malicious client must never corrupt position or the seq ack.
-        if (!Number.isFinite(cmd.seq) || !Number.isFinite(cmd.dt) || !Number.isFinite(cmd.yaw)) return;
-        // Reject duplicates / out-of-order (WebSocket is ordered, but guard).
-        if (cmd.seq <= (this.lastSeq.get(player.id) ?? 0)) return;
+      // Rate-limit even movement input. The movement redo applies one
+      // simulateMovement() per command (no per-tick integration), so without
+      // a cap a modified client could FLOOD thousands of commands/sec and
+      // speed-hack/teleport server-side. Capacity 150, refill 150/s comfortably
+      // covers a 60fps client (which sends ~1/frame) plus burst, and drops a
+      // degenerate flood. (network-code.md: rate-limit per client.)
+      if (!this.checkRate(client, 'input', 150, 150)) return;
 
-        player.rotation = cmd.yaw;
-        const next = simulateMovement({ x: player.x, z: player.z }, cmd);
-        player.x = next.x;
-        player.z = next.z;
-        this.lastSeq.set(player.id, cmd.seq);
-        return;
-      }
-
-      // --- Legacy boolean-state fallback (old client during deploy window) ---
-      // No seq / reconciliation; synthesize one fixed-dt command per message so
-      // pre-redo clients keep moving until the new bundle deploys. Safe to
-      // delete once all clients are on the command protocol.
-      const legacy = msg as PlayerInput;
+      // Only the sequenced InputCommand shape is accepted now (the pre-redo
+      // boolean-state client is no longer deployed). lastSeq is keyed by the
+      // PERSISTENT player id (player.id) — the same id snapshotPlayer() echoes
+      // back as `seq` — NOT client.sessionId (players are keyed by sessionId
+      // but player.id is the persistent wallet/guest id). Keying both sides by
+      // player.id is what makes the ack resolve so the client prunes its buffer.
+      if (!isInputCommand(msg)) return;
+      const cmd = msg;
       if (
-        typeof legacy.forward !== 'boolean' || typeof legacy.backward !== 'boolean' ||
-        typeof legacy.left !== 'boolean' || typeof legacy.right !== 'boolean'
+        typeof cmd.forward !== 'boolean' || typeof cmd.backward !== 'boolean' ||
+        typeof cmd.left !== 'boolean' || typeof cmd.right !== 'boolean'
       ) return;
-      const yaw = Number.isFinite(legacy.rotation) ? (legacy.rotation as number) : player.rotation;
-      player.rotation = yaw;
-      const lnext = simulateMovement({ x: player.x, z: player.z }, {
-        seq: 0,
-        dt: 1 / TICK_RATE,
-        forward: legacy.forward,
-        backward: legacy.backward,
-        left: legacy.left,
-        right: legacy.right,
-        sprint: legacy.sprint === true,
-        yaw,
-      });
-      player.x = lnext.x;
-      player.z = lnext.z;
+      if (cmd.sprint !== undefined && typeof cmd.sprint !== 'boolean') return;
+      // Bounds-check numerics: a NaN/Infinity seq/dt/yaw from a buggy or
+      // malicious client must never corrupt position or the seq ack.
+      if (!Number.isFinite(cmd.seq) || !Number.isFinite(cmd.dt) || !Number.isFinite(cmd.yaw)) return;
+      // Reject duplicates / out-of-order (WebSocket is ordered, but guard).
+      if (cmd.seq <= (this.lastSeq.get(player.id) ?? 0)) return;
+
+      // Wall-clock displacement budget: clamp the command's effective dt to the
+      // REAL time elapsed since this player's last command (plus a small jitter
+      // allowance). simulateMovement already caps a single command to
+      // MAX_COMMAND_DT, but nothing else bounds commands-per-second — this
+      // restores the wall-clock anchor the old time-elapsed model provided, so
+      // total displacement can't exceed real time no matter how many commands
+      // are sent. First command from a player has no prior timestamp → allow
+      // up to MAX_COMMAND_DT.
+      const now = Date.now();
+      const prevAt = this.lastCmdAt.get(player.id);
+      const realElapsed = prevAt === undefined ? MAX_COMMAND_DT : (now - prevAt) / 1000;
+      const budgetedDt = Math.min(cmd.dt, realElapsed + 0.02); // +20ms jitter slack
+      this.lastCmdAt.set(player.id, now);
+
+      player.rotation = cmd.yaw;
+      const next = simulateMovement({ x: player.x, z: player.z }, { ...cmd, dt: budgetedDt });
+      player.x = next.x;
+      player.z = next.z;
+      this.lastSeq.set(player.id, cmd.seq);
     });
 
     this.onMessage(MessageType.CHAT, (client: Client, message: { text: string }) => {
@@ -556,6 +561,7 @@ export class GameRoom extends Room<GameState> {
       player.z = SPAWN_POINT.z;
       player.rotation = 0;
       this.lastSeq.delete(this.pid(client.sessionId));
+      this.lastCmdAt.delete(this.pid(client.sessionId));
       savePlayerPosition(this.pid(client.sessionId), player.x, player.y, player.z);
       this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(player));
     });
@@ -621,39 +627,22 @@ export class GameRoom extends Room<GameState> {
       console.log(`${player.name} built ${spec.label} on parcel #${data.parcelId} (-${spec.cost} credits)`);
     });
 
-    // ---- WORK: produce resources from owned buildings ----
+    // ---- WORK: production is TICK-AUTHORITATIVE, no on-demand minting ----
+    // Owned buildings produce resources ONLY during the server income tick
+    // (the same path for players and bots — see update() / the economy
+    // settlement, which writes via updatePlayerResources). The old on-demand
+    // WORK handler added spec.amount per building per call with no cooldown or
+    // rate limit, so a client could flood WORK to mint unlimited resources
+    // (sellable for $AMETA on the order book). WORK no longer mints anything;
+    // it just echoes the player's current resources so any legacy caller gets
+    // a harmless state refresh instead of free resources.
     this.onMessage(MessageType.WORK, (client: Client) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
-
       const ownerId = this.pid(client.sessionId);
-      const parcels = getPlayerParcels(ownerId);
       const resources = getPlayerResources(ownerId);
-      let creditsEarned = 0;
-      const produced: Record<string, number> = {};
-
-      for (const parcel of parcels) {
-        const bt = (parcel as any).building_type as string | null;
-        if (!bt) continue;
-        const spec = BUILDINGS[bt as BuildingType];
-        if (!spec) continue;
-
-        if (spec.produces && spec.amount) {
-          const key = spec.produces as keyof typeof resources;
-          resources[key] = (resources[key] || 0) + spec.amount;
-          produced[key] = (produced[key] || 0) + spec.amount;
-        }
-      }
-
-      if (creditsEarned > 0) {
-        player.credits += creditsEarned;
-        updatePlayerCredits(ownerId, player.credits);
-        client.send(MessageType.CREDITS_UPDATE, { credits: player.credits });
-      }
-      updatePlayerResources(ownerId, resources);
-      client.send(MessageType.WORK_RESULT, { produced, creditsEarned, resources });
+      client.send(MessageType.WORK_RESULT, { produced: {}, creditsEarned: 0, resources });
       client.send(MessageType.RESOURCE_UPDATE, resources);
-      addEvent('work', ownerId, { produced, creditsEarned }, 'minor');
     });
 
     // (Legacy Colyseus TRADE + MARKET_PRICES handlers removed 2026-05-16.
@@ -797,7 +786,16 @@ export class GameRoom extends Room<GameState> {
       client.leave(4003, 'wallet_requires_auth_token');
       return;
     } else if (typeof options.playerId === 'string' && PID_RE.test(options.playerId)) {
-      persistentId = options.playerId;
+      // Reserved/system ids must never be assumable via a client-supplied
+      // guest id. WORLD_TREASURY_ID ('__world_treasury__') and any '__'-
+      // prefixed system account match PID_RE, so a guest joining with that
+      // playerId would otherwise take over the account that accumulates ALL
+      // game fees. Reject reserved ids → fall through to a fresh session id.
+      if (isReservedPlayerId(options.playerId)) {
+        persistentId = client.sessionId;
+      } else {
+        persistentId = options.playerId;
+      }
     } else {
       persistentId = client.sessionId;
     }
@@ -913,6 +911,7 @@ export class GameRoom extends Room<GameState> {
     // them at their last position during the reconnect window. On reconnect the
     // client keeps its own seq counter and the server picks up acking from 0.
     this.lastSeq.delete(persistentId);
+    this.lastCmdAt.delete(persistentId);
 
     // Non-consented leaves (network blip, browser sleep, mobile background)
     // get a 60s reconnection window. The session, player record, parcels,

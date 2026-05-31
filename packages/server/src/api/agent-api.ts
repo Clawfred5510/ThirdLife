@@ -25,7 +25,6 @@ import {
   getLifetimeLuxuryBurned,
   getAgentLifetimeStats,
   getAuthSessionPlayerId,
-  workProduce,
   buyLand,
 } from '../db';
 import { economy, WORLD_TREASURY_ID } from '../economy';
@@ -112,9 +111,14 @@ function logAuthFailure(req: Request, reason: 'missing_header' | 'invalid_key', 
   const ip = (req.ip || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
   const ua = (req.headers['user-agent'] ?? '').toString().slice(0, 120);
   const path = req.path;
+  // Raw IP, user-agent, and API-key hint go to the SERVER CONSOLE only (ops /
+  // observability). They are deliberately NOT persisted into the events table:
+  // GET /api/v1/events is unauthenticated, so storing them there would let
+  // anyone harvest failed-auth client IPs + tl_sk_ key prefixes. The persisted
+  // event keeps only the non-identifying path + reason for funnel/abuse stats.
   // eslint-disable-next-line no-console
   console.warn(`[auth-fail] ip=${ip} path=${path} reason=${reason} key_hint=${apiKeyHint ?? '-'} ua="${ua}"`);
-  addEvent('auth_failure', null, { ip, path, reason, key_hint: apiKeyHint, ua }, 'minor');
+  addEvent('auth_failure', null, { path, reason }, 'minor');
 }
 
 // ── Rate limiter: token bucket keyed by API key (auth'd) or IP (anon) ───
@@ -1562,27 +1566,14 @@ router.post('/actions/build', authInGameAgentLegacy, rateLimit, (req: Request, r
 });
 
 router.post('/actions/work', authInGameAgentLegacy, rateLimit, (req: Request, res: Response) => {
+  // Production is TICK-AUTHORITATIVE — buildings produce resources only during
+  // the server income tick (same path for players and bots). This endpoint no
+  // longer mints on demand: the old per-call `+= spec.amount` loop let a caller
+  // flood /actions/work to mint unlimited resources (sellable for $AMETA). It
+  // now just reports the agent's current resources + balance.
   const agentId = (req as any).agentId;
-  const parcels = getPlayerParcels(agentId);
   const resources = getPlayerResources(agentId);
-  let creditsEarned = 0;
-  const produced: Record<string, number> = {};
-
-  for (const parcel of parcels) {
-    const bt = (parcel as any).building_type as string | null;
-    if (!bt) continue;
-    const spec = BUILDINGS[bt as BuildingType];
-    if (!spec) continue;
-    if (spec.produces && spec.amount) {
-      const key = spec.produces as keyof typeof resources;
-      resources[key] += spec.amount;
-      produced[key] = (produced[key] || 0) + spec.amount;
-    }
-  }
-
-  const result = workProduce(agentId, creditsEarned, resources);
-  addEvent('work', agentId, { produced, creditsEarned }, 'minor');
-  res.json({ ok: true, produced, creditsEarned, resources, balance: result.credits });
+  res.json({ ok: true, produced: {}, creditsEarned: 0, resources, balance: getPlayerCredits(agentId) });
 });
 
 // $AMETA transfer between actors (any player → any other player). Subject

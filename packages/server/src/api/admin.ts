@@ -1,18 +1,45 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { timingSafeEqual } from 'crypto';
 import { getAllParcels, getAllPlayers, wipeParcels, deletePlayer, seedParcels, wipePlayerParcels, getRawDb, playerExists } from '../db';
 
 const router = Router();
 
+// ── Brute-force lockout (per IP, in-process) ───────────────────────────────
+// The admin surface is a single shared password gating destructive ops
+// (wipe / ban / transfer-player). Lock an IP out after too many failures so
+// the password can't be brute-forced online.
+const LOCKOUT_THRESHOLD = 8;          // failures before lockout
+const LOCKOUT_MS = 15 * 60_000;       // 15 min
+const failCounts = new Map<string, { count: number; until: number }>();
+
+function clientIp(req: Request): string {
+  return (req.ip || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+}
+
+/** Constant-time string compare (avoids a timing oracle on the password). */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf-8');
+  const bb = Buffer.from(b, 'utf-8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 // ── Basic-auth guard ──────────────────────────────────────────────────────
 function adminAuth(req: Request, res: Response, next: NextFunction): void {
   const password = process.env.ADMIN_PASSWORD;
+  // Fail CLOSED: admin is disabled unless a password is configured, in EVERY
+  // environment (previously dev fell open via next(), so an internet-reachable
+  // non-prod instance with NODE_ENV unset exposed wipe/ban/transfer to anyone).
   if (!password) {
-    // If no password configured, block entirely in prod; allow in dev.
-    if (process.env.NODE_ENV === 'production') {
-      res.status(503).send('Admin disabled (no ADMIN_PASSWORD set)');
-      return;
-    }
-    next();
+    res.status(503).send('Admin disabled (no ADMIN_PASSWORD set)');
+    return;
+  }
+
+  const ip = clientIp(req);
+  const now = Date.now();
+  const rec = failCounts.get(ip);
+  if (rec && rec.until > now) {
+    res.status(429).send('Too many attempts. Try again later.');
     return;
   }
 
@@ -21,11 +48,20 @@ function adminAuth(req: Request, res: Response, next: NextFunction): void {
     const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf-8');
     const idx = decoded.indexOf(':');
     const pw = idx >= 0 ? decoded.slice(idx + 1) : decoded;
-    if (pw === password) {
+    if (safeEqual(pw, password)) {
+      failCounts.delete(ip); // reset on success
       next();
       return;
     }
   }
+  // Record the failure + lock out once over threshold.
+  const next_rec = rec && rec.until > now ? rec : { count: (rec?.count ?? 0), until: 0 };
+  next_rec.count += 1;
+  if (next_rec.count >= LOCKOUT_THRESHOLD) {
+    next_rec.until = now + LOCKOUT_MS;
+    next_rec.count = 0;
+  }
+  failCounts.set(ip, next_rec);
   res.setHeader('WWW-Authenticate', 'Basic realm="ThirdLife Admin", charset="UTF-8"');
   res.status(401).send('Authentication required.');
 }
