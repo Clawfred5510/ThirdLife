@@ -46,6 +46,19 @@ export function parcelWorldPos(grid_x: number, grid_y: number): { x: number; z: 
   };
 }
 
+/** How far south (−z) of a parcel's centre an agent stands so it's visibly in
+ *  front of the building's door rather than embedded in the wall. */
+export const DOOR_OFFSET_Z = 12;
+
+/** Canonical "door" position for a parcel: world centre offset 12u south.
+ *  THE single source for where an agent stands at its worksite — used by the
+ *  autopilot waypoint, GameRoom agent placement, and REST agent spawn, so all
+ *  three agree exactly (no jitter, no duplicated offset literal). */
+export function parcelDoorPos(grid_x: number, grid_y: number): { x: number; y: number; z: number } {
+  const { x, z } = parcelWorldPos(grid_x, grid_y);
+  return { x, y: 0, z: z - DOOR_OFFSET_Z };
+}
+
 // ── Phase D world map: landmarks ──────────────────────────────────────
 
 export interface LandmarkSpec {

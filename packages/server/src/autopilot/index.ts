@@ -36,7 +36,8 @@ import {
   BuildingType,
   ResourceType,
   AgentRole,
-  parcelWorldPos,
+  parcelDoorPos,
+  SPAWN_POINT,
 } from '@gamestu/shared';
 import { getWorldTick } from '../world';
 
@@ -59,17 +60,16 @@ export interface AgentMove {
 }
 
 // Spawn plaza — where unemployed agents stand. Mirrors the human spawn
-// position so they look like a welcoming crowd at the origin.
-const SPAWN_X = 0;
-const SPAWN_Y = 0;
-const SPAWN_Z = -80;
+// (SPAWN_POINT) so they look like a welcoming crowd in front of the rocket.
+const SPAWN_X = SPAWN_POINT.x;
+const SPAWN_Y = SPAWN_POINT.y;
+const SPAWN_Z = SPAWN_POINT.z;
 
-/** Workplace anchor: parcel centre offset 12u south of the building, so
- *  the agent is visibly out in front of the structure rather than embedded
- *  in the wall. Same formula every tick → no jitter. */
+/** Workplace anchor: the canonical parcel "door" (centre, 12u south of the
+ *  building) — shared so the autopilot waypoint, GameRoom placement, and REST
+ *  agent spawn all agree exactly. */
 function parcelDoor(parcel: ParcelRow): { x: number; y: number; z: number } {
-  const { x, z } = parcelWorldPos(parcel.grid_x, parcel.grid_y);
-  return { x, y: 0, z: z - 12 };
+  return parcelDoorPos(parcel.grid_x, parcel.grid_y);
 }
 
 /** Deterministic per-agent offset around the spawn plaza so dozens of

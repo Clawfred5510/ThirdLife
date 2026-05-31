@@ -82,7 +82,7 @@ import {
   EXTERNAL_AGENT_CAP_BY_RANK,
   LAND_CAP_BY_RANK,
   MARKETPLACE_FEE_BPS_BY_RANK,
-  parcelWorldPos,
+  parcelDoorPos,
 } from '@gamestu/shared';
 import { setAgentWorkplace, savePlayerPosition } from '../db';
 import {
@@ -609,9 +609,9 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
     const parcels = getAllParcels();
     const p = parcels.find((x) => x.id === workplaceParcelId);
     if (p) {
-      const { x, z } = parcelWorldPos(p.grid_x, p.grid_y);
-      spawnX = x;
-      spawnZ = z - 12;
+      const door = parcelDoorPos(p.grid_x, p.grid_y);
+      spawnX = door.x;
+      spawnZ = door.z;
     }
   } else {
     // No workplace — spread around spawn deterministically by id so
@@ -794,9 +794,9 @@ router.post('/agents/register-external', authWallet, async (req: Request, res: R
     // and autopilot.parcelDoor). The old formula used the stale 50×50-grid
     // centring offset → external agents stood ~124u off their plot and,
     // since externals never get an autopilot pass, stayed there permanently.
-    const { x, z } = parcelWorldPos(p.grid_x, p.grid_y);
-    spawnX = x;
-    spawnZ = z - 12;
+    const door = parcelDoorPos(p.grid_x, p.grid_y);
+    spawnX = door.x;
+    spawnZ = door.z;
   } else {
     // Deterministic offset by agent id so multiple unclaimed externals
     // don't stack at the same point.

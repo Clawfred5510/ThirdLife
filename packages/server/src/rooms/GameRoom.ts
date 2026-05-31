@@ -35,7 +35,7 @@ import {
   MAX_OFFLINE_TICKS,
   consumesEnergy,
   emitsPassiveLuxury,
-  parcelWorldPos,
+  parcelDoorPos,
   simulateMovement,
   isInputCommand,
   InputCommand,
@@ -1158,21 +1158,20 @@ export class GameRoom extends Room<GameState> {
       }
 
       // Canonical body placement — single source of truth for where an agent
-      // stands: the "door" (parcelWorldPos + 12u south, matching
-      // autopilot.parcelDoor) of its workplace for in-game agents, or of the
-      // owner's first parcel for external agents (their on-plot
-      // representation). This corrects agents that were persisted with the
-      // old stale `grid * 48 - 1200` formula (off by ~124u) the moment they
-      // load, and means an agent is at its worksite immediately instead of
-      // waiting up to a full income tick for the first autopilot waypoint.
-      // Unemployed/parcel-less agents keep their spread-around-spawn row.
+      // stands: the parcel "door" (parcelDoorPos — centre, 12u south, shared
+      // with autopilot.parcelDoor + REST agent spawn) of its workplace for
+      // in-game agents, or of the owner's first parcel for external agents
+      // (their on-plot representation). This corrects agents persisted with
+      // the old stale formula (off by ~124u) the moment they load, and means
+      // an agent is at its worksite immediately instead of waiting a full
+      // income tick. Unemployed/parcel-less agents keep their spread row.
       let sx = row.x, sy = row.y, sz = row.z;
       const placeParcel = a.workplace_parcel_id !== null
         ? parcelById.get(a.workplace_parcel_id)
         : (a.is_external === 1 && a.owner_wallet ? getPlayerParcels(a.owner_wallet)[0] : undefined);
       if (placeParcel) {
-        const { x, z } = parcelWorldPos(placeParcel.grid_x, placeParcel.grid_y);
-        sx = x; sy = 0; sz = z - 12;
+        const door = parcelDoorPos(placeParcel.grid_x, placeParcel.grid_y);
+        sx = door.x; sy = door.y; sz = door.z;
         // Persist the correction so the stored row stops drifting (backfill).
         if (Math.abs(sx - row.x) > 0.01 || Math.abs(sz - row.z) > 0.01) {
           savePlayerPosition(a.id, sx, sy, sz);
