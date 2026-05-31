@@ -72,16 +72,18 @@ export const HUD: React.FC = () => {
   }
 
   return (
+    // In-flow inside App's desktop left-stack flex column (positioning owned
+    // there). pointerEvents:none so camera-drag works over the HUD text.
     <div
       style={{
-        position: 'absolute',
-        top: 16,
-        left: 16,
+        position: 'relative',
         color: '#FAF3E0',
         fontFamily: '"Nunito", system-ui, sans-serif',
         fontSize: 13,
         fontWeight: 600,
+        lineHeight: 1.3,
         textShadow: '1px 2px 0 rgba(58,42,31,0.6)',
+        pointerEvents: 'none',
       }}
     >
       <h2 style={{

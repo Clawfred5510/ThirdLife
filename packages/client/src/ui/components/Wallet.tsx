@@ -32,9 +32,9 @@ export const Wallet: React.FC = () => {
         whiteSpace: 'nowrap' as const,
       }
     : {
-        position: 'absolute',
-        top: 120,
-        left: 16,
+        // In-flow inside App's desktop left-stack flex column (positioning
+        // owned there). pointerEvents:none so camera-drag works over it.
+        position: 'relative',
         color: 'white',
         fontFamily: 'monospace',
         fontSize: 14,
@@ -42,6 +42,9 @@ export const Wallet: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
+        maxWidth: 360,
+        whiteSpace: 'nowrap' as const,
+        pointerEvents: 'none',
       };
 
   // On a narrow phone, abbreviate large balances (50,000,000 → 50M) so

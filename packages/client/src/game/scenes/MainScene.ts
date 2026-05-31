@@ -357,6 +357,7 @@ export class MainScene {
       this.trackPlayerWithCamera();
       this.driftClouds(dt);
       this.updateRoofFade(dt);
+      this.updateBuildingLabelFocus(dt * 1000);
       if (this.dayNight) {
         this.dayNight.update(dt);
       }
@@ -694,6 +695,10 @@ export class MainScene {
     this.labelUI.addControl(labelRect);
     labelRect.linkWithMesh(renderData.anchor);
     labelRect.linkOffsetY = -180;
+    // Hidden by default — updateBuildingLabelFocus() shows exactly one label
+    // (the closest building the player is looking at) per frame. Without this
+    // every named building's tag would be visible at once.
+    labelRect.isVisible = false;
     renderData.label = labelRect;
   }
 
@@ -1256,6 +1261,70 @@ export class MainScene {
         if (m.visibility <= 0.01 && m.isEnabled()) m.setEnabled(false);
         else if (m.visibility > 0.01 && !m.isEnabled()) m.setEnabled(true);
       }
+    });
+  }
+
+  /** ms since the last label-focus recompute (throttled to ~10 Hz). */
+  private labelFocusAccumMs = 0;
+
+  /**
+   * Show the floating name tag for ONLY the single closest building the
+   * player is looking at; keep every other building's tag hidden. Building
+   * labels are created hidden (updateBuildingMetaAndLabel) and this is the
+   * only place that ever shows one, so the result is exactly one visible tag
+   * at a time (or none, when no building is in view+range).
+   *
+   * "Looking at" = the camera's forward direction on the XZ plane, which is
+   * also the player's facing (player yaw = camera yaw, Roblox follow-cam).
+   * A building qualifies if it is within MAX_RANGE and inside a ~35° cone in
+   * front of the player, OR if the player is standing inside its footprint
+   * (degenerate direction — always show the building you're in). Among
+   * qualifiers, the nearest wins.
+   *
+   * Throttled to ~10 Hz — avatar/camera motion between recomputes is far
+   * smaller than the cone, so focus never visibly lags. Toggle-only
+   * (isVisible), never dispose/recreate, per engine-code.md.
+   */
+  private updateBuildingLabelFocus(dtMs: number): void {
+    this.labelFocusAccumMs += dtMs;
+    if (this.labelFocusAccumMs < 100) return;
+    this.labelFocusAccumMs = 0;
+
+    let bestId: number | null = null;
+    if (this.localPlayerRoot && this.arcCamera) {
+      const px = this.localPlayerRoot.position.x;
+      const pz = this.localPlayerRoot.position.z;
+      // Camera forward on XZ (same convention as sendPlayerInput): yaw =
+      // atan2(dir.x, dir.z), forward = (sin yaw, cos yaw).
+      const dir = this.arcCamera.target.subtract(this.arcCamera.position);
+      const yaw = Math.atan2(dir.x, dir.z);
+      const fx = Math.sin(yaw), fz = Math.cos(yaw);
+
+      const MAX_RANGE_SQ = 60 * 60;  // beyond ~60u no label shows
+      const VIEW_DOT = 0.82;         // cos(~35°): building must be ~in front
+      let bestDistSq = Infinity;
+
+      this.parcelRenders.forEach((data, parcelId) => {
+        const b = data.building;
+        if (!b || !data.label) return;
+        const [cx, cz] = b.centerXZ;
+        const toX = cx - px, toZ = cz - pz;
+        const distSq = toX * toX + toZ * toZ;
+        const [hx, hz] = b.halfExtentsXZ;
+        const inside = Math.abs(toX) < hx && Math.abs(toZ) < hz;
+        if (!inside) {
+          if (distSq > MAX_RANGE_SQ) return;
+          const dist = Math.sqrt(distSq) || 1;
+          if ((toX * fx + toZ * fz) / dist < VIEW_DOT) return; // outside cone
+        }
+        if (distSq < bestDistSq) { bestDistSq = distSq; bestId = parcelId; }
+      });
+    }
+
+    // Apply: exactly the winner is visible. isVisible is a no-op when the
+    // flag is unchanged, so this stays cheap even over the full parcel map.
+    this.parcelRenders.forEach((data, parcelId) => {
+      if (data.label) data.label.isVisible = parcelId === bestId;
     });
   }
 

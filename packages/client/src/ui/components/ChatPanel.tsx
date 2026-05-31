@@ -7,12 +7,10 @@ const MAX_MESSAGES = 20;
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    position: 'absolute',
-    // UI Overhaul: chat lives in the top-left under the $AMETA balance
-    // (HUD ~0-100, Wallet at 120). 160 leaves a small gap below the
-    // balance line.
-    top: 160,
-    left: 16,
+    // In-flow inside App's desktop left-stack flex column (App.tsx owns the
+    // top-left anchoring + spacing now, so chat can never collide with the
+    // HUD/Wallet above it regardless of their height).
+    position: 'relative',
     width: 380,
     maxHeight: 260,
     display: 'flex',

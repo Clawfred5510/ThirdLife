@@ -1,5 +1,6 @@
 import React from 'react';
 import { focusRingStyle } from './theme';
+import { useViewport } from './hooks/useViewport';
 import { HUD } from './components/HUD';
 import { ChatPanel } from './components/ChatPanel';
 import { Toast } from './components/Toast';
@@ -27,15 +28,45 @@ const TutorialOverlay = React.lazy(() =>
 );
 
 export const App: React.FC = () => {
+  const vp = useViewport();
+  // Desktop top-left stack: HUD title, Wallet pill, and ChatPanel share one
+  // flex column anchored at (16,16) so they stack with real spacing instead
+  // of each guessing a fixed `top:` offset (the old HUD/Wallet/Chat
+  // 16/120/160 offsets assumed a ~100px HUD height; the HUD is taller, so
+  // its bottom line printed over the Wallet — the reported HUD overlap).
+  // The column lets the canvas receive clicks (pointerEvents:none); ChatPanel
+  // re-enables pointer events on itself. On mobile each piece self-positions
+  // (top-right dot / pill / chat FAB), so they render as bare siblings.
+  const leftStack = (
+    <>
+      <HUD />
+      <Wallet />
+      <ChatPanel />
+    </>
+  );
   return (
     <>
       <style>{focusRingStyle}</style>
-      <HUD />
+      {vp.isMobile ? leftStack : (
+        <div
+          style={{
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: 12,
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
+        >
+          {leftStack}
+        </div>
+      )}
       <ResourceBar />
-      <Wallet />
       <Phone />
       <Joystick />
-      <ChatPanel />
       <Toast />
       <Minimap />
       <BigMap />
