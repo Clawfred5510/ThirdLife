@@ -269,6 +269,9 @@ interface DBBackend {
   createAuthSession(token: string, playerId: string, expiresAt: number): void;
   getAuthSessionPlayerId(token: string): string | null;
   revokeAuthSession(token: string): void;
+  /** Revoke every existing session for a player (used on a fresh login so a
+   *  leaked older token can't outlive the new sign-in). Returns count removed. */
+  revokeAllSessionsForPlayer(playerId: string): number;
 }
 
 // ── SQLite implementation ──────────────────────────────────────────────────
