@@ -476,28 +476,12 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
     });
   }
 
-  // 200K $AMETA agent purchase fee (spec §9). Voucher-aware: if the wallet
-  // holds an active AGENT voucher (issued by the wipe-and-voucherize
-  // migration) it's consumed inline and the $AMETA charge is waived.
-  // The voucher carries no identity — the player picks a fresh name +
-  // role + workplace through this same flow; the voucher just covers cost.
-  let usedAgentVoucher = false;
-  const agentVoucher = pickActiveVoucher(wallet, 'agent');
-  if (agentVoucher) {
-    const mark = markVoucherRedeemed(agentVoucher.id, null);
-    if (mark.ok) usedAgentVoucher = true;
-  }
-  if (!usedAgentVoucher) {
-    const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
-    if (!purchaseDebit.ok) {
-      return res.status(400).json({
-        error: 'insufficient_balance',
-        cost: IN_GAME_AGENT_COST_AMETA,
-        reason: purchaseDebit.reason,
-      });
-    }
-    await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
-  }
+  // NOTE: the 200K $AMETA purchase / AGENT-voucher charge is DEFERRED to just
+  // before registerAgent() below — see "Charge for the agent" block. Charging
+  // here (before workplace resolution + name availability) meant a request
+  // that failed a later validation burned the player's voucher or $AMETA for
+  // an agent that was never created. The charge does not depend on workplace,
+  // so deferring it is safe and makes the whole flow value-correct on failure.
 
   // Workplace resolution.
   //
@@ -574,6 +558,38 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
   const agentAppearance = applyJobLook(ownerAppearance, job);
   const agentAppearanceJson = JSON.stringify(agentAppearance);
 
+  // Name availability pre-check. agents.name is UNIQUE, so a taken name would
+  // otherwise throw INSIDE registerAgent — AFTER the charge below — burning the
+  // player's voucher / $AMETA. Check first so the only post-charge failure is a
+  // vanishingly rare name race (two registers of the same name in the same ms).
+  {
+    const existing = _rawDb().prepare('SELECT 1 FROM agents WHERE name = ?').get(body.name);
+    if (existing) return res.status(409).json({ error: 'Agent name already taken' });
+  }
+
+  // ── Charge for the agent (DEFERRED to here — see note up top) ──────────
+  // 200K $AMETA agent purchase fee (spec §9). Voucher-aware: an active AGENT
+  // voucher (from the wipe-and-voucherize migration) is consumed inline and
+  // the $AMETA charge is waived. This runs AFTER all validation + the name
+  // pre-check, so a rejected request never burns the voucher or $AMETA.
+  let usedAgentVoucher = false;
+  const agentVoucher = pickActiveVoucher(wallet, 'agent');
+  if (agentVoucher) {
+    const mark = markVoucherRedeemed(agentVoucher.id, null);
+    if (mark.ok) usedAgentVoucher = true;
+  }
+  if (!usedAgentVoucher) {
+    const purchaseDebit = await economy().debit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase');
+    if (!purchaseDebit.ok) {
+      return res.status(400).json({
+        error: 'insufficient_balance',
+        cost: IN_GAME_AGENT_COST_AMETA,
+        reason: purchaseDebit.reason,
+      });
+    }
+    await economy().credit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_fee');
+  }
+
   const id = `${wallet}:agent:${crypto.randomBytes(8).toString('hex')}`;
   const apiKey = generateApiKey();
 
@@ -583,6 +599,19 @@ router.post('/agents/register', authWalletOrExternal, async (req: Request, res: 
       job, workplaceParcelId, agentAppearanceJson,
     );
   } catch (err: any) {
+    // The charge already succeeded above. registerAgent failing here is rare
+    // (the name pre-check makes a UNIQUE(name) collision a sub-ms race; a
+    // UNIQUE(api_key) collision is astronomically unlikely) — but if it does,
+    // roll the charge back so we never bill for a non-existent agent.
+    if (usedAgentVoucher && agentVoucher) {
+      // Un-redeem the voucher (no exported helper; raw reset is safe + atomic).
+      try { _rawDb().prepare('UPDATE vouchers SET redeemed_at = NULL WHERE id = ?').run(agentVoucher.id); } catch { /* best effort */ }
+    } else {
+      try {
+        await economy().debit(WORLD_TREASURY_ID, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_refund');
+        await economy().credit(wallet, IN_GAME_AGENT_COST_AMETA, 'agent_purchase_refund');
+      } catch { /* best effort */ }
+    }
     if (err?.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Agent name already taken' });
     return res.status(500).json({ error: 'Registration failed' });
   }
