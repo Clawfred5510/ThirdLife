@@ -49,6 +49,8 @@ import {
   CAMERA_FOLLOW_MAX_ZOOM,
   DAY_CYCLE_SECONDS,
   REMOTE_PLAYER_LERP,
+  INTERP_DELAY_MS,
+  sampleSnapshot,
   SPAWN_POINT,
 } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
@@ -89,9 +91,10 @@ interface RemotePlayer {
   targetZ: number;
   targetRotation: number;
   /** Previous server-reported position + the wall-clock ms it arrived at.
-   *  Used to derive per-axis velocity for snapshot interpolation so motion
-   *  between broadcasts is constant-velocity instead of exponential decay
-   *  (which read as "stop-and-go" stutter to the viewer). */
+   *  interpolateRemotePlayers interpolates BETWEEN (prevTarget, target) over
+   *  (prevTargetAt, targetAt) at a fixed delay behind real time — constant
+   *  velocity between broadcasts, and it never overshoots the latest
+   *  snapshot (see sampleSnapshot / INTERP_DELAY_MS). */
   prevTargetX: number;
   prevTargetZ: number;
   prevTargetAt: number;
@@ -945,11 +948,11 @@ export class MainScene {
   private updateRemotePlayerTarget(sessionId: string, player: PlayerSnapshot): void {
     const remote = this.remotePlayers.get(sessionId);
     if (remote) {
-      // Roll the snapshot history. interpolateRemotePlayers uses these
-      // two timestamps + positions to derive per-axis velocity, so motion
-      // BETWEEN broadcasts is constant-velocity instead of exponential
-      // decay toward a fixed target (which was visible as "stop-and-go"
-      // stutter even with regular 10Hz broadcasts).
+      // Roll the snapshot history. interpolateRemotePlayers interpolates
+      // between these two snapshots (prev → latest) at a fixed delay behind
+      // real time, so motion BETWEEN broadcasts is constant-velocity and a
+      // stopped player holds exactly at the latest authoritative position
+      // (no extrapolation overshoot).
       remote.prevTargetX = remote.targetX;
       remote.prevTargetZ = remote.targetZ;
       remote.prevTargetAt = remote.targetAt;
@@ -1089,42 +1092,40 @@ export class MainScene {
   private interpolateRemotePlayers(): void {
     const localId = getSessionId() ?? this.localPlayerId;
     const now = performance.now();
+
+    // Render remote avatars slightly in the past (now − INTERP_DELAY_MS) and
+    // interpolate BETWEEN the two most recent server snapshots — never
+    // extrapolate beyond the latest. sampleSnapshot clamps the interpolation
+    // factor to [0, 1], so once the latest snapshot is older than the delay
+    // (no newer packet has arrived, e.g. the player stopped) the avatar holds
+    // EXACTLY at its authoritative position. This replaces the velocity
+    // extrapolation that shipped 2026-05-28, which derived velocity from
+    // jittery client packet-arrival timestamps and projected forward — that
+    // flung just-stopped avatars past their true spot and left moving ones at
+    // positions the server never sent, i.e. the "remote players settle
+    // off-position" bug. Per network-code.md: remote avatars use server
+    // interpolation only, no prediction.
+    const renderTime = now - INTERP_DELAY_MS;
+    // Yaw still eases toward the latest reported rotation (time-based so it's
+    // frame-rate independent). Rotation snaps are far less noticeable than
+    // positional ones, and the server only sends the freshest yaw.
+    const yawSmoothing = 1 - Math.pow(1 - REMOTE_PLAYER_LERP, (this.engine.getDeltaTime() / 1000) * 60);
+
     this.remotePlayers.forEach((remote, sessionId) => {
       if (sessionId === localId) return;
 
       const pos = remote.root.position;
+      pos.x = sampleSnapshot(remote.prevTargetX, remote.targetX, remote.prevTargetAt, remote.targetAt, renderTime);
+      pos.z = sampleSnapshot(remote.prevTargetZ, remote.targetZ, remote.prevTargetAt, remote.targetAt, renderTime);
+      // y rarely changes (root sits at feet, clamped to ground); a light ease
+      // toward the latest value handles the occasional jump without jitter.
+      pos.y += (remote.targetY - pos.y) * yawSmoothing;
 
-      // Velocity-based "snapshot interpolation": we estimate the remote
-      // player's actual current position by extrapolating from the latest
-      // broadcast using velocity derived from the previous broadcast.
-      // Result is constant-velocity motion between updates instead of
-      // the exponential decay that an "ease toward target" lerp produces
-      // (which read as stop-and-go stutter to the viewer even at perfect
-      // 10Hz broadcast cadence).
-      const broadcastDt = Math.max(remote.targetAt - remote.prevTargetAt, 1);
-      const vx = (remote.targetX - remote.prevTargetX) / broadcastDt; // u/ms
-      const vz = (remote.targetZ - remote.prevTargetZ) / broadcastDt;
-      // Time since latest broadcast. Cap at 250ms so a packet loss or
-      // network gap doesn't fling the avatar off across the world.
-      const ageMs = Math.min(now - remote.targetAt, 250);
-      const extrapolatedX = remote.targetX + vx * ageMs;
-      const extrapolatedZ = remote.targetZ + vz * ageMs;
-
-      // Smooth-snap rendered position toward the extrapolated target.
-      // REMOTE_PLAYER_LERP applied as time-based exponential smoothing so
-      // it's frame-rate independent — the value is the per-frame factor
-      // at 60fps (matching the historical feel). dt in seconds.
-      const frameDt = this.engine.getDeltaTime() / 1000;
-      const smoothing = 1 - Math.pow(1 - REMOTE_PLAYER_LERP, frameDt * 60);
-      pos.x += (extrapolatedX - pos.x) * smoothing;
-      pos.y += (remote.targetY - pos.y) * smoothing;
-      pos.z += (extrapolatedZ - pos.z) * smoothing;
-
-      // Yaw interpolation, shortest-arc aware (also time-based)
+      // Yaw interpolation, shortest-arc aware (time-based).
       let dYaw = remote.targetRotation - remote.root.rotation.y;
       while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
       while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
-      remote.root.rotation.y += dYaw * smoothing;
+      remote.root.rotation.y += dYaw * yawSmoothing;
 
       // Root is at feet — clamp to ground.
       if (pos.y < 0) pos.y = 0;

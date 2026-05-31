@@ -476,8 +476,50 @@ export const CAMERA_FOLLOW_MAX_ZOOM = 40;
 /** Full day/night cycle duration in seconds. */
 export const DAY_CYCLE_SECONDS = 600;
 
-/** Network interpolation LERP factor for remote players (0..1). */
+/** Network interpolation LERP factor for remote players (0..1).
+ *  Used only for remote-avatar YAW smoothing now — position uses exact
+ *  buffered interpolation (see sampleSnapshot). */
 export const REMOTE_PLAYER_LERP = 0.2;
+
+/**
+ * How far behind real time (ms) remote avatars are rendered. We interpolate
+ * BETWEEN the two most recent server snapshots at this delay, so two real
+ * snapshots almost always bracket the render time even under network jitter.
+ * Set to ~1.3× the 100 ms server broadcast interval (PLAYER_BROADCAST_
+ * INTERVAL_MS in GameRoom). The trade is ~130 ms of remote-avatar visual
+ * latency (invisible in normal play) in exchange for never extrapolating
+ * past the authoritative position — which is what left stopped remote
+ * players permanently off-position before 2026-05-31. Per network-code.md:
+ * remote avatars use server interpolation only, no prediction.
+ */
+export const INTERP_DELAY_MS = 130;
+
+/**
+ * Buffered snapshot-interpolation sample for one axis of a remote player.
+ * Linearly interpolates between the previous snapshot (`prev`, arrived at
+ * `prevAt`) and the latest (`next`, arrived at `nextAt`) for the given
+ * `renderTime` (= now − INTERP_DELAY_MS). The interpolation factor is
+ * clamped to [0, 1], so:
+ *   - renderTime before prevAt  → returns `prev`  (buffer not yet caught up)
+ *   - renderTime after  nextAt  → returns `next`  (NO newer snapshot, e.g.
+ *                                  the player stopped) → holds EXACTLY at the
+ *                                  authoritative position, never overshoots.
+ * A zero/negative span (only one snapshot seen, or duplicate timestamps)
+ * returns `next` so a freshly-spawned avatar renders at its reported spot.
+ * Pure + frame-rate independent so it can be unit-tested without Babylon.
+ */
+export function sampleSnapshot(
+  prev: number,
+  next: number,
+  prevAt: number,
+  nextAt: number,
+  renderTime: number,
+): number {
+  const span = nextAt - prevAt;
+  if (span <= 0) return next;
+  const t = Math.min(Math.max((renderTime - prevAt) / span, 0), 1);
+  return prev + (next - prev) * t;
+}
 
 // ── Avatar animation constants ──────────────────────────────────────────
 
