@@ -10,14 +10,72 @@
 //   5. Persist token + playerId in localStorage so subsequent connects bind
 //      to the wallet identity.
 
-interface Eip1193Provider {
+export interface Eip1193Provider {
   request<T = unknown>(args: { method: string; params?: unknown[] }): Promise<T>;
 }
+
+// ── EIP-6963: Multi Injected Provider Discovery ──────────────────────────
+// Detect EVERY installed EVM wallet (MetaMask, Coinbase/Base, Phantom-EVM,
+// Backpack, Rabby, Brave, …) instead of fighting over the single
+// window.ethereum slot. That single-slot race is why connection failed on
+// some setups: when several wallets are installed they overwrite each other
+// in window.ethereum, and any wallet that didn't win (or only announces via
+// EIP-6963) looked like "no wallet detected."
+interface EIP6963ProviderInfo { uuid: string; name: string; icon: string; rdns: string }
+interface EIP6963ProviderDetail { info: EIP6963ProviderInfo; provider: Eip1193Provider }
 
 declare global {
   interface Window {
     ethereum?: Eip1193Provider;
   }
+  interface WindowEventMap {
+    'eip6963:announceProvider': CustomEvent<EIP6963ProviderDetail>;
+  }
+}
+
+/** Discovered wallets keyed by rdns (stable per wallet) so re-announcements dedupe. */
+const discovered = new Map<string, EIP6963ProviderDetail>();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('eip6963:announceProvider', (e) => {
+    const detail = e.detail;
+    if (detail?.info?.rdns && detail.provider) discovered.set(detail.info.rdns, detail);
+  });
+  // Ask any already-loaded wallets to announce themselves.
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
+}
+
+/** Re-ask wallets to announce — call right before showing the picker so
+ *  late-loading extensions still appear. */
+export function refreshWallets(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('eip6963:requestProvider'));
+}
+
+export interface WalletOption {
+  id: string;     // rdns, or 'injected' for the window.ethereum fallback
+  name: string;
+  icon: string;   // data-URI icon from the wallet ('' for the fallback)
+  provider: Eip1193Provider;
+}
+
+/** Every detected EVM wallet (EIP-6963), branded-major-first then alphabetical.
+ *  Falls back to a single window.ethereum entry when no wallet implements
+ *  EIP-6963 (older single-wallet setups), so nothing regresses. */
+export function listWallets(): WalletOption[] {
+  const out: WalletOption[] = [];
+  for (const d of discovered.values()) {
+    out.push({ id: d.info.rdns, name: d.info.name, icon: d.info.icon, provider: d.provider });
+  }
+  if (out.length === 0 && typeof window !== 'undefined' && window.ethereum) {
+    out.push({ id: 'injected', name: 'Browser Wallet', icon: '', provider: window.ethereum });
+  }
+  const ORDER = ['com.coinbase.wallet', 'io.metamask', 'app.phantom', 'com.backpack', 'io.rabby'];
+  out.sort((a, b) => {
+    const ai = ORDER.indexOf(a.id), bi = ORDER.indexOf(b.id);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    return a.name.localeCompare(b.name);
+  });
+  return out;
 }
 
 const TOKEN_KEY = 'tl_auth_token';
@@ -38,7 +96,7 @@ function wsToHttp(url: string): string {
 }
 
 export function hasInjectedWallet(): boolean {
-  return typeof window !== 'undefined' && !!window.ethereum;
+  return typeof window !== 'undefined' && (discovered.size > 0 || !!window.ethereum);
 }
 
 export function getStoredAuthToken(): string | null {
@@ -67,11 +125,19 @@ export interface ConnectResult {
  * for a session token. Throws with a user-friendly message on failure
  * (rejected popup, no provider, server error, etc.).
  */
-export async function connectWallet(): Promise<ConnectResult> {
-  if (!window.ethereum) {
-    throw new Error('No wallet detected. Install MetaMask or another EIP-1193 wallet.');
+export async function connectWallet(provider?: Eip1193Provider): Promise<ConnectResult> {
+  // Resolve which wallet to use: the explicitly chosen one (from the picker),
+  // else the sole detected wallet, else window.ethereum (legacy single-wallet).
+  let wallet = provider;
+  if (!wallet) {
+    const wallets = listWallets();
+    if (wallets.length === 1) wallet = wallets[0].provider;
+    else if (typeof window !== 'undefined' && window.ethereum) wallet = window.ethereum;
   }
-  const accounts = await window.ethereum.request<string[]>({ method: 'eth_requestAccounts' });
+  if (!wallet) {
+    throw new Error('No wallet detected. Install an EVM wallet — MetaMask, Coinbase/Base, Phantom, Backpack, or Rabby.');
+  }
+  const accounts = await wallet.request<string[]>({ method: 'eth_requestAccounts' });
   if (!accounts || accounts.length === 0) {
     throw new Error('No accounts returned from wallet.');
   }
@@ -97,7 +163,7 @@ export async function connectWallet(): Promise<ConnectResult> {
   };
   const address = checksummedAddress ?? rawAddress;
 
-  const signature = await window.ethereum.request<string>({
+  const signature = await wallet.request<string>({
     method: 'personal_sign',
     params: [message, address],
   });

@@ -2,12 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiGet, apiPost, apiDelete, hasAuthToken, API_BASE } from '../../network/api';
 import { useViewport } from '../hooks/useViewport';
 import {
-  hasInjectedWallet,
   getStoredPlayerId,
   getStoredAuthToken,
-  connectWallet,
   logoutWallet,
 } from '../../network/wallet';
+import { WalletPicker } from './WalletPicker';
 import {
   RESOURCE_TYPES, ResourceType,
   GRID_COLS, GRID_ROWS, LANDMARKS,
@@ -1645,23 +1644,7 @@ const WalletBody: React.FC = () => {
     return pid && /^0x[a-fA-F0-9]{40}$/.test(pid) && getStoredAuthToken() ? pid : null;
   });
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const hasWallet = hasInjectedWallet();
-
-  const connect = async () => {
-    setBusy(true); setErr(null);
-    try {
-      const r = await connectWallet();
-      setAddr(r.address);
-      // Reload so Colyseus reconnects with the wallet identity. Without
-      // this, the active room is still bound to the prior guest UUID.
-      window.location.reload();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const disconnect = async () => {
     setBusy(true);
@@ -1699,20 +1682,13 @@ const WalletBody: React.FC = () => {
           <div style={S.walletHint}>
             You're playing as a browser-local guest. Connect a wallet to claim a persistent identity, spawn agents, and trade on the market.
           </div>
-          {hasWallet ? (
-            <button
-              onClick={connect}
-              disabled={busy}
-              style={S.walletPrimaryBtn}
-            >
-              {busy ? 'Connecting…' : 'Connect wallet'}
-            </button>
-          ) : (
-            <div style={S.walletHint}>
-              No browser wallet detected. Install MetaMask, Rabby, or another EIP-1193 wallet to continue.
-            </div>
-          )}
-          {err && <div style={S.errMsg}>{err}</div>}
+          <button
+            onClick={() => setPickerOpen(true)}
+            style={S.walletPrimaryBtn}
+          >
+            Connect wallet
+          </button>
+          <WalletPicker open={pickerOpen} onClose={() => setPickerOpen(false)} />
         </>
       )}
     </div>
