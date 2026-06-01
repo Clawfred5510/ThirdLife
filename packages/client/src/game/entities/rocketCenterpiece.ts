@@ -18,6 +18,7 @@ import {
   TransformNode,
   Vector3,
 } from '@babylonjs/core';
+import { vGlb } from '../assetVersion';
 
 /** Target world-space height for the rocket centerpiece. Taller than the
  *  tier buildings (which fit a 32-unit footprint) so it reads as the town
@@ -40,7 +41,7 @@ export function buildRocket(scene: Scene, position: Vector3): TransformNode {
 
   // Async load — fire-and-forget, same pattern as buildGlbBuilding. The
   // centerpiece pops in a frame or two after scene init; nothing blocks on it.
-  SceneLoader.LoadAssetContainerAsync('/assets/models/environment/', 'rocket.glb', scene)
+  SceneLoader.LoadAssetContainerAsync('/assets/models/environment/', vGlb('rocket.glb'), scene, undefined, '.glb')
     .then((container) => {
       container.addAllToScene();
       for (const node of container.rootNodes) node.parent = wrap;

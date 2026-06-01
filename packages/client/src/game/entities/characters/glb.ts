@@ -25,6 +25,7 @@ import {
   Skeleton,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
+import { vGlb } from '../../assetVersion';
 
 const BASE = '/assets/models/characters/';
 
@@ -49,7 +50,10 @@ export async function instantiateCharacter(
   file: string,
   instanceId: string,
 ): Promise<CharacterInstance> {
-  const result = await SceneLoader.ImportMeshAsync('', BASE, file, scene);
+  // Cache-bust the URL (?v=) so a re-exported same-name GLB isn't served stale
+  // from browser/CDN cache. Force pluginExtension '.glb' since the query string
+  // would otherwise break Babylon's extension detection.
+  const result = await SceneLoader.ImportMeshAsync('', BASE, vGlb(file), scene, undefined, '.glb');
 
   const root = new TransformNode(`charRoot_${instanceId}`, scene);
   // Re-parent the import's top-level nodes (the glTF __root__ + any siblings)

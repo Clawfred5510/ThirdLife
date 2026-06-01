@@ -4,6 +4,7 @@ import {
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 import { BuildingSpec, BuildingOutput } from './shared';
+import { vGlb } from '../../assetVersion';
 
 /**
  * GLB-backed building renderer (Meshy.AI assets).
@@ -110,8 +111,10 @@ function loadContainer(scene: Scene, filename: string): Promise<AssetContainer> 
   if (inflight) return inflight;
   const p = SceneLoader.LoadAssetContainerAsync(
     '/assets/models/buildings/',
-    filename,
+    vGlb(filename),
     scene,
+    undefined,
+    '.glb',
   ).then((container) => {
     containers.set(filename, container);
     loading.delete(filename);
