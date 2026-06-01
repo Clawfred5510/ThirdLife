@@ -37,11 +37,9 @@ const TARGET_HEIGHT = 1.9;
 /** Static yaw to align the GLB's authored facing with the game's "forward"
  *  (root.rotation.y = camera-derived yaw; the player faces +Z toward the rocket
  *  on spawn, i.e. back to the spawn camera — matching the old procedural
- *  avatar). The Synty rig reads facing the spawn camera at offset 0, so we flip
- *  Math.PI to turn its back to the camera like before. NOTE: confirm in a real
- *  browser (headless can't render the walk cycle); flip to 0 if avatars face
- *  backwards. */
-const CHARACTER_YAW_OFFSET = Math.PI;
+ *  avatar). Owner-confirmed 2026-06-01: at Math.PI the model faced the camera
+ *  (wrong), so 0 turns its back to the spawn camera (correct). */
+const CHARACTER_YAW_OFFSET = 0;
 
 export interface AvatarOptions {
   /** Set for AI agents — drives droid-vs-human model choice. */
