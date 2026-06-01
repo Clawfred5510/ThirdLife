@@ -68,6 +68,22 @@ function modelFileFor(appearance: Appearance, opts?: AvatarOptions): string {
   return appearance.character === 'female' ? 'female.glb' : 'male.glb';
 }
 
+/** Remove the root-bone POSITION channels from an AnimationGroup so the clip
+ *  plays in place (no forward/positional drift). Rotation channels are kept, so
+ *  limbs/torso still animate. Targets the skeleton root nodes by name across the
+ *  Synty/Mixamo/Unreal naming variants. Mutates the group's targetedAnimations
+ *  in place; call BEFORE the group is (re)started. */
+function stripRootMotion(group: AnimationGroup | null): void {
+  if (!group) return;
+  const tas = group.targetedAnimations;
+  for (let i = tas.length - 1; i >= 0; i--) {
+    const name = (tas[i].target as { name?: string }).name ?? '';
+    if (tas[i].animation.targetProperty === 'position' && /^(hips|root|armature|pelvis)/i.test(name)) {
+      tas.splice(i, 1);
+    }
+  }
+}
+
 export class Avatar {
   /** Positioned + rotated by MainScene every frame. */
   readonly root: TransformNode;
@@ -168,6 +184,13 @@ export class Avatar {
     this.idle = inst.animationGroups.find((g) => /idle/i.test(g.name)) ?? null;
     this.walk = inst.animationGroups.find((g) => /walk/i.test(g.name)) ?? null;
     for (const g of inst.animationGroups) g.stop();
+    // Strip baked-in ROOT MOTION (Hips/Root position channels). Position is
+    // game-driven (client prediction); a walk clip that also translates the
+    // root makes the mesh drift forward, then snap back to the authoritative
+    // position when you stop — the "sent back a bit on stop" glitch. Removing
+    // the root translation makes the character animate IN PLACE.
+    stripRootMotion(this.idle);
+    stripRootMotion(this.walk);
     this.state = null;
     this.play('idle');
 
