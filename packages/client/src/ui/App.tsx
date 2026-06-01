@@ -18,6 +18,7 @@ import { FastTravel } from './components/FastTravel';
 import { AgentInfoPanel } from './components/AgentInfoPanel';
 import { RankUpModal } from './components/RankUpModal';
 import { OnboardingModal } from './components/OnboardingModal';
+import { CharacterPicker } from './components/CharacterPicker';
 
 /** Lazy-loaded components gated by feature flags. */
 const JobBoard = React.lazy(() =>
@@ -76,6 +77,7 @@ export const App: React.FC = () => {
       <AgentInfoPanel />
       <RankUpModal />
       <OnboardingModal />
+      <CharacterPicker />
       {features.JOBS && (
         <React.Suspense fallback={null}>
           <JobBoard />

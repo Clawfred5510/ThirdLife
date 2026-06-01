@@ -1,443 +1,236 @@
+/**
+ * avatar.ts — GLB-backed character renderer.
+ *
+ * Replaces the old 100%-procedural capsule avatar (2026-06-01). Players render
+ * as a rigged male.glb / female.glb (chosen at account creation, see
+ * Appearance.character); AI agents render as a droid variant chosen by their
+ * workplace building category (droidFood/Materials/Electric/Lux) or the hatless
+ * droid.glb. Every model is a skinned mesh on a shared 42-joint rig with
+ * AnimationGroups 'Idle' and 'Walk'.
+ *
+ * Contract preserved for MainScene + CharacterCreator: the same four free
+ * functions (buildAvatar / applyAppearance / animateAvatar / disposeAvatar) and
+ * an `Avatar` with a `root` TransformNode + a `body` anchor mesh. Because GLB
+ * loading is async but buildAvatar must return synchronously, the avatar hands
+ * back `root` + an invisible `body` anchor immediately and streams the model in;
+ * callers wire shadow casters internally (shadowGenerator passed in opts) and
+ * pick targets via `onReady(meshes => …)` (re-fired on every model swap).
+ */
 import {
   Scene,
-  MeshBuilder,
-  Mesh,
-  Vector3,
-  Color3,
-  Color4,
-  PBRMetallicRoughnessMaterial,
   TransformNode,
+  Mesh,
+  MeshBuilder,
+  AbstractMesh,
+  AnimationGroup,
+  ShadowGenerator,
 } from '@babylonjs/core';
-import type { Appearance } from '@gamestu/shared';
-import {
-  DEFAULT_APPEARANCE,
-  AVATAR_WALK_SPEED_THRESHOLD,
-  AVATAR_WALK_FREQ,
-  AVATAR_WALK_LEG_SWING,
-  AVATAR_WALK_ARM_SWING,
-  AVATAR_WALK_BOB,
-  AVATAR_IDLE_BOB,
-  AVATAR_IDLE_FREQ,
-} from '@gamestu/shared';
+import type { Appearance, BuildingCategory } from '@gamestu/shared';
+import { AVATAR_WALK_SPEED_THRESHOLD } from '@gamestu/shared';
+import { instantiateCharacter, CharacterInstance } from './characters/glb';
 
-function hexToColor3(hex: string): Color3 {
-  const clean = hex.replace('#', '');
-  const n = parseInt(clean, 16);
-  return new Color3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+/** World-space target height (feet at y=0). The procedural avatar stood ~1.95;
+ *  the GLBs author at ~2.05, so we normalize for a consistent camera/nameplate
+ *  feel and to match the local collider (~2u). Tune here. */
+const TARGET_HEIGHT = 1.9;
+
+/** Static yaw to align the GLB's authored facing with the game's "forward"
+ *  (root.rotation.y = camera-derived yaw; the player faces +Z toward the rocket
+ *  on spawn, i.e. back to the spawn camera — matching the old procedural
+ *  avatar). The Synty rig reads facing the spawn camera at offset 0, so we flip
+ *  Math.PI to turn its back to the camera like before. NOTE: confirm in a real
+ *  browser (headless can't render the walk cycle); flip to 0 if avatars face
+ *  backwards. */
+const CHARACTER_YAW_OFFSET = Math.PI;
+
+export interface AvatarOptions {
+  /** Set for AI agents — drives droid-vs-human model choice. */
+  botKind?: 'auto' | 'agent' | 'external';
+  /** AI agents only — workplace category selects the droid hat variant. */
+  botCategory?: BuildingCategory;
+  /** Sun shadow generator; the avatar registers/deregisters its own meshes
+   *  as casters across model loads/swaps so we never leak disposed casters. */
+  shadowGenerator?: ShadowGenerator | null;
 }
 
-function outline(mesh: Mesh): void {
-  mesh.renderOutline = true;
-  mesh.outlineWidth = 0.012;
-  mesh.outlineColor = Color3.Black();
+/** Resolve which GLB file an avatar should load. Agents (bot_kind set) use the
+ *  droid variant for their workplace category; everyone else is a human male/
+ *  female by Appearance.character (undefined → male fallback). */
+function modelFileFor(appearance: Appearance, opts?: AvatarOptions): string {
+  if (opts?.botKind) {
+    switch (opts.botCategory) {
+      case 'food':            return 'droidFood.glb';
+      case 'materials':       return 'droidMaterials.glb';
+      case 'energy':          return 'droidElectric.glb';
+      case 'luxury-housing':
+      case 'luxury-civic':    return 'droidLux.glb';
+      default:                return 'droid.glb';
+    }
+  }
+  return appearance.character === 'female' ? 'female.glb' : 'male.glb';
 }
 
-function matte(scene: Scene, name: string): PBRMetallicRoughnessMaterial {
-  const m = new PBRMetallicRoughnessMaterial(name, scene);
-  m.metallic = 0;
-  m.roughness = 0.85;
-  return m;
+export class Avatar {
+  /** Positioned + rotated by MainScene every frame. */
+  readonly root: TransformNode;
+  /** Invisible torso-height anchor for the nameplate/badge/camera links. Stable
+   *  across model loads (the GLB streams in under `modelWrap`). */
+  readonly body: Mesh;
+
+  private readonly scene: Scene;
+  private readonly id: string;
+  private readonly modelWrap: TransformNode;
+  private readonly shadowGenerator: ShadowGenerator | null;
+
+  private currentFile: string | null = null;
+  private instance: CharacterInstance | null = null;
+  private idle: AnimationGroup | null = null;
+  private walk: AnimationGroup | null = null;
+  private state: 'idle' | 'walk' | null = null;
+  /** Persistent ready callbacks (pick-wiring). Re-fired on every model load. */
+  private readyCbs: Array<(meshes: AbstractMesh[]) => void> = [];
+  /** Monotonic token so a slow load that resolves after a newer swap is dropped. */
+  private loadToken = 0;
+  private disposed = false;
+
+  constructor(scene: Scene, id: string, appearance: Appearance, opts?: AvatarOptions) {
+    this.scene = scene;
+    this.id = id;
+    this.shadowGenerator = opts?.shadowGenerator ?? null;
+
+    this.root = new TransformNode(`avatar_${id}`, scene);
+    this.modelWrap = new TransformNode(`avatarModel_${id}`, scene);
+    this.modelWrap.parent = this.root;
+    this.modelWrap.rotation.y = CHARACTER_YAW_OFFSET;
+
+    this.body = MeshBuilder.CreateBox(`avatarAnchor_${id}`, { size: 0.12 }, scene);
+    this.body.parent = this.root;
+    this.body.position.y = 1.1;
+    this.body.isVisible = false;
+    this.body.isPickable = false;
+
+    void this.load(modelFileFor(appearance, opts));
+  }
+
+  /** Register a callback fired with the renderable meshes once the model is
+   *  ready — and again after any model swap (so pick targets re-bind). Fires
+   *  immediately if the model is already loaded. */
+  onReady(cb: (meshes: AbstractMesh[]) => void): void {
+    this.readyCbs.push(cb);
+    if (this.instance && !this.disposed) cb(this.instance.meshes);
+  }
+
+  /** Reload the model if the resolved file changed (character pick, or a bot's
+   *  workplace category changed). GLBs carry embedded PBR, so per-slot color
+   *  customization no longer applies — only the model identity matters. */
+  applyState(appearance: Appearance, opts?: AvatarOptions): void {
+    const file = modelFileFor(appearance, opts);
+    if (file !== this.currentFile) void this.load(file);
+  }
+
+  /** Drive Idle ↔ Walk from instantaneous horizontal speed (units/s). */
+  animate(velocity: number, _dt: number, _time: number): void {
+    if (!this.instance) return;
+    const walking = velocity > AVATAR_WALK_SPEED_THRESHOLD;
+    if (walking && this.state !== 'walk') this.play('walk');
+    else if (!walking && this.state !== 'idle') this.play('idle');
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.removeCasters();
+    this.instance?.dispose();
+    this.instance = null;
+    this.body.dispose();
+    this.root.dispose(false, true);
+  }
+
+  // ── internals ──────────────────────────────────────────────────────────
+
+  private async load(file: string): Promise<void> {
+    this.currentFile = file;
+    const token = ++this.loadToken;
+    let inst: CharacterInstance;
+    try {
+      inst = await instantiateCharacter(this.scene, file, `${this.id}_${token}`);
+    } catch (err) {
+      console.warn(`[avatar] failed to load ${file}:`, err);
+      return;
+    }
+    // A newer load started, or we were disposed, while this awaited — drop it.
+    if (this.disposed || token !== this.loadToken) { inst.dispose(); return; }
+
+    // Swap out any previous model (character pick / bot-category change).
+    if (this.instance) { this.removeCasters(); this.instance.dispose(); this.instance = null; }
+
+    inst.root.parent = this.modelWrap;
+    this.normalizeHeight();
+    this.instance = inst;
+
+    this.idle = inst.animationGroups.find((g) => /idle/i.test(g.name)) ?? null;
+    this.walk = inst.animationGroups.find((g) => /walk/i.test(g.name)) ?? null;
+    for (const g of inst.animationGroups) g.stop();
+    this.state = null;
+    this.play('idle');
+
+    // Skinned meshes cast shadows; register the new set.
+    if (this.shadowGenerator) {
+      for (const m of inst.meshes) this.shadowGenerator.addShadowCaster(m);
+    }
+    // Re-fire ready callbacks (pick-target wiring) with the fresh meshes.
+    for (const cb of this.readyCbs) cb(inst.meshes);
+  }
+
+  private removeCasters(): void {
+    if (!this.shadowGenerator || !this.instance) return;
+    for (const m of this.instance.meshes) this.shadowGenerator.removeShadowCaster(m);
+  }
+
+  /** Scale modelWrap so the model is TARGET_HEIGHT tall with feet at root.y(=0).
+   *  Mirrors the rocket-centerpiece normalize: measure → scale → re-measure →
+   *  shift so the bounding-box floor rests on the ground. */
+  private normalizeHeight(): void {
+    const pre = this.modelWrap.getHierarchyBoundingVectors(true);
+    const rawH = pre.max.y - pre.min.y;
+    if (rawH > 0.001) this.modelWrap.scaling.setAll(TARGET_HEIGHT / rawH);
+    const post = this.modelWrap.getHierarchyBoundingVectors(true);
+    // root sits at world y=0; drop the model so its feet rest there.
+    this.modelWrap.position.y += this.root.getAbsolutePosition().y - post.min.y;
+  }
+
+  private play(which: 'idle' | 'walk'): void {
+    const g = which === 'walk' ? this.walk : this.idle;
+    const other = which === 'walk' ? this.idle : this.walk;
+    other?.stop();
+    if (g) g.start(true, 1.0, g.from, g.to);
+    this.state = which;
+  }
 }
 
-// -----------------------------------------------------------------------
-// Avatar interface — all animatable limbs exposed for procedural walk
-// -----------------------------------------------------------------------
-
-export interface Avatar {
-  root: TransformNode;
-
-  // Core body parts
-  body: Mesh;
-  legs: Mesh;
-  head: Mesh;
-  shoeL: Mesh;
-  shoeR: Mesh;
-
-  // Arms (new)
-  armUpperL: TransformNode;
-  armUpperR: TransformNode;
-  armLowerL: Mesh;
-  armLowerR: Mesh;
-  handL: Mesh;
-  handR: Mesh;
-
-  // Leg pivots for walk animation
-  legPivotL: TransformNode;
-  legPivotR: TransformNode;
-  legMeshL: Mesh;
-  legMeshR: Mesh;
-
-  // Eyes (face)
-  eyeL: Mesh;
-  eyeR: Mesh;
-
-  // Accessories
-  hat: Mesh | null;
-  accessory: Mesh | null;
-
-  // Materials
-  bodyMat: PBRMetallicRoughnessMaterial;
-  legsMat: PBRMetallicRoughnessMaterial;
-  headMat: PBRMetallicRoughnessMaterial;
-  shoesMat: PBRMetallicRoughnessMaterial;
-  hatMat: PBRMetallicRoughnessMaterial;
-  accessoryMat: PBRMetallicRoughnessMaterial;
-  armMat: PBRMetallicRoughnessMaterial;
-}
-
-// -----------------------------------------------------------------------
-// Build avatar — Roblox-ish proportions (~3.5 heads tall, big head,
-// stubby limbs, rounded everywhere, dot eyes)
-// -----------------------------------------------------------------------
-
-/*
-  Layout (y from feet at 0):
-    0.0  .. 0.12  shoes
-    0.1  .. 0.75  legs (two separate capsules on pivots)
-    0.75 .. 1.45  torso (wider capsule)
-    1.0  .. 1.45  arms hang from shoulder height ~1.3
-    1.45 .. 1.95  head (sphere, scaled wider)
-    1.95+         hat
-*/
+// ── Back-compat free-function surface (MainScene + CharacterCreator import) ──
 
 export function buildAvatar(
   scene: Scene,
   id: string,
-  appearance: Appearance = DEFAULT_APPEARANCE,
+  appearance: Appearance,
+  opts?: AvatarOptions,
 ): Avatar {
-  const root = new TransformNode(`avatar_${id}`, scene);
-
-  // --- Materials (shared per avatar, mutated by applyAppearance) ---
-  const bodyMat = matte(scene, `bodyMat_${id}`);
-  const legsMat = matte(scene, `legsMat_${id}`);
-  const headMat = matte(scene, `headMat_${id}`);
-  const shoesMat = matte(scene, `shoesMat_${id}`);
-  const hatMat = matte(scene, `hatMat_${id}`);
-  const accessoryMat = matte(scene, `accMat_${id}`);
-  const armMat = matte(scene, `armMat_${id}`);
-
-  const eyeMat = matte(scene, `eyeMat_${id}`);
-  eyeMat.baseColor = new Color3(0.08, 0.08, 0.08);
-  eyeMat.roughness = 0.4;
-
-  // --- Legs (two separate capsules on pivots for walk animation) ---
-  const legPivotL = new TransformNode(`legPivotL_${id}`, scene);
-  legPivotL.parent = root;
-  legPivotL.position.set(-0.12, 0.7, 0);
-  const legMeshL = MeshBuilder.CreateCapsule(`legL_${id}`, {
-    height: 0.6, radius: 0.12, tessellation: 10, subdivisions: 1,
-  }, scene);
-  legMeshL.parent = legPivotL;
-  legMeshL.position.y = -0.28;
-  legMeshL.material = legsMat;
-  outline(legMeshL);
-
-  const legPivotR = new TransformNode(`legPivotR_${id}`, scene);
-  legPivotR.parent = root;
-  legPivotR.position.set(0.12, 0.7, 0);
-  const legMeshR = MeshBuilder.CreateCapsule(`legR_${id}`, {
-    height: 0.6, radius: 0.12, tessellation: 10, subdivisions: 1,
-  }, scene);
-  legMeshR.parent = legPivotR;
-  legMeshR.position.y = -0.28;
-  legMeshR.material = legsMat;
-  outline(legMeshR);
-
-  // Keep a dummy "legs" mesh ref for appearance compatibility
-  const legs = legMeshL;
-
-  // --- Shoes ---
-  const shoeL = MeshBuilder.CreateCapsule(`shoeL_${id}`, {
-    height: 0.14, radius: 0.1, tessellation: 8, subdivisions: 1,
-  }, scene);
-  shoeL.parent = legPivotL;
-  shoeL.position.set(0, -0.56, 0.02);
-  shoeL.material = shoesMat;
-  outline(shoeL);
-
-  const shoeR = MeshBuilder.CreateCapsule(`shoeR_${id}`, {
-    height: 0.14, radius: 0.1, tessellation: 8, subdivisions: 1,
-  }, scene);
-  shoeR.parent = legPivotR;
-  shoeR.position.set(0, -0.56, 0.02);
-  shoeR.material = shoesMat;
-  outline(shoeR);
-
-  // --- Torso ---
-  const body = MeshBuilder.CreateCapsule(`body_${id}`, {
-    height: 0.7, radius: 0.28, tessellation: 14, subdivisions: 1,
-  }, scene);
-  body.parent = root;
-  body.position.y = 1.1;
-  body.scaling.set(1.1, 1, 0.85); // wider shoulders, slightly flat front-to-back
-  body.material = bodyMat;
-  outline(body);
-
-  // --- Arms (upper arm pivot -> upper capsule -> forearm -> hand) ---
-  const shoulderY = 1.28;
-
-  // Left arm
-  const armUpperL = new TransformNode(`armPivotL_${id}`, scene);
-  armUpperL.parent = root;
-  armUpperL.position.set(-0.38, shoulderY, 0);
-  const armUpperMeshL = MeshBuilder.CreateCapsule(`armUL_${id}`, {
-    height: 0.35, radius: 0.08, tessellation: 8, subdivisions: 1,
-  }, scene);
-  armUpperMeshL.parent = armUpperL;
-  armUpperMeshL.position.y = -0.16;
-  armUpperMeshL.material = armMat;
-  outline(armUpperMeshL);
-
-  const armLowerL = MeshBuilder.CreateCapsule(`armLL_${id}`, {
-    height: 0.3, radius: 0.07, tessellation: 8, subdivisions: 1,
-  }, scene);
-  armLowerL.parent = armUpperL;
-  armLowerL.position.y = -0.42;
-  armLowerL.material = bodyMat; // forearm = shirt color
-  outline(armLowerL);
-
-  const handL = MeshBuilder.CreateSphere(`handL_${id}`, { diameter: 0.14, segments: 8 }, scene);
-  handL.parent = armUpperL;
-  handL.position.y = -0.6;
-  handL.material = headMat; // hand = skin color
-  outline(handL);
-
-  // Right arm
-  const armUpperR = new TransformNode(`armPivotR_${id}`, scene);
-  armUpperR.parent = root;
-  armUpperR.position.set(0.38, shoulderY, 0);
-  const armUpperMeshR = MeshBuilder.CreateCapsule(`armUR_${id}`, {
-    height: 0.35, radius: 0.08, tessellation: 8, subdivisions: 1,
-  }, scene);
-  armUpperMeshR.parent = armUpperR;
-  armUpperMeshR.position.y = -0.16;
-  armUpperMeshR.material = armMat;
-  outline(armUpperMeshR);
-
-  const armLowerR = MeshBuilder.CreateCapsule(`armLR_${id}`, {
-    height: 0.3, radius: 0.07, tessellation: 8, subdivisions: 1,
-  }, scene);
-  armLowerR.parent = armUpperR;
-  armLowerR.position.y = -0.42;
-  armLowerR.material = bodyMat;
-  outline(armLowerR);
-
-  const handR = MeshBuilder.CreateSphere(`handR_${id}`, { diameter: 0.14, segments: 8 }, scene);
-  handR.parent = armUpperR;
-  handR.position.y = -0.6;
-  handR.material = headMat;
-  outline(handR);
-
-  // --- Head (wider sphere for Roblox chibi feel) ---
-  const head = MeshBuilder.CreateSphere(`head_${id}`, { diameter: 0.56, segments: 16 }, scene);
-  head.parent = root;
-  head.position.y = 1.68;
-  head.scaling.set(1.15, 1.0, 1.0); // wider face
-  head.material = headMat;
-  outline(head);
-
-  // --- Face: dot eyes ---
-  const eyeL = MeshBuilder.CreateSphere(`eyeL_${id}`, { diameter: 0.06, segments: 6 }, scene);
-  eyeL.parent = head;
-  eyeL.position.set(-0.1, 0.04, -0.24);
-  eyeL.material = eyeMat;
-
-  const eyeR = MeshBuilder.CreateSphere(`eyeR_${id}`, { diameter: 0.06, segments: 6 }, scene);
-  eyeR.parent = head;
-  eyeR.position.set(0.1, 0.04, -0.24);
-  eyeR.material = eyeMat;
-
-  const avatar: Avatar = {
-    root, body, legs, head, shoeL, shoeR,
-    armUpperL, armUpperR, armLowerL, armLowerR, handL, handR,
-    legPivotL, legPivotR, legMeshL, legMeshR,
-    eyeL, eyeR,
-    hat: null, accessory: null,
-    bodyMat, legsMat, headMat, shoesMat, hatMat, accessoryMat, armMat,
-  };
-
-  applyAppearance(scene, avatar, appearance);
-  return avatar;
+  return new Avatar(scene, id, appearance, opts);
 }
-
-// -----------------------------------------------------------------------
-// Appearance application (colors + hat/accessory rebuild)
-// -----------------------------------------------------------------------
 
 export function applyAppearance(
-  scene: Scene,
+  _scene: Scene,
   avatar: Avatar,
   appearance: Appearance,
+  opts?: AvatarOptions,
 ): void {
-  avatar.bodyMat.baseColor = hexToColor3(appearance.shirt_color);
-  avatar.legsMat.baseColor = hexToColor3(appearance.pants_color);
-  avatar.headMat.baseColor = hexToColor3(appearance.body_color);
-  avatar.shoesMat.baseColor = hexToColor3(appearance.shoes_color);
-  avatar.hatMat.baseColor = hexToColor3(appearance.hat_color);
-  avatar.accessoryMat.baseColor = hexToColor3(appearance.accessory_color);
-  // Arms = skin color (upper arm shows skin below short sleeves)
-  avatar.armMat.baseColor = hexToColor3(appearance.body_color);
-
-  if (avatar.hat) { avatar.hat.dispose(); avatar.hat = null; }
-  if (appearance.hat_style !== 'none') {
-    avatar.hat = buildHat(scene, avatar.root.name, appearance.hat_style);
-    avatar.hat.parent = avatar.root;
-    avatar.hat.material = avatar.hatMat;
-  }
-
-  if (avatar.accessory) { avatar.accessory.dispose(); avatar.accessory = null; }
-  if (appearance.accessory_style !== 'none') {
-    avatar.accessory = buildAccessory(scene, avatar.root.name, appearance.accessory_style);
-    avatar.accessory.parent = avatar.root;
-    avatar.accessory.material = avatar.accessoryMat;
-  }
+  avatar.applyState(appearance, opts);
 }
 
-// -----------------------------------------------------------------------
-// Procedural walk / idle animation — call once per frame
-// -----------------------------------------------------------------------
-
-/**
- * Cached MediaQueryList — `matches` is a fast property read on the
- * cached object, no need for a per-call throttle.
- */
-const reducedMotionMQ = typeof window !== 'undefined' && window.matchMedia
-  ? window.matchMedia('(prefers-reduced-motion: reduce)')
-  : null;
-
-export function animateAvatar(
-  avatar: Avatar,
-  velocity: number,  // magnitude of horizontal movement speed (world units/s)
-  dt: number,        // seconds since last frame
-  time: number,      // running clock (performance.now() / 1000)
-): void {
-  if (reducedMotionMQ?.matches) {
-    avatar.legPivotL.rotation.x = 0;
-    avatar.legPivotR.rotation.x = 0;
-    avatar.armUpperL.rotation.x = 0;
-    avatar.armUpperR.rotation.x = 0;
-    avatar.body.position.y = 1.1;
-    avatar.head.position.y = 1.68;
-    return;
-  }
-
-  const isWalking = velocity > AVATAR_WALK_SPEED_THRESHOLD;
-
-  if (isWalking) {
-    const t = time * AVATAR_WALK_FREQ;
-    const legAngle = Math.sin(t * Math.PI) * AVATAR_WALK_LEG_SWING;
-    const armAngle = Math.sin(t * Math.PI) * AVATAR_WALK_ARM_SWING;
-
-    avatar.legPivotL.rotation.x = legAngle;
-    avatar.legPivotR.rotation.x = -legAngle;
-
-    avatar.armUpperL.rotation.x = -armAngle;
-    avatar.armUpperR.rotation.x = armAngle;
-
-    avatar.body.position.y = 1.1 + Math.abs(Math.sin(t * Math.PI * 2)) * AVATAR_WALK_BOB;
-    avatar.head.position.y = 1.68 - Math.abs(Math.sin(t * Math.PI * 2)) * AVATAR_WALK_BOB * 0.3;
-  } else {
-    const t = time * AVATAR_IDLE_FREQ;
-    const bob = Math.sin(t * Math.PI * 2) * AVATAR_IDLE_BOB;
-
-    avatar.body.position.y = 1.1 + bob;
-    avatar.head.position.y = 1.68 + bob * 0.5;
-
-    avatar.legPivotL.rotation.x *= 0.85;
-    avatar.legPivotR.rotation.x *= 0.85;
-    avatar.armUpperL.rotation.x *= 0.85;
-    avatar.armUpperR.rotation.x *= 0.85;
-  }
+export function animateAvatar(avatar: Avatar, velocity: number, dt: number, time: number): void {
+  avatar.animate(velocity, dt, time);
 }
-
-// -----------------------------------------------------------------------
-// Hat builders
-// -----------------------------------------------------------------------
-
-function buildHat(scene: Scene, avatarId: string, style: Exclude<Appearance['hat_style'], 'none'>): Mesh {
-  switch (style) {
-    case 'cap': {
-      const hat = MeshBuilder.CreateCylinder(`hat_cap_${avatarId}`, {
-        height: 0.14, diameterTop: 0.5, diameterBottom: 0.55, tessellation: 18,
-      }, scene);
-      hat.position.y = 1.92;
-      outline(hat);
-      const brim = MeshBuilder.CreateCylinder(`hat_capBrim_${avatarId}`, {
-        height: 0.02, diameter: 0.68, tessellation: 18,
-      }, scene);
-      brim.parent = hat;
-      brim.position.set(0, -0.07, 0.08);
-      return hat;
-    }
-    case 'tophat': {
-      const hat = MeshBuilder.CreateCylinder(`hat_top_${avatarId}`, {
-        height: 0.4, diameterTop: 0.4, diameterBottom: 0.4, tessellation: 20,
-      }, scene);
-      hat.position.y = 2.12;
-      outline(hat);
-      const brim = MeshBuilder.CreateCylinder(`hat_topBrim_${avatarId}`, {
-        height: 0.03, diameter: 0.64, tessellation: 20,
-      }, scene);
-      brim.parent = hat;
-      brim.position.y = -0.2;
-      return hat;
-    }
-    case 'beanie': {
-      const hat = MeshBuilder.CreateSphere(`hat_beanie_${avatarId}`, {
-        diameter: 0.52, segments: 12, slice: 0.55,
-      }, scene);
-      hat.position.y = 1.82;
-      outline(hat);
-      return hat;
-    }
-  }
-}
-
-// -----------------------------------------------------------------------
-// Accessory builders
-// -----------------------------------------------------------------------
-
-function buildAccessory(
-  scene: Scene,
-  avatarId: string,
-  style: Exclude<Appearance['accessory_style'], 'none'>,
-): Mesh {
-  switch (style) {
-    case 'chain': {
-      const chain = MeshBuilder.CreateTorus(`acc_chain_${avatarId}`, {
-        diameter: 0.42, thickness: 0.04, tessellation: 24,
-      }, scene);
-      chain.position.y = 1.42;
-      chain.rotation.x = Math.PI / 2;
-      outline(chain);
-      return chain;
-    }
-    case 'sunglasses': {
-      const bar = MeshBuilder.CreateBox(`acc_glasses_${avatarId}`, {
-        width: 0.44, height: 0.1, depth: 0.04,
-      }, scene);
-      bar.position.set(0, 1.72, -0.26);
-      outline(bar);
-      return bar;
-    }
-    case 'bowtie': {
-      const bow = MeshBuilder.CreateBox(`acc_bow_${avatarId}`, {
-        width: 0.2, height: 0.1, depth: 0.05,
-      }, scene);
-      bow.position.set(0, 1.42, -0.28);
-      bow.rotation.z = Math.PI / 10;
-      outline(bow);
-      return bow;
-    }
-  }
-}
-
-// -----------------------------------------------------------------------
-// Cleanup
-// -----------------------------------------------------------------------
 
 export function disposeAvatar(avatar: Avatar): void {
-  avatar.hat?.dispose();
-  avatar.accessory?.dispose();
-  avatar.root.dispose(false, true);
+  avatar.dispose();
 }

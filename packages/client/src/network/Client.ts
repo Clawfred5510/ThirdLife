@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus.js';
-import { DEFAULT_SERVER_PORT, MessageType, InputCommand, ChatMessage, ParcelData, Appearance } from '@gamestu/shared';
+import { DEFAULT_SERVER_PORT, MessageType, InputCommand, ChatMessage, ParcelData, Appearance, BuildingCategory } from '@gamestu/shared';
 
 // Resolution order: window override (injected pre-script) → Vite env var → same-host fallback
 function resolveServerUrl(): string {
@@ -67,6 +67,12 @@ export interface PlayerSnapshot {
    *                Renders with a green EXT badge.
    */
   bot_kind?: 'auto' | 'agent' | 'external';
+  /**
+   * AI agents only: workplace building category. Selects the droid GLB
+   * (droidFood / droidMaterials / droidElectric / droidLux); undefined → the
+   * hatless droid. Mirrors the server PlayerData.bot_category (must match name).
+   */
+  bot_category?: BuildingCategory;
   /**
    * Phase 4: player's current rank (null if they've never burned luxury).
    * Drives the nameplate color in the 3D world.

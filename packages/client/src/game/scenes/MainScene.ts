@@ -810,44 +810,40 @@ export class MainScene {
     const isLocal = sessionId === getSessionId() || sessionId === this.localPlayerId;
     const appearance = player.appearance ?? DEFAULT_APPEARANCE;
 
-    const avatar = buildAvatar(scene, sessionId, appearance);
+    const avatar = buildAvatar(scene, sessionId, appearance, {
+      botKind: player.bot_kind,
+      botCategory: player.bot_category,
+      // The avatar registers/deregisters its own skinned meshes as shadow
+      // casters across the async GLB load (and any model swap), so we don't
+      // touch the shadow generator here.
+      shadowGenerator: activeShadowGenerator,
+    });
     avatar.root.position.set(player.x, 0, player.z);
     avatar.root.rotation.y = player.rotation ?? 0;
 
-    // Register every avatar mesh as a shadow caster.
-    if (activeShadowGenerator) {
-      const casters: Array<AbstractMesh | null | undefined> = [
-        avatar.head, avatar.body, avatar.legs, avatar.legMeshL, avatar.legMeshR,
-        avatar.shoeL, avatar.shoeR, avatar.armLowerL, avatar.armLowerR,
-        avatar.handL, avatar.handR, avatar.hat, avatar.accessory,
-      ];
-      for (const m of casters) {
-        if (m) activeShadowGenerator.addShadowCaster(m);
-      }
-    }
-
-    // Camera + label anchor on the shirt mesh (torso-height) for a nice eye-level target.
+    // Camera + label/badge anchor: an invisible torso-height node on the avatar
+    // root that exists immediately (the GLB streams in async under it).
     const mesh = avatar.body as AbstractMesh;
 
-    // UI Overhaul (2026-05-20): make the agent body clickable so the
-    // player can pop up the AgentInfoPanel from the 3D world. Only AI
-    // agents (bot_kind set) — humans don't get a popup target.
+    // UI Overhaul (2026-05-20): make the agent body clickable so the player can
+    // pop up the AgentInfoPanel from the 3D world. Only AI agents (bot_kind
+    // set). The GLB meshes load async, so wire pick targets via onReady — it
+    // re-fires if the droid model swaps (workplace category change).
     if (!isLocal && player.bot_kind && this.sceneRef) {
-      const pickTargets: AbstractMesh[] = [];
-      for (const m of [avatar.body, avatar.head, avatar.legs] as Array<AbstractMesh | null | undefined>) {
-        if (m) pickTargets.push(m);
-      }
-      for (const m of pickTargets) {
-        m.isPickable = true;
-        m.actionManager = new ActionManager(this.sceneRef);
-        m.actionManager.registerAction(
-          new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
-            window.dispatchEvent(new CustomEvent('tl-agent-clicked', {
-              detail: { agentId: sessionId, name: player.name },
-            }));
-          }),
-        );
-      }
+      const sceneForPick = this.sceneRef;
+      avatar.onReady((meshes) => {
+        for (const m of meshes) {
+          m.isPickable = true;
+          m.actionManager = new ActionManager(sceneForPick);
+          m.actionManager.registerAction(
+            new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+              window.dispatchEvent(new CustomEvent('tl-agent-clicked', {
+                detail: { agentId: sessionId, name: player.name },
+              }));
+            }),
+          );
+        }
+      });
     }
 
     // Floating name label
@@ -896,7 +892,9 @@ export class MainScene {
       prevTargetAt: now,
       targetAt: now,
       currentColor: appearance.shirt_color,
-      appearanceKey: JSON.stringify(appearance),
+      // Key includes bot_kind/bot_category so a droid model swap (workplace
+      // built/changed) or a human's character pick triggers a reload.
+      appearanceKey: JSON.stringify({ a: appearance, k: player.bot_kind, c: player.bot_category }),
       prevX: player.x,
       prevZ: player.z,
     });
@@ -1022,14 +1020,18 @@ export class MainScene {
         remote.labelText.color = rankNameplateColor(newRank);
       }
 
-      // Appearance diff — apply only when the full object actually changed.
-      if (player.appearance) {
-        const key = JSON.stringify(player.appearance);
-        if (key !== remote.appearanceKey) {
-          applyAppearance(this.sceneRef!, remote.avatar, player.appearance);
-          remote.appearanceKey = key;
-          remote.currentColor = player.appearance.shirt_color;
-        }
+      // Model diff — reload only when the resolved GLB would change: a human's
+      // character pick, or a bot's workplace category (bot_category) changing.
+      // bot_kind/bot_category live outside `appearance`, so fold them into key.
+      const appr = player.appearance ?? DEFAULT_APPEARANCE;
+      const key = JSON.stringify({ a: appr, k: player.bot_kind, c: player.bot_category });
+      if (key !== remote.appearanceKey) {
+        applyAppearance(this.sceneRef!, remote.avatar, appr, {
+          botKind: player.bot_kind,
+          botCategory: player.bot_category,
+        });
+        remote.appearanceKey = key;
+        remote.currentColor = appr.shirt_color;
       }
 
       // (No snap here for the local player. Reconciliation is owned by

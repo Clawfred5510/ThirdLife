@@ -1,5 +1,5 @@
 import { Schema, type } from '@colyseus/schema';
-import type { Appearance } from '@gamestu/shared';
+import type { Appearance, BuildingCategory } from '@gamestu/shared';
 
 /**
  * Minimal Colyseus schema. We deliberately avoid MapSchema / nested Schema
@@ -37,6 +37,14 @@ export interface PlayerData {
    *   Humans omit this entirely.
    */
   bot_kind?: 'auto' | 'agent' | 'external';
+  /**
+   * For AI agents only: the building category of the agent's workplace
+   * (resolved from the workplace parcel's building_type). Drives which droid
+   * GLB the client renders — droidFood / droidMaterials / droidElectric /
+   * droidLux, or the hatless droid when unset. Humans omit this; agents with no
+   * built workplace also omit it (→ hatless droid).
+   */
+  bot_category?: BuildingCategory;
   /**
    * Agent waypoint navigation. The autopilot sets `target*` once per
    * INCOME_TICK_MS; the GameRoom per-frame step walks the agent toward

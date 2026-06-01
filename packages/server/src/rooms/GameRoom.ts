@@ -353,6 +353,15 @@ export class GameRoom extends Room<GameState> {
       if (typeof data.accessory_style === 'string' && ACC.has(data.accessory_style)) next.accessory_style = data.accessory_style as Appearance['accessory_style'];
       if (typeof data.accessory_color === 'string' && HEX.test(data.accessory_color)) next.accessory_color = data.accessory_color;
 
+      // Body type is WRITE-ONCE: accepted only while still unchosen
+      // (undefined), honoring "pick at account creation, no later toggle". Once
+      // set, a modified client can't flip it. This is the only channel the
+      // first-login picker uses.
+      const CHAR = new Set(['male', 'female']);
+      if (typeof data.character === 'string' && CHAR.has(data.character) && !player.appearance.character) {
+        next.character = data.character as Appearance['character'];
+      }
+
       player.appearance = next;
       player.color = next.shirt_color; // legacy `color` tracks shirt
       savePlayerAppearance(this.pid(client.sessionId), JSON.stringify(next));
@@ -1093,6 +1102,10 @@ export class GameRoom extends Room<GameState> {
       color: p.color,
       appearance: p.appearance,
       bot_kind: p.bot_kind,
+      // AI agents only — workplace building category → drives the droid GLB
+      // (food/materials/energy/luxury hat variant) on the client. Undefined
+      // for humans + workplace-less agents (→ hatless droid).
+      bot_category: p.bot_category,
       // Phase 4: nameplate color is driven by rank on the client. Agents
       // inherit their owner wallet's rank automatically (rankFor walks).
       rank: rankFor(p.id),
@@ -1115,6 +1128,16 @@ export class GameRoom extends Room<GameState> {
     const fresh = getAllAgents();
     // Snapshot parcels once for O(1) workplace lookups during body placement.
     const parcelById = new Map(getAllParcels().map((p) => [p.id, p]));
+    // Resolve an agent's workplace building category (drives the droid GLB on
+    // the client). Only in-game agents with a built workplace get a category;
+    // workplace-less / external agents → undefined → hatless droid.
+    const catFor = (workplaceId: number | null): BuildingCategory | undefined => {
+      if (workplaceId === null) return undefined;
+      const p = parcelById.get(workplaceId);
+      if (!p) return undefined;
+      const bt = (p as { building_type?: string }).building_type as BuildingType | undefined;
+      return bt && BUILDINGS[bt] ? BUILDINGS[bt].category : undefined;
+    };
     const seen = new Set<string>();
     for (const a of fresh) {
       seen.add(a.id);
@@ -1126,8 +1149,13 @@ export class GameRoom extends Room<GameState> {
           a.is_external === 1 ? 'external'
           : a.autopilot_enabled === 1 ? 'auto'
           : 'agent';
-        if (existing.bot_kind !== wanted) {
+        // Recompute workplace category too — covers the agent's workplace being
+        // built/changed/reassigned after first load (else the droid keeps a
+        // stale hat until server restart).
+        const wantedCat = catFor(a.workplace_parcel_id);
+        if (existing.bot_kind !== wanted || existing.bot_category !== wantedCat) {
           existing.bot_kind = wanted;
+          existing.bot_category = wantedCat;
           if (!initial) this.broadcast(MessageType.PLAYER_UPDATE, this.snapshotPlayer(existing));
         }
         continue;
@@ -1172,6 +1200,7 @@ export class GameRoom extends Room<GameState> {
           a.is_external === 1 ? 'external'
           : a.autopilot_enabled === 1 ? 'auto'
           : 'agent',
+        bot_category: catFor(a.workplace_parcel_id),
         // Already standing at its worksite (placement above), so the initial
         // target equals the position — no teleport, no walk on first load.
         targetX: sx, targetY: sy, targetZ: sz,

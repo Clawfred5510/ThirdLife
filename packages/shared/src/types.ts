@@ -41,6 +41,10 @@ export type PantsStyle = 'basic' | 'shorts';
 export type ShoesStyle = 'basic' | 'boots';
 export type AccessoryStyle = 'none' | 'chain' | 'sunglasses' | 'bowtie';
 
+/** Player body type — picked once at account creation (no later toggle). Drives
+ *  which rigged GLB the client loads for a human (male.glb / female.glb). */
+export type CharacterType = 'male' | 'female';
+
 export interface Appearance {
   body_color: string;
   hat_style: HatStyle;
@@ -53,6 +57,15 @@ export interface Appearance {
   shoes_color: string;
   accessory_style: AccessoryStyle;
   accessory_color: string;
+  /**
+   * Player body type for the GLB avatar. OPTIONAL + intentionally absent from
+   * DEFAULT_APPEARANCE: `undefined` means "not yet chosen", which is how the
+   * client knows to show the one-time Male/Female picker on first login. Once
+   * the player picks, the server stores it (write-once) and it never reverts to
+   * undefined. Additive to the plain-message contract — old clients ignore it,
+   * legacy persisted JSON lacks it and reads back as undefined.
+   */
+  character?: CharacterType;
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
