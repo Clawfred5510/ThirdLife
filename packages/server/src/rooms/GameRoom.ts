@@ -87,14 +87,6 @@ import { startTutorialIfNeeded, cancelTutorial } from '../systems/tutorial';
 
 const PLAYER_BROADCAST_INTERVAL_MS = 100; // 10 Hz
 
-/** True if `id` names a reserved/system account that a client must never be
- *  able to assume via a guest playerId (the fee-sink treasury, or any
- *  `__`-prefixed internal account). Wallet players go through token auth and
- *  guests get a random session id, so this only gates the guest playerId path. */
-function isReservedPlayerId(id: string): boolean {
-  return id === WORLD_TREASURY_ID || id.startsWith('__');
-}
-
 export class GameRoom extends Room<GameState> {
   maxClients = 50;
 
@@ -758,46 +750,29 @@ export class GameRoom extends Room<GameState> {
   }
 
   onJoin(client: Client, options: { name?: string; playerId?: string; authToken?: string }) {
-    // Persistent player identity. There are three paths:
-    //   1. Wallet user: client passes authToken → we look up the wallet
-    //      address it was minted for, use that as playerId. Token gates
-    //      claiming a wallet identity (anti-impersonation).
-    //   2. Wallet address claimed without token → REJECT. Otherwise anyone
-    //      could pass `0x...` and steal a wallet's data.
-    //   3. Guest: client passes a UUID it stored in localStorage. We trust
-    //      it (guests have no signing key); worst case is "guest progress
-    //      stolen by someone who guessed your UUID", which is negligible.
-    const WALLET_RE = /^0x[a-fA-F0-9]{40}$/;
-    const PID_RE = /^[A-Za-z0-9_-]{8,64}$/;
-
+    // Persistent player identity. Wallet auth is MANDATORY — there is no guest
+    // play (owner decision 2026-05-31). Every human client must present a valid
+    // SIWE session token; the token's wallet address IS the playerId. This is
+    // enforced SERVER-SIDE so a modified client can't bypass the front-end gate.
+    //   1. Valid authToken → wallet address it was minted for is the playerId.
+    //   2. authToken present but expired/invalid → REJECT (4001) so the client
+    //      re-prompts the wallet connect.
+    //   3. No token (guest UUID, raw wallet address, or nothing) → REJECT
+    //      (4003 wallet_required). Bots/agents are server-side room state, not
+    //      Colyseus clients, so this only gates human browsers.
     let persistentId: string;
     if (typeof options.authToken === 'string' && options.authToken.length > 0) {
       const tokenPid = getAuthSessionPlayerId(options.authToken);
       if (!tokenPid) {
-        // Token expired/invalid — kick the client so it can fall back to guest.
         client.error(401, 'auth_token_invalid');
         client.leave(4001, 'auth_token_invalid');
         return;
       }
       persistentId = tokenPid;
-    } else if (typeof options.playerId === 'string' && WALLET_RE.test(options.playerId)) {
-      // Wallet address without a token = impersonation attempt.
-      client.error(403, 'wallet_requires_auth_token');
-      client.leave(4003, 'wallet_requires_auth_token');
-      return;
-    } else if (typeof options.playerId === 'string' && PID_RE.test(options.playerId)) {
-      // Reserved/system ids must never be assumable via a client-supplied
-      // guest id. WORLD_TREASURY_ID ('__world_treasury__') and any '__'-
-      // prefixed system account match PID_RE, so a guest joining with that
-      // playerId would otherwise take over the account that accumulates ALL
-      // game fees. Reject reserved ids → fall through to a fresh session id.
-      if (isReservedPlayerId(options.playerId)) {
-        persistentId = client.sessionId;
-      } else {
-        persistentId = options.playerId;
-      }
     } else {
-      persistentId = client.sessionId;
+      client.error(403, 'wallet_required');
+      client.leave(4003, 'wallet_required');
+      return;
     }
     this.pidBySession.set(client.sessionId, persistentId);
 

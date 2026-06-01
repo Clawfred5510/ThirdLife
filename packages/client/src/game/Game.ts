@@ -38,6 +38,16 @@ export class Game {
         this.scene.render();
       }
     });
+
+    // Resolve only once the scene has compiled its materials/shaders and is
+    // ready to render. The wallet-gate loading screen awaits this so it never
+    // hands off to a world that's still mid-compile (the "graphics look weird
+    // from the start" the loading screen exists to hide). GLB buildings stream
+    // in fire-and-forget after this; the loading screen's minimum-duration
+    // floor covers their pop-in on a normal connection.
+    await new Promise<void>((resolve) => {
+      this.scene!.executeWhenReady(() => resolve());
+    });
   }
 
   dispose() {

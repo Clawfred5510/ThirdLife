@@ -81,7 +81,7 @@ export function listWallets(): WalletOption[] {
 const TOKEN_KEY = 'tl_auth_token';
 const PLAYER_ID_KEY = 'tl_player_id';
 
-function resolveAuthBaseUrl(): string {
+export function resolveAuthBaseUrl(): string {
   // Prefer explicit env var; otherwise derive from the configured Colyseus
   // server URL (ws/wss → http/https). Same-host fallback last.
   const w = window as unknown as { __GAME_SERVER_URL__?: string };
@@ -185,6 +185,29 @@ export async function connectWallet(provider?: Eip1193Provider): Promise<Connect
   } catch { /* ignore — caller will see token via getStoredAuthToken */ }
 
   return { address: playerId, token, expiresAt };
+}
+
+/**
+ * Confirm the stored session token is still valid server-side (the wallet gate
+ * pre-flights this before entering the loading screen, so we never drop into
+ * the game with an expired token and silently fall back to offline mode).
+ * Returns the wallet playerId if valid, else null. Network errors → null
+ * (treat as "must reconnect") rather than throwing.
+ */
+export async function verifyStoredWallet(): Promise<string | null> {
+  const token = getStoredAuthToken();
+  if (!token) return null;
+  try {
+    const base = resolveAuthBaseUrl();
+    const res = await fetch(`${base}/api/v1/auth/whoami`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const { playerId } = await res.json() as { playerId: string | null };
+    return playerId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function logoutWallet(): Promise<void> {

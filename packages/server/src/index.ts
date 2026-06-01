@@ -7,6 +7,7 @@ import studioApi from './api/studio';
 import adminApi from './api/admin';
 import agentApi from './api/agent-api';
 import authApi from './api/auth';
+import siteGateApi from './api/site-gate';
 import { GAME_NAME, features, initFeatures } from '@gamestu/shared';
 import { config } from './config';
 import { getAllParcels, getAllPlayers, maybeRunWipeAndVoucherize } from './db';
@@ -70,6 +71,7 @@ app.get('/metrics', (_req, res) => {
 
 app.use('/admin', adminApi);
 app.use('/api/v1/auth', authApi);
+app.use('/api/v1/site-gate', siteGateApi);
 app.use('/api/v1', agentApi);
 app.use('/api', studioApi);
 

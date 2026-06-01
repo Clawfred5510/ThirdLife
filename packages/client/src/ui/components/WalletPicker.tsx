@@ -4,6 +4,14 @@ import { listWallets, refreshWallets, connectWallet, WalletOption } from '../../
 interface Props {
   open: boolean;
   onClose: () => void;
+  /**
+   * Called after a successful connect instead of reloading the page. The
+   * wallet-gate entry flow passes this to advance to the loading screen
+   * without a reload; in-game callers (Settings, Phone) omit it and get the
+   * default `window.location.reload()` so the next Colyseus connect rebinds
+   * to the new wallet identity.
+   */
+  onConnected?: () => void;
 }
 
 /**
@@ -13,7 +21,7 @@ interface Props {
  * On success it reloads so the next Colyseus connect binds to the wallet
  * identity (same hand-off the previous single-button flow used).
  */
-export const WalletPicker: React.FC<Props> = ({ open, onClose }) => {
+export const WalletPicker: React.FC<Props> = ({ open, onClose, onConnected }) => {
   const [wallets, setWallets] = useState<WalletOption[]>([]);
   const [discovering, setDiscovering] = useState(true);
   const [connectingId, setConnectingId] = useState<string | null>(null);
@@ -38,12 +46,13 @@ export const WalletPicker: React.FC<Props> = ({ open, onClose }) => {
     setConnectingId(w.id);
     try {
       await connectWallet(w.provider);
-      window.location.reload();
+      if (onConnected) onConnected();
+      else window.location.reload();
     } catch (e) {
       setError((e as Error).message);
       setConnectingId(null);
     }
-  }, []);
+  }, [onConnected]);
 
   if (!open) return null;
 

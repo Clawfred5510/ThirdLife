@@ -215,17 +215,15 @@ export async function connect(playerName: string): Promise<Room> {
   try {
     room = await client.joinOrCreate('game', { name: playerName, playerId, authToken: authToken ?? undefined });
   } catch (err) {
-    // Server rejects expired/invalid tokens with code 4001. Drop the bad
-    // credentials and retry as a guest so the player isn't locked out.
+    // Wallet auth is MANDATORY — there is no guest play (owner decision
+    // 2026-05-31). The server rejects a missing/expired token with 4001
+    // (auth_token_invalid) or 4003 (wallet_required). Drop the dead
+    // credentials, signal the UI to re-prompt the wallet connect, and
+    // rethrow — we do NOT silently rejoin as a guest anymore.
     const msg = (err as Error)?.message ?? '';
-    if (authToken && /auth_token_invalid|4001/.test(msg)) {
+    if (/auth_token_invalid|wallet_required|4001|4003/.test(msg)) {
       clearWalletCredentials();
-      const freshId = getOrCreatePlayerId();
-      room = await client.joinOrCreate('game', { name: playerName, playerId: freshId });
-      mySessionId = freshId;
-      knownPlayers.clear();
       window.dispatchEvent(new CustomEvent('wallet-auth-expired'));
-      return room;
     }
     throw err;
   }
