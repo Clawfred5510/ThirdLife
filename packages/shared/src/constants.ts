@@ -490,6 +490,10 @@ export const CAMERA_INITIAL_MAX_ZOOM = 100;
 export const CAMERA_FOLLOW_MIN_ZOOM = 4;
 export const CAMERA_FOLLOW_MAX_ZOOM = 40;
 
+/** Bot/agent name labels only show when the local player is within this many
+ *  world units (XZ). Human players' names are always visible. */
+export const BOT_NAME_VISIBLE_RANGE = 18;
+
 /** Full day/night cycle duration in seconds. */
 export const DAY_CYCLE_SECONDS = 600;
 

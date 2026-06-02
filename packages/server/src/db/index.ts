@@ -51,6 +51,7 @@ export interface ParcelRow {
   business_type: string | null;
   color: string;
   height: number;
+  rotation: number;
   claimed_at: string | null;
 }
 
@@ -59,6 +60,7 @@ export interface BusinessUpdate {
   type?: string;
   color?: string;
   height?: number;
+  rotation?: number;
 }
 
 export interface AgentRow {
@@ -309,6 +311,7 @@ class SQLiteDatabase implements DBBackend {
         business_type TEXT,
         color TEXT DEFAULT '#4a90d9',
         height REAL DEFAULT 4,
+        rotation REAL DEFAULT 0,
         claimed_at TEXT,
         FOREIGN KEY (owner_id) REFERENCES players(id)
       );
@@ -369,6 +372,11 @@ class SQLiteDatabase implements DBBackend {
     // Building type on parcels (apartment, house, shop, farm, etc.)
     try {
       this.db.exec(`ALTER TABLE parcels ADD COLUMN building_type TEXT`);
+    } catch (_) { /* exists */ }
+
+    // Building yaw rotation in degrees (0/90/180/270), additive default 0.
+    try {
+      this.db.exec(`ALTER TABLE parcels ADD COLUMN rotation REAL DEFAULT 0`);
     } catch (_) { /* exists */ }
 
     // Phase 3: named luxury items per wallet. One row per (player_id,
@@ -776,7 +784,7 @@ class SQLiteDatabase implements DBBackend {
   private get stmtInsertParcel() { return this.db.prepare('INSERT OR IGNORE INTO parcels (id, grid_x, grid_y) VALUES (?, ?, ?)'); }
   private get stmtGetParcel() { return this.db.prepare('SELECT * FROM parcels WHERE id = ?'); }
   private get stmtClaimParcel() { return this.db.prepare('UPDATE parcels SET owner_id = ?, claimed_at = datetime(\'now\') WHERE id = ? AND owner_id IS NULL'); }
-  private get stmtUpdateBusiness() { return this.db.prepare('UPDATE parcels SET business_name = ?, business_type = ?, color = ?, height = ? WHERE id = ? AND owner_id = ?'); }
+  private get stmtUpdateBusiness() { return this.db.prepare('UPDATE parcels SET business_name = ?, business_type = ?, color = ?, height = ?, rotation = ? WHERE id = ? AND owner_id = ?'); }
 
   getOrCreatePlayer(id: string, name: string): PlayerRow {
     let row = this.stmtGetPlayer.get(id) as PlayerRow | undefined;
@@ -1003,7 +1011,7 @@ class SQLiteDatabase implements DBBackend {
       const claim = this.stmtClaimParcel.run(id, parcelId);
       if (claim.changes === 0) return { ok: false, reason: 'claim_race' };
       this.db.prepare('UPDATE parcels SET building_type = ? WHERE id = ?').run(buildingType, parcelId);
-      this.stmtUpdateBusiness.run(buildingLabel, buildingType, parcel.color, parcel.height, parcelId, id);
+      this.stmtUpdateBusiness.run(buildingLabel, buildingType, parcel.color, parcel.height, parcel.rotation ?? 0, parcelId, id);
       return { ok: true, credits: credits - total, usedLandVoucher, usedBuildingVoucher };
     });
     return txn();
@@ -1037,7 +1045,8 @@ class SQLiteDatabase implements DBBackend {
     const type = data.type ?? parcel.business_type ?? '';
     const color = data.color ?? parcel.color;
     const height = data.height ?? parcel.height;
-    const result = this.stmtUpdateBusiness.run(name, type, color, height, parcelId, playerId);
+    const rotation = data.rotation ?? parcel.rotation ?? 0;
+    const result = this.stmtUpdateBusiness.run(name, type, color, height, rotation, parcelId, playerId);
     return result.changes > 0;
   }
 
@@ -1586,6 +1595,7 @@ class MemoryDB implements DBBackend {
             business_type: null,
             color: '#4a90d9',
             height: 4,
+            rotation: 0,
             claimed_at: null,
           });
         }
@@ -1754,6 +1764,7 @@ class MemoryDB implements DBBackend {
     if (data.type !== undefined) parcel.business_type = data.type;
     if (data.color !== undefined) parcel.color = data.color;
     if (data.height !== undefined) parcel.height = data.height;
+    if (data.rotation !== undefined) parcel.rotation = data.rotation;
     return true;
   }
 

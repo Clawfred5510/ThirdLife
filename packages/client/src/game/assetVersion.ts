@@ -9,7 +9,7 @@
  *
  * BUMP THIS whenever a GLB under public/assets/models/ is re-exported/re-synced.
  */
-export const ASSET_VERSION = '20260601a';
+export const ASSET_VERSION = '20260601b';
 
 /** Append the cache-busting query to a GLB filename/path. */
 export function vGlb(file: string): string {

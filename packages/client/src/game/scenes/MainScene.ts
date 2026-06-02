@@ -52,6 +52,7 @@ import {
   INTERP_DELAY_MS,
   sampleSnapshot,
   SPAWN_POINT,
+  BOT_NAME_VISIBLE_RANGE,
 } from '@gamestu/shared';
 import { DayNightCycle } from '../systems/dayNight';
 import { spawnBuildings, ALL_PARCELS, ParcelDef } from '../entities/buildings';
@@ -74,6 +75,9 @@ export function getShadowGenerator(): ShadowGenerator | null {
   return activeShadowGenerator;
 }
 
+/** Degrees → radians (building rotation is stored in degrees, applied as rad). */
+const degToRad = (d: number): number => (d * Math.PI) / 180;
+
 /** Per-player rendering data kept on the client. */
 interface RemotePlayer {
   mesh: AbstractMesh;
@@ -84,6 +88,8 @@ interface RemotePlayer {
   /** Optional bot-kind badge above the name (AUTO / AGENT). Humans null. */
   badge: Rectangle | null;
   badgeKind: 'auto' | 'agent' | 'external' | null;
+  /** True for AI agents (bot_kind set) — their name label is proximity-gated. */
+  isBot: boolean;
   rank: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | null;
   /** Newest position reported by the server. */
   targetX: number;
@@ -131,6 +137,11 @@ interface ParcelRenderData {
   anchor: AbstractMesh | null;
   /** Floating business name label (only when owned with a name). */
   label: Rectangle | null;
+  /** Latest authoritative parcel state — kept independent of the building so
+   *  ownership SURVIVES a demolish (the building anchor that used to carry
+   *  owner_id is removed on demolish). onParcelClicked reads from here, so a
+   *  demolished-but-owned plot still opens as claimed + rebuildable. */
+  data: ParcelData;
 }
 
 export class MainScene {
@@ -373,6 +384,7 @@ export class MainScene {
       this.driftClouds(dt);
       this.updateRoofFade(dt);
       this.updateBuildingLabelFocus(dt * 1000);
+      this.updateBotNameProximity(dt * 1000);
       if (this.dayNight) {
         this.dayNight.update(dt);
       }
@@ -552,11 +564,19 @@ export class MainScene {
 
       if (mesh.name.startsWith('lot_') && mesh.metadata?.parcelId !== undefined) {
         const parcelId = mesh.metadata.parcelId as number;
+        const pdef = ALL_PARCELS.find((p) => p.id === parcelId);
         this.parcelRenders.set(parcelId, {
           ground: mesh,
           building: null,
           anchor: null,
           label: null,
+          data: {
+            id: parcelId,
+            grid_x: pdef?.grid_x ?? 0,
+            grid_y: pdef?.grid_y ?? 0,
+            owner_id: '', business_name: '', business_type: '',
+            color: '#4a90d9', height: 4, rotation: 0,
+          },
         });
 
         mesh.actionManager = new ActionManager(scene);
@@ -576,26 +596,9 @@ export class MainScene {
     const def = ALL_PARCELS.find((p) => p.id === parcelId);
     if (!def) return;
 
-    // Get the current state from the render data (box presence indicates owned)
-    const parcelInfo: ParcelData = {
-      id: parcelId,
-      grid_x: def.grid_x,
-      grid_y: def.grid_y,
-      owner_id: '',
-      business_name: '',
-      business_type: '',
-      color: '#4a90d9',
-      height: 4,
-    };
-
-    if (renderData.anchor) {
-      const meta = renderData.anchor.metadata;
-      parcelInfo.owner_id = meta?.owner_id ?? '';
-      parcelInfo.business_name = meta?.business_name ?? '';
-      parcelInfo.business_type = meta?.business_type ?? '';
-      parcelInfo.color = meta?.color ?? '#4a90d9';
-      parcelInfo.height = meta?.height ?? 4;
-    }
+    // Read from the persistent per-parcel state (survives demolish), NOT the
+    // building anchor metadata (which is gone after a demolish).
+    const parcelInfo: ParcelData = { ...renderData.data, grid_x: def.grid_x, grid_y: def.grid_y };
 
     // Phase 6: clicking any built Market building opens the Phone's
     // Market app directly. The plot-side shortcut from spec §8 — no
@@ -614,6 +617,17 @@ export class MainScene {
 
     const def = ALL_PARCELS.find((p) => p.id === parcelId);
     if (!def) return;
+
+    // Keep the authoritative parcel state on renderData.data, independent of
+    // the building meshes. This SURVIVES demolish (which removes the building +
+    // its anchor metadata) so the plot stays known-as-owned and rebuildable.
+    const rd = renderData.data;
+    if (data.owner_id !== undefined) rd.owner_id = data.owner_id;
+    if (data.business_name !== undefined) rd.business_name = data.business_name;
+    if (data.business_type !== undefined) rd.business_type = data.business_type; // '' clears on demolish
+    if (data.color !== undefined) rd.color = data.color;
+    if (data.height !== undefined) rd.height = data.height;
+    if (data.rotation !== undefined) rd.rotation = data.rotation;
 
     // If owner_id is empty string or undefined, remove the business
     const ownerId = data.owner_id ?? '';
@@ -672,6 +686,11 @@ export class MainScene {
     renderData.building = built;
     renderData.anchor = built.exteriorCasters[0] ?? null;
 
+    // Apply persisted yaw to the building root (rotates visual + collision
+    // together). rotation is in degrees; default 0 (north) for legacy parcels.
+    const builtRotation = data.rotation ?? renderData.anchor?.metadata?.rotation ?? 0;
+    built.root.rotation.y = degToRad(builtRotation);
+
     for (const m of built.exteriorCasters) {
       activeShadowGenerator?.addShadowCaster(m);
       m.isPickable = true;
@@ -682,6 +701,7 @@ export class MainScene {
         business_type: desiredType,
         color: wallColor,
         height: spec.wallHeight,
+        rotation: builtRotation,
       };
       m.actionManager = new ActionManager(scene);
       m.actionManager.registerAction(
@@ -707,8 +727,12 @@ export class MainScene {
       business_type: data.business_type ?? renderData.anchor.metadata?.business_type ?? 'apartment',
       color: data.color ?? renderData.anchor.metadata?.color ?? '#4a90d9',
       height: data.height ?? renderData.anchor.metadata?.height ?? 4,
+      rotation: data.rotation ?? renderData.anchor.metadata?.rotation ?? 0,
     };
     for (const m of renderData.building.exteriorCasters) m.metadata = merged;
+    // Live-apply rotation (e.g. the Rotate button sends a meta-only update with
+    // unchanged type, so it lands here rather than a rebuild).
+    renderData.building.root.rotation.y = degToRad(merged.rotation);
 
     const name = (data.business_name ?? renderData.anchor.metadata?.business_name ?? '').trim();
     if (!name) {
@@ -761,7 +785,7 @@ export class MainScene {
   // ---------- Remote player management ----------
 
   /** Build a small AUTO/AGENT/EXT badge above an avatar's name plate. */
-  private buildBotBadge(sessionId: string, kind: 'auto' | 'agent' | 'external', mesh: AbstractMesh): Rectangle {
+  private buildBotBadge(sessionId: string, kind: 'auto' | 'agent' | 'external', anchor: TransformNode): Rectangle {
     const rect = new Rectangle(`badge_${sessionId}`);
     rect.width = '60px';
     rect.height = '18px';
@@ -789,8 +813,10 @@ export class MainScene {
     text.fontWeight = 'bold';
     rect.addControl(text);
     this.labelUI.addControl(rect);
-    rect.linkWithMesh(mesh);
-    rect.linkOffsetY = -82; // sits above the name plate (which is at -60)
+    // Link to the world-space head anchor (not a pixel offset) so the badge
+    // stays pinned just above the name at every zoom level.
+    rect.linkWithMesh(anchor);
+    rect.linkOffsetY = -26; // small fixed stack above the name (which is at -8)
     return rect;
   }
 
@@ -802,7 +828,10 @@ export class MainScene {
     }
     if (render.badgeKind === kind && render.badge) return;
     if (render.badge) { render.badge.dispose(); render.badge = null; }
-    render.badge = this.buildBotBadge(sessionId, kind, render.mesh);
+    render.badge = this.buildBotBadge(sessionId, kind, render.avatar.headAnchor);
+    // Keep a fresh badge's visibility in sync with the name's current state
+    // (proximity gating for bots) to avoid a 1-frame flash.
+    render.badge.isVisible = render.label.isVisible;
     render.badgeKind = kind;
   }
 
@@ -862,15 +891,18 @@ export class MainScene {
     labelRect.addControl(labelText);
 
     this.labelUI.addControl(labelRect);
-    labelRect.linkWithMesh(mesh);
-    labelRect.linkOffsetY = -60;
+    // Link to the world-space head anchor (just above the head) with only a
+    // tiny pixel gap, so the name stays pinned to the head at every zoom level
+    // instead of drifting (the old -60px offset looked detached when zoomed).
+    labelRect.linkWithMesh(avatar.headAnchor);
+    labelRect.linkOffsetY = -8;
 
     // AUTO / AGENT badge above the name, only for AI agents. The
     // discriminator comes from the server-side bot_kind field; humans
     // omit it entirely and get no badge.
     let badge: Rectangle | null = null;
     if (player.bot_kind) {
-      badge = this.buildBotBadge(sessionId, player.bot_kind, mesh);
+      badge = this.buildBotBadge(sessionId, player.bot_kind, avatar.headAnchor);
     }
 
     const now = performance.now();
@@ -882,6 +914,7 @@ export class MainScene {
       labelText,
       badge,
       badgeKind: player.bot_kind ?? null,
+      isBot: !!player.bot_kind,
       rank: player.rank ?? null,
       targetX: player.x,
       targetY: player.y,
@@ -1402,6 +1435,33 @@ export class MainScene {
     // flag is unchanged, so this stays cheap even over the full parcel map.
     this.parcelRenders.forEach((data, parcelId) => {
       if (data.label) data.label.isVisible = parcelId === bestId;
+    });
+  }
+
+  /** ms since the last bot-name proximity recompute (throttled to ~10 Hz). */
+  private botNameAccumMs = 0;
+
+  /**
+   * Bot/agent name tags (+ their badge) only show when the local player is
+   * within BOT_NAME_VISIBLE_RANGE. Human players' labels are left untouched
+   * (always visible). Throttled to ~10 Hz, squared-distance, toggle-only —
+   * same cheap pattern as updateBuildingLabelFocus (engine-code.md).
+   */
+  private updateBotNameProximity(dtMs: number): void {
+    this.botNameAccumMs += dtMs;
+    if (this.botNameAccumMs < 100) return;
+    this.botNameAccumMs = 0;
+    if (!this.localPlayerRoot) return;
+    const px = this.localPlayerRoot.position.x;
+    const pz = this.localPlayerRoot.position.z;
+    const rangeSq = BOT_NAME_VISIBLE_RANGE * BOT_NAME_VISIBLE_RANGE;
+    this.remotePlayers.forEach((remote) => {
+      if (!remote.isBot) return; // humans: name always visible
+      const dx = remote.root.position.x - px;
+      const dz = remote.root.position.z - pz;
+      const near = dx * dx + dz * dz <= rangeSq;
+      if (remote.label.isVisible !== near) remote.label.isVisible = near;
+      if (remote.badge && remote.badge.isVisible !== near) remote.badge.isVisible = near;
     });
   }
 

@@ -91,6 +91,9 @@ export interface ParcelData {
   business_type: string;
   color: string;
   height: number;
+  /** Building yaw in DEGREES (0/90/180/270). Additive; defaults to 0 (north)
+   *  for legacy parcels. Applied to the building's root Y rotation client-side. */
+  rotation: number;
 }
 
 export enum MessageType {

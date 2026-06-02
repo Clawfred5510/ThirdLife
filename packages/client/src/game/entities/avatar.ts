@@ -87,9 +87,13 @@ function stripRootMotion(group: AnimationGroup | null): void {
 export class Avatar {
   /** Positioned + rotated by MainScene every frame. */
   readonly root: TransformNode;
-  /** Invisible torso-height anchor for the nameplate/badge/camera links. Stable
+  /** Invisible torso-height anchor for the camera link + picking. Stable
    *  across model loads (the GLB streams in under `modelWrap`). */
   readonly body: Mesh;
+  /** Invisible anchor just ABOVE the head, in WORLD units. Nameplate/badge link
+   *  here so the label tracks the head consistently at every zoom (a fixed
+   *  world-height anchor projects correctly; a fixed PIXEL offset drifts). */
+  readonly headAnchor: TransformNode;
 
   private readonly scene: Scene;
   private readonly id: string;
@@ -122,6 +126,11 @@ export class Avatar {
     this.body.position.y = 1.1;
     this.body.isVisible = false;
     this.body.isPickable = false;
+
+    // Just above the head in world space (feet at y=0, head top ~TARGET_HEIGHT).
+    this.headAnchor = new TransformNode(`avatarHead_${id}`, scene);
+    this.headAnchor.parent = this.root;
+    this.headAnchor.position.y = TARGET_HEIGHT + 0.18;
 
     void this.load(modelFileFor(appearance, opts));
   }

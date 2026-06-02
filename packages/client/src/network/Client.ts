@@ -338,6 +338,13 @@ function rewireRoomListeners(r: Room): void {
   r.onMessage(MessageType.PARCEL_UPDATE, (msg: Partial<ParcelData> & { owner_name?: string; error?: string }) => {
     for (const cb of onParcelUpdateListeners) cb(msg);
   });
+  // UPDATE_BUSINESS is echoed back ONLY on failure (success comes via
+  // PARCEL_UPDATE). Route the error — with its parcelId — through the same
+  // parcel-update listeners so the panel can clear its "Updating…" state.
+  r.onMessage(MessageType.UPDATE_BUSINESS, (msg: { error?: string; parcelId?: number }) => {
+    if (!msg?.error) return;
+    for (const cb of onParcelUpdateListeners) cb({ id: msg.parcelId, error: msg.error });
+  });
   r.onMessage(MessageType.RESOURCE_UPDATE, (msg: unknown) => {
     window.dispatchEvent(new CustomEvent('resource-update', { detail: msg }));
   });
@@ -410,7 +417,7 @@ export function sendClaimParcel(parcelId: number, buildingType: string): void {
   room?.send(MessageType.CLAIM_PARCEL, { parcelId, building_type: buildingType });
 }
 
-export function sendUpdateBusiness(parcelId: number, data: { name?: string; type?: string; color?: string; height?: number }): void {
+export function sendUpdateBusiness(parcelId: number, data: { name?: string; type?: string; color?: string; height?: number; rotation?: number }): void {
   room?.send(MessageType.UPDATE_BUSINESS, { parcelId, ...data });
 }
 

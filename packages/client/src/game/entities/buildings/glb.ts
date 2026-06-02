@@ -146,37 +146,30 @@ export function buildGlbBuilding(
   const filename = ASSET_BY_TYPE[type];
   if (!filename) throw new Error(`buildGlbBuilding: no GLB mapped for type '${type}'`);
 
-  // Collision ring — four thin walls around the building footprint,
-  // not a single solid box. Why: the server has no collision and just
-  // integrates PLAYER_INPUT forward at PLAYER_SPEED. A solid box stops
-  // the client cold while the server walks the player straight through;
-  // the resulting position desync trips the 60-unit hard-snap and the
-  // player "teleports back" a parcel or two. Thin walls let
-  // moveWithCollisions slide the player along, which roughly tracks
-  // the server's no-collision integration and keeps the desync small.
-  const RING_INSET = PARCEL_FOOTPRINT * 0.40;  // half-side
-  const WALL_THICKNESS = 0.6;
+  // Per-object collision: the player collides with the building's ACTUAL GLB
+  // meshes (checkCollisions set on them after load), tight to geometry — walk
+  // right up to a building, can't pass through it. NO arbitrary footprint
+  // barrier. The pure predicted/server position stays collision-free (server
+  // has no collision), so authoritative movement is unaffected — only the
+  // rendered avatar is blocked. This mirrors the procedural-building path,
+  // which already sets checkCollisions on its wall meshes.
   const collisionWalls: AbstractMesh[] = [];
-  const buildWall = (suffix: string, w: number, d: number, ox: number, oz: number) => {
-    const m = MeshBuilder.CreateBox(`glbCol_${type}_${id}_${suffix}`, {
-      width: w, height: COLLIDER_HEIGHT, depth: d,
-    }, scene);
-    m.parent = root;
-    m.position.set(ox, COLLIDER_HEIGHT / 2, oz);
-    m.isVisible = false;
-    m.checkCollisions = true;
-    m.isPickable = false;
-    collisionWalls.push(m);
-  };
-  // North + South walls span the full width, sit at ±RING_INSET in Z.
-  buildWall('n', RING_INSET * 2, WALL_THICKNESS, 0, -RING_INSET);
-  buildWall('s', RING_INSET * 2, WALL_THICKNESS, 0,  RING_INSET);
-  // East + West walls span the full depth, sit at ±RING_INSET in X.
-  buildWall('e', WALL_THICKNESS, RING_INSET * 2,  RING_INSET, 0);
-  buildWall('w', WALL_THICKNESS, RING_INSET * 2, -RING_INSET, 0);
+
+  // Invisible, NON-collidable, PICKABLE anchor covering the footprint. Carries
+  // the parcel metadata + owns the building name-label link + a click target.
+  // The real GLB meshes stay non-pickable (so they don't steal the lot tile's
+  // click). It MUST be non-collidable or it would reintroduce the barrier.
+  const anchor = MeshBuilder.CreateBox(`glbAnchor_${type}_${id}`, {
+    width: PARCEL_FOOTPRINT, height: COLLIDER_HEIGHT, depth: PARCEL_FOOTPRINT,
+  }, scene);
+  anchor.parent = root;
+  anchor.position.set(0, COLLIDER_HEIGHT / 2, 0);
+  anchor.isVisible = false;
+  anchor.checkCollisions = false;
+  anchor.isPickable = true;
 
   // GLB lives under its own wrap so fit-to-footprint scaling doesn't
-  // touch the collider.
+  // touch the anchor.
   const glbWrap = new TransformNode(`glbWrap_${type}_${id}`, scene);
   glbWrap.parent = root;
 
@@ -208,14 +201,19 @@ export function buildGlbBuilding(
         applyTwoToneVertexColors(m, recipe, yRange);
       }
       if (sharedMat) m.material = sharedMat;
-      m.checkCollisions = false;
-      // Building meshes must NOT intercept pick rays — the parcel's
-      // `lot_*` ground tile owns the OnPickTrigger that opens
-      // ParcelPanel (see MainScene.spawnBuildingsAndSetupParcels).
-      // With isPickable=true a click on the building was being
-      // absorbed and the panel never opened. Was a latent bug while
-      // only nuclear_plant rendered as GLB; surfaced when the synty
-      // drop routed every building through this path.
+      // Per-object collision: real renderable meshes block the player; empty
+      // transform/shell meshes (0 verts) are skipped so they don't add phantom
+      // bounding-box colliders.
+      if (m instanceof Mesh && m.getTotalVertices() > 0) {
+        m.checkCollisions = true;
+        collisionWalls.push(m);
+      } else {
+        m.checkCollisions = false;
+      }
+      // Building meshes must NOT intercept pick rays — the parcel's `lot_*`
+      // ground tile + the invisible anchor own the OnPickTrigger that opens
+      // ParcelPanel. With isPickable=true a click on the building was absorbed
+      // and the panel never opened.
       m.isPickable = false;
       m.receiveShadows = true;
     }
@@ -224,17 +222,14 @@ export function buildGlbBuilding(
   });
 
   return {
+    // The invisible non-collidable anchor (created synchronously) is the
+    // metadata/label/pick carrier — MainScene writes owner/business metadata
+    // onto exteriorCasters[*] and links the name label to exteriorCasters[0].
+    // collisionWalls = the real GLB meshes (filled in async after load); they
+    // provide per-object collision. moveWithCollisions re-queries checkCollisions
+    // meshes each move, so collision turns on the instant the meshes load.
     root,
-    // Collision walls double as the metadata anchor meshes —
-    // MainScene.spawnBuildingsAndSetupParcels writes the parcel's
-    // owner_id / business_name / business_type onto every
-    // exteriorCasters[*].metadata, then ParcelPanel reads them back
-    // when the player clicks the parcel. If this is empty, clicks on
-    // a claimed-and-built parcel see undefined metadata, default to
-    // owner_id='', and the panel re-shows "Pick what to build". Walls
-    // are isPickable=false so they don't intercept the click — the
-    // ground tile still owns the OnPickTrigger.
-    exteriorCasters: collisionWalls,
+    exteriorCasters: [anchor],
     collisionWalls,
     roofMeshes: [],        // no interior to fade into
     centerXZ: [position.x, position.z],

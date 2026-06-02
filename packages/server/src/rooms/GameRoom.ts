@@ -449,11 +449,17 @@ export class GameRoom extends Room<GameState> {
       );
     });
 
-    this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number }) => {
+    this.onMessage(MessageType.UPDATE_BUSINESS, (client: Client, data: { parcelId: number; name?: string; type?: string; color?: string; height?: number; rotation?: number }) => {
       if (!this.checkRate(client, 'update_business', 3, 1)) return;
       const player = this.players.get(client.sessionId);
       if (!player) return;
       if (typeof data.parcelId !== 'number' || data.parcelId < 0 || data.parcelId > 2499) return;
+
+      // Server-authoritative validation: snap rotation to 0/90/180/270.
+      if (data.rotation !== undefined) {
+        if (!Number.isFinite(data.rotation)) return;
+        data.rotation = (((Math.round(data.rotation / 90) * 90) % 360) + 360) % 360;
+      }
 
       const ownerId = this.pid(client.sessionId);
       const success = updateBusinessInDb(data.parcelId, ownerId, data);
@@ -465,9 +471,10 @@ export class GameRoom extends Room<GameState> {
           business_type: data.type,
           color: data.color,
           height: data.height,
+          rotation: data.rotation,
         });
       } else {
-        client.send(MessageType.UPDATE_BUSINESS, { error: 'Update failed (not owner or parcel not claimed)' });
+        client.send(MessageType.UPDATE_BUSINESS, { error: 'Update failed (not owner or parcel not claimed)', parcelId: data.parcelId });
       }
     });
 
@@ -876,6 +883,7 @@ export class GameRoom extends Room<GameState> {
       business_type: p.business_type ?? '',
       color: p.color,
       height: p.height,
+      rotation: p.rotation ?? 0,
     }));
     client.send(MessageType.PARCEL_STATE, { parcels: snapshot });
 

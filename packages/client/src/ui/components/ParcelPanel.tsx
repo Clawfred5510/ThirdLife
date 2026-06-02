@@ -14,8 +14,10 @@ import {
 import {
   sendClaimParcel,
   sendUpdateBusiness,
+  sendBuildStructure,
   sendDemolish,
   onCreditsUpdate,
+  onParcelUpdate,
   onRankUp,
   getSessionId,
 } from '../../network/Client';
@@ -50,8 +52,12 @@ export const ParcelPanel: React.FC = () => {
   const [, forceUpdate] = useState(0);
   const [credits, setCredits] = useState(0);
   const [editName, setEditName] = useState('');
-  const [editType, setEditType] = useState('');
+  // editType is written on selection/demolish but the UI now derives the
+  // has-building/empty branch directly from parcel.business_type (avoids
+  // staleness on same-parcel demolish/rebuild), so only the setter is used.
+  const [, setEditType] = useState('');
   const [message, setMessage] = useState('');
+  const [savingName, setSavingName] = useState(false);
   const [pickedBuilding, setPickedBuilding] = useState<BuildingType>('apartment');
   const [resources, setResources] = useState<{ food: number; materials: number; energy: number; luxury: number }>(
     { food: 0, materials: 0, energy: 0, luxury: 0 },
@@ -148,8 +154,39 @@ export const ParcelPanel: React.FC = () => {
       setEditName(parcel.business_name || '');
       setEditType(parcel.business_type || '');
       setMessage('');
+      setSavingName(false);
     }
   }, [parcel?.id]);
+
+  // Keep the OPEN panel synced to server PARCEL_UPDATE broadcasts (so a
+  // demolish/rebuild/rotate refreshes the panel without reselecting), and clear
+  // the rename "Updating..." once our edit's echo returns (success or error).
+  useEffect(() => {
+    const id = parcel?.id;
+    if (id === undefined) return;
+    const unsub = onParcelUpdate((u) => {
+      if (u.id !== id) return;
+      const cur = getSelectedParcel();
+      if (cur) {
+        selectParcel({
+          ...cur,
+          owner_id: u.owner_id ?? cur.owner_id,
+          // business_* can be '' on demolish — treat presence as authoritative.
+          business_name: 'business_name' in u ? (u.business_name ?? '') : cur.business_name,
+          business_type: 'business_type' in u ? (u.business_type ?? '') : cur.business_type,
+          color: u.color ?? cur.color,
+          height: u.height ?? cur.height,
+          rotation: u.rotation ?? cur.rotation,
+        });
+      }
+      if (savingName) {
+        setSavingName(false);
+        setMessage(u.error ? 'Update failed — try again' : 'Saved ✓');
+        if (!u.error) setTimeout(() => setMessage(''), 1500);
+      }
+    });
+    return unsub;
+  }, [parcel?.id, savingName]);
 
   const handleClaim = useCallback(() => {
     if (!parcel) return;
@@ -161,6 +198,7 @@ export const ParcelPanel: React.FC = () => {
     if (!parcel) return;
     // Owner can rename their business; type/color/height are locked.
     sendUpdateBusiness(parcel.id, { name: editName });
+    setSavingName(true);
     setMessage('Updating...');
   }, [parcel, editName]);
 
@@ -168,7 +206,28 @@ export const ParcelPanel: React.FC = () => {
     if (!parcel) return;
     if (!confirm('Demolish this building? You will get back 50% of the build cost. The land stays yours.')) return;
     sendDemolish(parcel.id);
+    // Optimistically flip the open panel to owned-EMPTY (land stays yours) so it
+    // shows the rebuild picker immediately; owner_id is left intact. The server
+    // broadcast (business_type:'') confirms.
+    selectParcel({ ...parcel, business_name: '', business_type: '' });
+    setEditType('');
     setMessage('Demolishing...');
+  }, [parcel]);
+
+  // Rebuild on an already-owned (demolished/empty) parcel — uses BUILD_STRUCTURE
+  // (the owned-parcel path), NOT CLAIM_PARCEL (which rejects an owned parcel).
+  const handleRebuild = useCallback(() => {
+    if (!parcel) return;
+    sendBuildStructure(parcel.id, pickedBuilding);
+    setMessage(`Building ${BUILDINGS[pickedBuilding].label}...`);
+  }, [parcel, pickedBuilding]);
+
+  // Rotate the building 90° (owner only). Server snaps + persists + broadcasts.
+  const handleRotate = useCallback(() => {
+    if (!parcel) return;
+    const next = (((parcel.rotation ?? 0) + 90) % 360 + 360) % 360;
+    sendUpdateBusiness(parcel.id, { rotation: next });
+    setMessage('Rotating...');
   }, [parcel]);
 
   if (!parcel) return null;
@@ -217,7 +276,7 @@ export const ParcelPanel: React.FC = () => {
         width: 'calc(100% - 16px)',
         maxWidth: 560,
         overflowY: 'auto',
-        WebkitOverflowScrolling: 'touch' as 'touch',
+        WebkitOverflowScrolling: 'touch' as const,
         padding: '14px 16px',
         borderRadius: 16,
         fontSize: 13,
@@ -598,7 +657,8 @@ export const ParcelPanel: React.FC = () => {
         </>
       )}
 
-      {isOwnedByMe && (
+      {/* Owned by me + a building present: name / type / rotate / demolish. */}
+      {isOwnedByMe && parcel.business_type && (
         <>
           <div style={{
             marginBottom: 10,
@@ -617,21 +677,131 @@ export const ParcelPanel: React.FC = () => {
             placeholder="e.g. Joe's Cafe"
           />
           <div style={{ ...labelStyle, marginTop: 6 }}>
-            Type — <span style={{ color: COLORS.gold }}>{BUILDINGS[(editType as BuildingType)]?.label ?? editType ?? '—'}</span>
+            Type — <span style={{ color: COLORS.gold }}>{BUILDINGS[(parcel.business_type as BuildingType)]?.label ?? parcel.business_type}</span>
           </div>
-          <div style={{ marginTop: 12, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            {editType && (
-              <button
-                style={{ ...buttonStyle, background: '#C04331', boxShadow: '0 4px 0 #8E2F22, 0 6px 12px rgba(58,42,31,0.18)' }}
-                onClick={handleDemolish}
-                aria-label="Demolish this building (50% refund)"
-              >
-                Demolish
-              </button>
-            )}
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              style={{ ...buttonStyle, background: '#C04331', boxShadow: '0 4px 0 #8E2F22, 0 6px 12px rgba(58,42,31,0.18)' }}
+              onClick={handleDemolish}
+              aria-label="Demolish this building (50% refund)"
+            >
+              Demolish
+            </button>
+            <button
+              style={{ ...buttonStyle, background: COLORS.housing, boxShadow: '0 4px 0 #3F6680, 0 6px 12px rgba(58,42,31,0.18)' }}
+              onClick={handleRotate}
+              aria-label="Rotate building 90 degrees"
+            >
+              Rotate ⟳
+            </button>
             <button style={buttonStyle} onClick={handleUpdate}>
               Save Name
             </button>
+          </div>
+        </>
+      )}
+
+      {/* Owned by me but EMPTY (e.g. after demolish): land stays mine — show a
+          rebuild picker (BUILD_STRUCTURE path, no land cost / no vouchers). */}
+      {isOwnedByMe && !parcel.business_type && (
+        <>
+          <div style={{
+            marginBottom: 4,
+            color: COLORS.food,
+            fontWeight: 800,
+            fontSize: 16,
+            fontFamily: '"Fraunces", Georgia, serif',
+          }}>
+            🏗️ Your Land — Rebuild
+          </div>
+          <div style={{ ...labelStyle, marginBottom: 10 }}>Claimed · empty plot — pick what to build</div>
+          <div
+            role="radiogroup"
+            aria-label="Rebuild type"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: vp.isMobile ? 'repeat(3, 1fr)' : 'repeat(5, 1fr)',
+              gap: 4,
+              marginBottom: 10,
+            }}
+          >
+            {BUILDING_LIST.map((b) => {
+              const enoughCredits = credits >= b.cost;
+              const enoughMaterials = b.materialCost === 0 || resources.materials >= b.materialCost;
+              const rankOk = TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
+              const canBuild = enoughCredits && enoughMaterials && rankOk;
+              const selected = pickedBuilding === b.type;
+              const blockers: string[] = [];
+              if (!rankOk) blockers.push(`Requires ${TIER_LABEL[b.minRank]} rank`);
+              if (!enoughCredits) blockers.push(`Need ${(b.cost - credits).toLocaleString()} more $${CURRENCY_NAME}`);
+              if (!enoughMaterials) blockers.push(`Need ${(b.materialCost - resources.materials).toLocaleString()} more materials`);
+              const title = canBuild
+                ? `${b.label} · Tier ${b.tier} · ${b.cost.toLocaleString()} $${CURRENCY_NAME}${b.materialCost > 0 ? ` + ${b.materialCost.toLocaleString()} materials` : ''}`
+                : `${b.label} — ${blockers.join(' · ')}`;
+              const tint = CATEGORY_TINT[b.category] ?? COLORS.textMuted;
+              return (
+                <button
+                  key={b.type}
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={title}
+                  title={title}
+                  disabled={!canBuild}
+                  onClick={() => setPickedBuilding(b.type)}
+                  style={{
+                    background: selected ? COLORS.surfaceAlt : '#FFFCF2',
+                    color: canBuild ? COLORS.text : 'rgba(58,42,31,0.35)',
+                    border: selected ? `2.5px solid ${COLORS.accent}` : `2px solid ${!rankOk ? 'rgba(226,92,77,0.35)' : COLORS.border}`,
+                    borderRadius: 12,
+                    padding: '8px 6px 6px',
+                    fontFamily: '"Nunito", system-ui, sans-serif',
+                    fontSize: 11, fontWeight: 700,
+                    cursor: canBuild ? 'pointer' : 'not-allowed',
+                    textAlign: 'center', lineHeight: 1.25, position: 'relative',
+                    opacity: canBuild ? 1 : 0.6,
+                  }}
+                >
+                  <div style={{ height: 4, background: tint, borderRadius: 2, margin: '-2px -2px 6px', opacity: canBuild ? 1 : 0.5 }} />
+                  <div style={{ fontWeight: 800, fontSize: 11 }}>{b.label}</div>
+                  <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>T{b.tier} · {b.category.replace('luxury-', '')}</div>
+                  <div style={{ fontSize: 11, color: COLORS.gold, fontWeight: 700, marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                    {b.cost.toLocaleString()}
+                  </div>
+                  {b.materialCost > 0 && (
+                    <div style={{ fontSize: 9, fontWeight: 600, color: enoughMaterials ? COLORS.materials : '#C04331' }}>
+                      +{b.materialCost.toLocaleString()} ⛏️
+                    </div>
+                  )}
+                  {!rankOk && (
+                    <div style={{ position: 'absolute', top: 4, right: 5, padding: '1px 4px', borderRadius: 6, fontSize: 8, fontWeight: 800, color: '#FFFFFF', background: 'rgba(226,92,77,0.85)', letterSpacing: 0.4 }}>
+                      🔒 {TIER_LABEL[b.minRank].slice(0, 3).toUpperCase()}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {(() => {
+            const b = BUILDINGS[pickedBuilding];
+            const canBuild = credits >= b.cost && (b.materialCost === 0 || resources.materials >= b.materialCost) && TIER_INDEX[rank] >= TIER_INDEX[b.minRank];
+            return (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>
+                  Cost: <strong style={{ color: COLORS.gold, fontSize: 16, fontWeight: 800 }}>{b.cost.toLocaleString()} ${CURRENCY_NAME}</strong>
+                  {b.materialCost > 0 && <span style={{ color: COLORS.textMuted, marginLeft: 6, fontSize: 11 }}>+ {b.materialCost.toLocaleString()} ⛏️</span>}
+                </span>
+                <button
+                  style={{ ...buttonStyle, opacity: canBuild ? 1 : 0.45, cursor: canBuild ? 'pointer' : 'not-allowed' }}
+                  onClick={handleRebuild}
+                  disabled={!canBuild}
+                >
+                  Build
+                </button>
+              </div>
+            );
+          })()}
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 8, fontWeight: 600 }}>
+            Your balance: <span style={{ color: COLORS.gold }}>{credits.toLocaleString()} ${CURRENCY_NAME}</span>
           </div>
         </>
       )}
